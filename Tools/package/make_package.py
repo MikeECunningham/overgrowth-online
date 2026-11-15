@@ -59,15 +59,20 @@ if not os.path.isdir(cache) or not os.listdir(cache):
     sys.exit("No Vulkan shader cache: run  python -I Tools/ogmp.py run vk_shader_cache")
 newest_shader = max(os.path.getmtime(os.path.join(dp, f)) for dp, _, fs in os.walk(ROOT + "/Data/GLSL") for f in fs)
 cache_time = min(os.path.getmtime(os.path.join(cache, d, "program.txt")) for d in os.listdir(cache))
+# (OGMP_STALE_CACHE=1: a test build, the cache as it is. Its programs are keyed by their
+# sources' hash, so a changed shader misses it and the game compiles it on its first load)
+stale_ok = os.environ.get("OGMP_STALE_CACHE") == "1"
 if newest_shader > cache_time:
-    sys.exit("The Vulkan shader cache is older than Data/GLSL: run  python -I Tools/ogmp.py run vk_shader_cache")
+    if not stale_ok:
+        sys.exit("The Vulkan shader cache is older than Data/GLSL: run  python -I Tools/ogmp.py run vk_shader_cache")
+    print("Test build: the Vulkan shader cache is older than Data/GLSL (changed shaders compile on first load)")
 shutil.copytree(cache, f"{online}/Data/VulkanShaders")
 # ... and the pipelines recorded on the test levels (scenario vk_pipeline_seed), made
 # ahead from a first load on
 seed = ROOT + "/test/vk_pipeline_seed.txt"
 if not os.path.exists(seed):
     sys.exit("No Vulkan pipeline list: run  python -I Tools/ogmp.py run vk_pipeline_seed")
-if os.path.getmtime(seed) > cache_time:
+if os.path.getmtime(seed) > cache_time and not stale_ok:
     sys.exit("The Vulkan shader cache is older than the pipeline list (its programs aren't all in it): run vk_shader_cache")
 shutil.copy2(seed, f"{online}/Data/VulkanShaders/pipelines.txt")
 
@@ -92,6 +97,8 @@ shutil.copy2(HERE + "/THIRD_PARTY.txt", online + "/licenses/THIRD_PARTY.txt")
 # The upscalers' runtimes (a build with DLSS_SDK / FIDELITYFX_SDK: CMake put them beside the
 # exe, the DLLs went out with the rest above) and their licences
 for dll, lic, notice in [("nvngx_dlss.dll", "nvngx_dlss_LICENSE.txt", "NVIDIA-DLSS"),
+                         ("nvngx_dlssd.dll", "nvngx_dlss_LICENSE.txt", "NVIDIA-DLSS"),  # (Ray Reconstruction: the DLSS SDK's)
+                         ("NRD.dll", "NRD_LICENSE.txt", "NVIDIA-NRD"),  # (the ray tracing's denoisers: NRD_SDK)
                          ("amd_fidelityfx_vk.dll", "amd_fidelityfx_LICENSE.txt", "AMD-FidelityFX")]:
     if os.path.exists(f"{build}/{dll}"):
         if not os.path.exists(f"{build}/{lic}"):

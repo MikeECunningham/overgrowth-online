@@ -84,6 +84,8 @@ class ItemObject : public Object {
     void Moved(Object::MoveType type) override;
 
     int model_id() const;
+    // Overgrowth Online (RT): its colour texture (the draw's), what reflections see on it
+    const TextureRef& ColorTextureRef() const { return batch_.texture_ref[0]; }
     const ItemRef& item_ref() const;
     const vec3& phys_offset() const;
     ItemState state() const;

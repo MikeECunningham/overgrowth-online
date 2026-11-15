@@ -1,0 +1,670 @@
+//-----------------------------------------------------------------------------
+//           Name: rt_gi.comp
+//      Developer: Overgrowth Online (crxhvrd)
+//    Description: Global illumination, ray traced (VkRt::TraceLighting): the light that
+//                 comes to each pixel of the depth prepass from everything around it, in
+//                 place of the colour pass's ambient light (light probes, the sky's cube
+//                 map, AO). A ray a pixel, cosine-weighted around the surface: nothing met,
+//                 the sky (its cube map); something met, the light it gives back, worked
+//                 out there: its colour (texture and tint, as reflections have it) lit by
+//                 the sun (its shadow traced), the point lights, a glow of its own, and the
+//                 light that comes to it in turn: a second ray from it, which takes what it
+//                 meets from the radiance cache. The cache (SHaRC's idea: a hash grid of
+//                 voxels in world space, sized by the distance to the camera, a face
+//                 direction each) gathers what these hits give back, a quarter of the
+//                 pixels a frame, and rt_cache.comp averages it over time: so the bounces
+//                 add up frame by frame. The other pixels take their hit's light from
+//                 the cache where it has it (SHaRC's query: cheaper, steadier). Writes the
+//                 raw result NRD's REBLUR denoises (the
+//                 radiance and how far the ray went)
+//        License: Apache-2.0, like the rest of the engine (see LICENSE)
+//-----------------------------------------------------------------------------
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_ray_tracing_position_fetch : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+#if defined(MSAA_DEPTH)
+layout(set = 0, binding = 1) uniform sampler2DMS depth_tex;  // (its first sample)
+#else
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+#endif
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Indices {
+    uint index[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Uvs {
+    vec2 uv[];
+};
+// (vk_rt.cpp's Material)
+struct Material {
+    uvec2 indices;
+    uvec2 uvs;
+    uint texture;   // (a slot; 0xFFFFFFFF none)
+    float scroll;
+    uint flags;     // 1 alpha-tested, 2 emitter, 4 waterfall
+    uint tint_mask; // a slot whose alpha masks the tint (0xFFFFFFFF: all of it)
+    vec3 tint;
+    float emission; // an emitter's light, by its colour (as its draw)
+};
+layout(set = 0, binding = 2, std430) readonly buffer Materials {
+    Material materials[];
+};
+struct Light {
+    vec4 pos_radius;  // xyz, w how far its light reaches
+    vec4 color;       // rgb, a its luminance
+};
+layout(set = 0, binding = 3, std430) readonly buffer Lights {
+    Light lights[];
+};
+layout(set = 0, binding = 4) uniform samplerCube sky;
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D gi_out;  // the radiance that came, how far its ray went (world)
+// The radiance cache: a voxel's key (0: free), this frame's sum of what it gave back
+// (fixed point, kCacheScale, and how many), its average (rgb, frames in it)
+layout(set = 0, binding = 6, std430) coherent buffer CacheKeys {
+    uint cache_keys[];
+};
+layout(set = 0, binding = 7, std430) buffer CacheAccum {
+    uvec4 cache_accum[];
+};
+layout(set = 0, binding = 8, std430) readonly buffer CacheValues {
+    vec4 cache_values[];
+};
+layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D gi_dir;  // the ray's direction (NRD's SH)
+layout(set = 1, binding = 0) uniform sampler2D textures[];
+// The game's ambient light (raytrace.cpp's State::ambient). The level's light probes as a
+// grid: points a side (x, y, z, 1: there is one), the first point, 1 / the step; then 12
+// words a point (x fastest): its ambient cube's six faces (+x -x +y -y +z -z), each rgb as
+// halves, face 0's fourth half 1 where the point is inside the probes. Then the level's
+// shadow decals (their count, their first word): 16 words each, world to the decal's box
+// (3 rows of 4), its kind (decals.glsl's), its tint's first channel
+layout(set = 0, binding = 10, std430) readonly buffer Probes {
+    uvec4 probe_dims;
+    vec4 probe_min;
+    vec4 probe_inv_step;
+    uvec4 shadow_decals;
+    uint probe_points[];
+};
+
+layout(push_constant) uniform Params {
+    mat4 inv_view_proj;  // clip space (depth 0..1) to world, as drawn
+    vec4 camera;         // xyz the camera, w the ray's start off the surface per unit of distance
+    vec4 sun;            // xyz toward the sun, w how much of the point lights' light bounces (0..1)
+    vec4 sun_color;      // rgb the sun's light (the colour pass's primary_light_color.rgb * a), w the time
+    uvec4 info;          // width, height, frame, the point lights' count
+    vec4 params;         // x the cache's smallest voxel (world units), y the glows' strength (by their draws'), z the sky's lod, w the sky's strength
+    uvec4 debug;         // x: 1 no cache lookups (one bounce), 2 the cache itself at each pixel, 3 where rays meet the sky; y the
+                         // checkerboard's phase, z 1: a checkerboard (half the pixels, packed to the left);
+                         // w 1: for DLSS Ray Reconstruction, not NRD: every pixel, written as the colour
+                         // pass reads REBLUR's (SH0 YCoCg; SH1 the direction * Y), raw
+    vec4 look;           // x the strength of the light a pixel receives (rt_gi_strength: the cache's stays as traced), y the colour pass's GetAmbientContrib(1), z the bounce's gain (rt_gi_bounce), w how much of the game's rasterized ambient lights the second bounce's hits (rt_gi_raster_ambient)
+} pc;
+
+const uint kAlphaTested = 1u, kEmitter = 2u, kWaterfall = 4u, kGrassMaterial = 8u;
+const uint kNoTexture = 0xFFFFFFFFu;
+const float kCacheScale = 128.0;   // (fixed point: 1/128 of a unit of radiance)
+const float kCacheClamp = 16.0;    // (a sample's most: no overflow from a thousand pixels on one voxel)
+const uint kCacheProbes = 8u;
+
+float Depth(ivec2 p) {
+    return texelFetch(depth_tex, p, 0).r;
+}
+
+vec3 WorldPos(ivec2 p, float depth) {
+    vec2 ndc = (vec2(p) + 0.5) / vec2(pc.info.xy) * 2.0 - 1.0;
+    vec4 w = pc.inv_view_proj * vec4(ndc, depth, 1.0);
+    return w.xyz / w.w;
+}
+
+// (rt_shadow.comp's: the step to the neighbour on the side whose depth is closer)
+vec3 Step(ivec2 p, float depth, vec3 pos, ivec2 dir) {
+    ivec2 size = ivec2(pc.info.xy);
+    ivec2 a = p + dir, b = p - dir;
+    bool a_in = all(greaterThanEqual(a, ivec2(0))) && all(lessThan(a, size));
+    bool b_in = all(greaterThanEqual(b, ivec2(0))) && all(lessThan(b, size));
+    float da = a_in ? Depth(a) : -1.0;
+    float db = b_in ? Depth(b) : -1.0;
+    bool use_a = a_in && da > 0.0 && (!b_in || db <= 0.0 || abs(da - depth) <= abs(db - depth));
+    if (use_a) {
+        return WorldPos(a, da) - pos;
+    }
+    if (b_in && db > 0.0) {
+        return pos - WorldPos(b, db);
+    }
+    return vec3(0.0);
+}
+
+// PCG (Jarzynski and Olano)
+uint Hash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float Random(inout uint seed) {
+    seed = Hash(seed);
+    return float(seed) * (1.0 / 4294967296.0);
+}
+
+// A direction around `n`, cosine-weighted (the light a diffuse surface takes in)
+vec3 Cosine(vec3 n, inout uint seed) {
+    vec3 t = normalize(abs(n.y) < 0.99 ? cross(n, vec3(0.0, 1.0, 0.0)) : cross(n, vec3(1.0, 0.0, 0.0)));
+    vec3 b = cross(n, t);
+    float r = sqrt(Random(seed));
+    float a = 6.28318531 * Random(seed);
+    return normalize(t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(0.0, 1.0 - r * r)));
+}
+
+vec2 HitUv(Material m, uint primitive, vec2 bary) {
+    if (m.uvs == uvec2(0u)) {
+        return vec2(0.0);
+    }
+    Indices indices = Indices(m.indices);
+    Uvs uvs = Uvs(m.uvs);
+    uint tri = primitive * 3u;
+    vec2 uv = uvs.uv[indices.index[tri]] * (1.0 - bary.x - bary.y) + uvs.uv[indices.index[tri + 1u]] * bary.x +
+              uvs.uv[indices.index[tri + 2u]] * bary.y;
+    uv.y = 1.0 - (uv.y - pc.sun_color.w * m.scroll);  // (as envobject.vert hands its draw the uvs: scrolled, flipped)
+    return uv;
+}
+
+// A candidate on an alpha-tested mesh: solid where its alpha is 0.5 or more
+bool AlphaSolid(rayQueryEXT q) {
+    Material m = materials[rayQueryGetIntersectionInstanceCustomIndexEXT(q, false)];
+    if (m.texture == kNoTexture) {
+        return true;
+    }
+    vec2 uv = HitUv(m, uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, false)), rayQueryGetIntersectionBarycentricsEXT(q, false));
+    return textureLod(textures[nonuniformEXT(m.texture)], uv, 0.0).a >= 0.5;
+}
+
+// What a ray met: where, its face (toward the ray), its material (its flags, its glow),
+// where on its triangle (Albedo: its colour, looked up only where it's needed)
+struct Hit {
+    bool hit;
+    float t;
+    vec3 pos;
+    vec3 normal;
+    uint material;
+    uint primitive;
+    vec2 bary;
+    uint flags;
+    float emission;
+    int instance;  // (its instance in the TLAS: a second ray from a grass blade passes that blade)
+};
+
+// Whether the pixel shows a character (its skinned mesh, instance mask 0x08), by a short ray
+// along the view across the depth's point
+bool IsCharacter(vec3 pos, float dist) {
+    vec3 dir = (pos - pc.camera.xyz) / max(dist, 1e-6);
+    float span = max(0.05, dist * 0.01);
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT, 0x08u, pos - dir * span, 0.0, dir, span * 2.0);
+    while (rayQueryProceedEXT(q)) {
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
+}
+
+// The alpha-tested mesh or grass blade the pixel shows (rt_shadow.comp's Foliage): its own
+// rays pass it, or a blade's every ray met the blade itself; -1: another kind of surface
+int OwnFoliage(vec3 pos, float dist) {
+    vec3 dir = (pos - pc.camera.xyz) / max(dist, 1e-6);
+    float span = max(0.05, dist * 0.01);
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsNoneEXT, 0x12u, pos - dir * span, 0.0, dir, span * 2.0);
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+        return rayQueryGetIntersectionInstanceIdEXT(q, true);
+    }
+    return -1;
+}
+
+// Whether the pixel shows a grass blade (instance mask 0x10), by the same short ray
+bool IsGrass(vec3 pos, float dist) {
+    vec3 dir = (pos - pc.camera.xyz) / max(dist, 1e-6);
+    float span = max(0.05, dist * 0.01);
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsNoneEXT, 0x10u, pos - dir * span, 0.0, dir, span * 2.0);
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
+}
+
+Hit TraceClosest(vec3 origin, vec3 dir, float t_max, int own) {
+    Hit h;
+    h.hit = false;
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsNoneEXT, 0xEFu, origin, 0.0, dir, t_max);  // (not grass: it casts the sun's shadow, nothing more; its alpha-tested cards were most of GI's cost in a field)
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT &&
+            rayQueryGetIntersectionInstanceIdEXT(q, false) != own && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        return h;
+    }
+    h.hit = true;
+    h.t = rayQueryGetIntersectionTEXT(q, true);
+    h.pos = origin + dir * h.t;
+    vec3 v[3];
+    rayQueryGetIntersectionTriangleVertexPositionsEXT(q, true, v);
+    mat4x3 to_world = rayQueryGetIntersectionObjectToWorldEXT(q, true);
+    vec3 w0 = to_world * vec4(v[0], 1.0), w1 = to_world * vec4(v[1], 1.0), w2 = to_world * vec4(v[2], 1.0);
+    vec3 n = cross(w1 - w0, w2 - w0);
+    float n_len = length(n);
+    n = n_len > 1e-12 ? n / n_len : -dir;
+    h.normal = dot(n, dir) > 0.0 ? -n : n;
+    h.material = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(q, true));
+    h.instance = rayQueryGetIntersectionInstanceIdEXT(q, true);
+    h.primitive = uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, true));
+    h.bary = rayQueryGetIntersectionBarycentricsEXT(q, true);
+    h.flags = materials[h.material].flags;
+    h.emission = materials[h.material].emission * pc.params.y;
+    return h;
+}
+
+// A hit's colour: its texture, tinted as its draw tints it
+vec3 Albedo(Hit h) {
+    Material m = materials[h.material];
+    if ((m.flags & kWaterfall) != 0u) {
+        return vec3(1.0);  // (a waterfall's draw is its light alone)
+    }
+    if (m.texture == kNoTexture) {
+        return vec3(0.35);
+    }
+    vec2 uv = HitUv(m, h.primitive, h.bary);
+    float lod = max(0.0, log2(max(h.t, 1e-3) * 0.5) + 1.0);  // (the light a pixel gathers is blurry: coarser mips)
+    vec3 albedo = textureLod(textures[nonuniformEXT(m.texture)], uv, lod).xyz;
+    float tint_amount = m.tint_mask == kNoTexture ? 1.0 : textureLod(textures[nonuniformEXT(m.tint_mask)], uv, lod).a;
+    return albedo * mix(vec3(1.0), m.tint, tint_amount);
+}
+
+// How much of the light a surface of that colour gives back at a bounce: its colour by the
+// bounce's gain (rt_gi_bounce), at most 0.9 (a white wall by a gain of 2 gave back nearly
+// twice what came to it, twice over: white levels burned out)
+vec3 Reflectance(vec3 albedo) {
+    return min(albedo * pc.look.z, vec3(0.9));
+}
+
+bool Blocked(vec3 origin, vec3 dir, float t_max, uint mask) {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT, mask, origin, 0.0, dir, t_max);
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+// The sun's ray (rt_shadow.comp's): grass shadows only its first 1.5 m (a low sun's ray
+// crossed a whole field), and never grass (blades shading each other darkened every field)
+bool SunBlocked(vec3 origin, vec3 dir, bool grass) {
+    return Blocked(origin, dir, 10000.0, 0xFFu & ~0x10u) || (!grass && Blocked(origin, dir, 1.5, 0x10u));
+}
+
+// A point light's ray (rt_shadow.comp's): stopped by the faces turned toward the light
+// (a light sunk in rock or lava shines as its draw has it), not by glowing surfaces, short
+// of the light by its clearance
+bool LightBlocked(vec3 origin, vec3 dir, float t_max) {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsCullFrontFacingTrianglesEXT, 0x03u, origin, 0.0, dir, t_max);
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+vec3 Sky(vec3 dir) {
+    return textureLod(sky, dir, pc.params.z).xyz * pc.params.w;
+}
+
+// ---- the game's ambient light (its light probes)
+
+// A grid point's ambient cube toward n (the colour pass's SampleAmbientCube); false where
+// the point is outside the probes
+bool ProbePoint(uint i, vec3 w, bvec3 neg, out vec3 color) {
+    uint base = i * 12u;  // (probe_points: the words after the header)
+    vec2 valid = unpackHalf2x16(probe_points[base + 1u]);
+    if (valid.y < 0.5) {
+        color = vec3(0.0);
+        return false;
+    }
+    uint fx = neg.x ? 1u : 0u, fy = neg.y ? 3u : 2u, fz = neg.z ? 5u : 4u;
+    vec3 cx = vec3(unpackHalf2x16(probe_points[base + fx * 2u]), unpackHalf2x16(probe_points[base + fx * 2u + 1u]).x);
+    vec3 cy = vec3(unpackHalf2x16(probe_points[base + fy * 2u]), unpackHalf2x16(probe_points[base + fy * 2u + 1u]).x);
+    vec3 cz = vec3(unpackHalf2x16(probe_points[base + fz * 2u]), unpackHalf2x16(probe_points[base + fz * 2u + 1u]).x);
+    color = cx * w.x + cy * w.y + cz * w.z;
+    return true;
+}
+
+// The colour pass's ambient light at p toward n (GetAmbientColor's, from the probes:
+// between the grid's eight points round it, those inside the probes); false where the
+// probes don't reach (the traced bounce takes over there)
+bool ProbeAmbient(vec3 p, vec3 n, out vec3 ambient) {
+    ambient = vec3(0.0);
+    if (probe_dims.w == 0u) {
+        return false;
+    }
+    vec3 g = (p - probe_min.xyz) * probe_inv_step.xyz;
+    vec3 top = vec3(probe_dims.xyz) - 1.0;
+    if (any(lessThan(g, vec3(0.0))) || any(greaterThan(g, top))) {
+        return false;
+    }
+    uvec3 c = min(uvec3(g), probe_dims.xyz - 2u);
+    vec3 f = clamp(g - vec3(c), 0.0, 1.0);
+    vec3 w = abs(n) / max(abs(n.x) + abs(n.y) + abs(n.z), 1e-6);
+    bvec3 neg = lessThan(n, vec3(0.0));
+    float total = 0.0;
+    for (uint k = 0u; k < 8u; ++k) {
+        uvec3 o = uvec3(k & 1u, (k >> 1u) & 1u, (k >> 2u) & 1u);
+        vec3 t = mix(1.0 - f, f, vec3(o));
+        float weight = t.x * t.y * t.z;
+        uvec3 q = c + o;
+        vec3 color;
+        if (weight > 0.0 && ProbePoint((q.z * probe_dims.y + q.y) * probe_dims.x + q.x, w, neg, color)) {
+            ambient += color * weight;
+            total += weight;
+        }
+    }
+    if (total < 0.25) {
+        return false;
+    }
+    ambient /= total;
+    return true;
+}
+
+float RoundBox(vec3 p, vec3 b, float r) {  // (decals.glsl's sdRoundBox)
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
+}
+
+// The colour pass's dimming of the ambient light at p by the level's shadow decals
+// (CalculateDecals's ambient_mult * env_ambient_mult: what keeps a cave dark)
+float DecalDimming(vec3 p) {
+    float dim = 1.0;
+    for (uint i = 0u; i < shadow_decals.x; ++i) {
+        uint b = shadow_decals.y - 16u + i * 16u;  // (probe_points starts after the 16 words of the header)
+        vec4 r0 = uintBitsToFloat(uvec4(probe_points[b], probe_points[b + 1u], probe_points[b + 2u], probe_points[b + 3u]));
+        vec4 r1 = uintBitsToFloat(uvec4(probe_points[b + 4u], probe_points[b + 5u], probe_points[b + 6u], probe_points[b + 7u]));
+        vec4 r2 = uintBitsToFloat(uvec4(probe_points[b + 8u], probe_points[b + 9u], probe_points[b + 10u], probe_points[b + 11u]));
+        vec3 temp = vec3(dot(r0, vec4(p, 1.0)), dot(r1, vec4(p, 1.0)), dot(r2, vec4(p, 1.0)));
+        if (any(greaterThan(abs(temp), vec3(0.5)))) {
+            continue;
+        }
+        int kind = int(uintBitsToFloat(probe_points[b + 12u]) + 0.5);
+        float tint = uintBitsToFloat(probe_points[b + 13u]);
+        if (kind == 1) {  // decalShadow
+            dim *= max(0.5, min(1.0, length(temp * 2.0)));
+        } else if (kind == 7) {  // decalEnvShadow
+            dim *= mix((max(0.5, min(1.0, length(temp * 2.0))) - 0.5) * 2.0, 1.0, tint);
+        } else {  // decalEnvShadowSquare
+            dim *= mix((clamp(RoundBox(temp * 4.0, vec3(0.875), 0.125), 0.5, 1.0) - 0.5) * 2.0, 1.0, tint);
+        }
+    }
+    return dim;
+}
+
+// The ambient light the game gives a surface at p facing n (envobject's GetAmbientColor *
+// GetAmbientContrib(1) * its decals' dimming): its light probes', or where they don't
+// reach (or a level has none) the sky's cube map, blurred, as the colour pass falls back to
+vec3 GameAmbient(vec3 p, vec3 n) {
+    vec3 ambient;
+    if (!ProbeAmbient(p, n, ambient)) {
+        ambient = textureLod(sky, n, 5.0).xyz;
+    }
+    return ambient * pc.look.y * DecalDimming(p);
+}
+
+// ---- the radiance cache
+
+// A place's voxel's size: the smallest within 4 units of the camera, doubling with each
+// doubling of the distance
+float CacheLevel(vec3 p) {
+    return clamp(floor(log2(max(length(p - pc.camera.xyz) * 0.25, 1.0))), 0.0, 15.0);
+}
+
+float CacheVoxelSize(vec3 p) {
+    return pc.params.x * exp2(CacheLevel(p));
+}
+
+// A place's voxel: its slot to start from and its key (never 0)
+void CacheVoxel(vec3 p, vec3 n, out uint start, out uint key) {
+    float level = CacheLevel(p);
+    float size = pc.params.x * exp2(level);
+    ivec3 c = ivec3(floor(p / size));
+    vec3 a = abs(n);
+    uint face = a.x > a.y && a.x > a.z ? (n.x > 0.0 ? 0u : 1u) : a.y > a.z ? (n.y > 0.0 ? 2u : 3u) : (n.z > 0.0 ? 4u : 5u);
+    uint h = Hash(uint(c.x) * 73856093u ^ Hash(uint(c.y) * 19349663u ^ Hash(uint(c.z) * 83492791u ^ ((uint(level) << 3u) | face))));
+    start = h;
+    key = Hash(h ^ 0x9E3779B9u) | 1u;
+}
+
+// The cache's light given back at a place (found: true)
+bool CacheLookup(vec3 p, vec3 n, out vec3 radiance) {
+    uint start, key;
+    CacheVoxel(p, n, start, key);
+    uint mask = uint(cache_keys.length()) - 1u;
+    for (uint i = 0u; i < kCacheProbes; ++i) {
+        uint s = (start + i) & mask;
+        if (cache_keys[s] == key) {
+            vec4 v = cache_values[s];
+            radiance = v.rgb;
+            return v.w > 0.0;
+        }
+    }
+    radiance = vec3(0.0);
+    return false;
+}
+
+// A sample of the light given back at a place, into its voxel (claimed if it has none)
+void CacheAdd(vec3 p, vec3 n, vec3 radiance) {
+    uint start, key;
+    CacheVoxel(p, n, start, key);
+    uint mask = uint(cache_keys.length()) - 1u;
+    for (uint i = 0u; i < kCacheProbes; ++i) {
+        uint s = (start + i) & mask;
+        uint prev = atomicCompSwap(cache_keys[s], 0u, key);
+        if (prev == 0u || prev == key) {
+            uvec3 q = uvec3(clamp(radiance, vec3(0.0), vec3(kCacheClamp)) * kCacheScale);
+            atomicAdd(cache_accum[s].x, q.x);
+            atomicAdd(cache_accum[s].y, q.y);
+            atomicAdd(cache_accum[s].z, q.z);
+            atomicAdd(cache_accum[s].w, 1u);
+            return;
+        }
+    }
+}
+
+// A point light's light at a place (CalculateLightContrib's falloff and facing: a
+// waterfall's a constant half, as its draw has it)
+vec3 LightColor(uint i, vec3 p, vec3 n, bool waterfall) {
+    vec3 to_light = lights[i].pos_radius.xyz - p;
+    float len = length(to_light);
+    float dist = max(0.8, len);
+    float falloff = min(1.0, max(0.0, (1.0 / dist / dist) * (1.0 - dist / lights[i].pos_radius.w)));
+    if (falloff <= 0.0) {
+        return vec3(0.0);
+    }
+    float bias = max(0.0, (0.8 - len) / 0.8 * 2.0);
+    float d = waterfall ? 0.5 : max(0.0, dot(to_light / max(len, 1e-6), n) + bias) / (1.0 + bias);
+    return falloff * d * lights[i].color.rgb;
+}
+
+// ... how much of it, to pick by
+float LightShare(uint i, vec3 p, vec3 n, bool waterfall) {
+    return dot(LightColor(i, p, n, waterfall), vec3(0.2126, 0.7152, 0.0722));
+}
+
+// The direct light at a hit: the sun, its shadow traced; the point lights, their shadows
+// too: one light picked by its share of their light and its ray traced (what it gives over
+// its chance of being picked, or nothing behind rock): one ray, the right light on average.
+// Without it a fire's light went through the rock to every hit around it
+vec3 Direct(Hit h, vec3 lit_normal, inout uint seed) {
+    vec3 l = normalize(pc.sun.xyz);
+    float lambert = (h.flags & kWaterfall) != 0u ? max(0.0, 0.5 * l.y) : (h.flags & kAlphaTested) != 0u ? abs(dot(lit_normal, l)) : max(0.0, dot(lit_normal, l));
+    vec3 light = vec3(0.0);
+    if (pc.debug.x != 5u && lambert > 0.0 && dot(pc.sun_color.rgb, vec3(1.0)) > 0.0 && !SunBlocked(h.pos + h.normal * (0.01 + h.t * 0.001), l, (h.flags & kGrassMaterial) != 0u)) {
+        light = pc.sun_color.rgb * lambert;
+    }
+    // (a level's point lights are often fill lights, placed to fake the light that bounces:
+    // bounced again they light a cave as though it leaked; how much of theirs bounces is the
+    // setting's, rt_gi_lights: a quarter by default, about the levels' own ambient light)
+    uint count = pc.debug.x == 4u || pc.sun.w <= 0.0 ? 0u : pc.info.w;
+    bool waterfall = (h.flags & kWaterfall) != 0u;
+    float total = 0.0;
+    for (uint i = 0u; i < count; ++i) {
+        total += LightShare(i, h.pos, lit_normal, waterfall);
+    }
+    if (total > 0.0) {
+        float pick = Random(seed) * total;
+        for (uint i = 0u; i < count; ++i) {
+            float share = LightShare(i, h.pos, lit_normal, waterfall);
+            if (share <= 0.0) {
+                continue;
+            }
+            pick -= share;
+            if (pick <= 0.0 || i == count - 1u) {
+                vec3 to_light = lights[i].pos_radius.xyz - h.pos;
+                float len = length(to_light);
+                vec3 dir = to_light / max(len, 1e-6);
+                vec3 origin = h.pos + h.normal * (dot(h.normal, dir) >= 0.0 ? 1.0 : -1.0) * (0.01 + h.t * 0.001);
+                float t_max = length(lights[i].pos_radius.xyz - origin) - 0.25;  // (rt_light_clearance's default)
+                if (t_max <= 0.0 || !LightBlocked(origin, dir, t_max)) {
+                    light += LightColor(i, h.pos, lit_normal, waterfall) * (total / share) * pc.sun.w;
+                }
+                break;
+            }
+        }
+    }
+    return light;
+}
+
+// A pixel's result: for NRD the radiance, its ray's length and direction; for Ray
+// Reconstruction the same as spherical harmonics (REBLUR's SH0 and SH1), a sample's
+// brightest channel at most 16 (one lucky ray is a speck RR can't average away)
+void Store(ivec2 q, vec3 radiance, float hit, vec3 dir) {
+    radiance *= pc.debug.x == 0u ? pc.look.x : 1.0;
+    if (pc.debug.w != 0u) {
+        float peak = max(radiance.r, max(radiance.g, radiance.b));
+        radiance *= peak > 16.0 ? 16.0 / peak : 1.0;
+        vec3 ycocg = vec3(dot(radiance, vec3(0.25, 0.5, 0.25)), dot(radiance, vec3(0.5, 0.0, -0.5)), dot(radiance, vec3(-0.25, 0.5, -0.25)));
+        imageStore(gi_out, q, vec4(ycocg, 0.0));
+        imageStore(gi_dir, q, vec4(dir * ycocg.x, 0.0));
+    } else {
+        imageStore(gi_out, q, vec4(radiance, hit));
+        imageStore(gi_dir, q, vec4(dir, 0.0));
+    }
+}
+
+void main() {
+    // (q: where the result goes; p: the pixel traced. A checkerboard (NRD's BLACK mode): the
+    // pixel (2x + ((y + phase) & 1), y) into (x, y), REBLUR filling in the others)
+    ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+    bool checkerboard = pc.debug.z != 0u;
+    if (q.x >= int(checkerboard ? (pc.info.x + 1u) / 2u : pc.info.x) || q.y >= int(pc.info.y)) {
+        return;
+    }
+    ivec2 p = checkerboard ? ivec2(2 * q.x + int((uint(q.y) + pc.debug.y) & 1u), q.y) : q;
+    float depth = p.x < int(pc.info.x) ? Depth(p) : 0.0;
+    if (depth <= 0.0) {  // (the sky)
+        imageStore(gi_out, q, vec4(0.0));
+        imageStore(gi_dir, q, vec4(0.0));
+        return;
+    }
+    vec3 pos = WorldPos(p, depth);
+    vec3 to_camera = pc.camera.xyz - pos;
+    float dist = length(to_camera);
+    vec3 n = cross(Step(p, depth, pos, ivec2(1, 0)), Step(p, depth, pos, ivec2(0, 1)));
+    float n_len = length(n);
+    n = n_len > 1e-12 ? n / n_len : to_camera / max(dist, 1e-6);
+    if (dot(n, to_camera) < 0.0) {
+        n = -n;
+    }
+    // (a grass blade's light is the sky's above its ground, as the game lit it: the depth's
+    // normal across thin cards is noise, half its rays went into the ground)
+    int own = OwnFoliage(pos, dist);
+    if (own >= 0 && IsGrass(pos, dist)) {
+        n = vec3(0.0, 1.0, 0.0);
+    }
+    uint seed = Hash(uint(p.x) + uint(p.y) * 65536u) ^ Hash(pc.info.z * 7919u + 3u);
+    vec3 origin = pos + n * (0.01 + pc.camera.w * dist);
+    vec3 dir = Cosine(n, seed);
+    // (a character's: its mesh is coarse, skinned, and its normal here a flat triangle's:
+    // rays from its skin met its own body round it, a character near black. They start a
+    // few centimetres out, clear of it; a limb across still shuts the light out)
+    if (IsCharacter(pos, dist)) {
+        origin += n * 0.04 + dir * 0.04;
+    }
+    Hit h = TraceClosest(origin, dir, 10000.0, own);
+    if (pc.debug.x == 3u) {
+        Store(q, vec3(h.hit ? 0.0 : 1.0), h.hit ? h.t : 10000.0, dir);  // (debug: white where the ray meets the sky)
+        return;
+    }
+    if (!h.hit) {
+        Store(q, Sky(dir), 10000.0, dir);
+        return;
+    }
+    // The light the hit gives back: its glow; or, for most pixels, the cache's (SHaRC's
+    // query: the light there averaged over time, its direct light and bounces in it), where
+    // the cache has it and the hit is far enough off for its voxel not to leak (two voxels);
+    // else worked out: its colour lit by the sun, the point lights and the light that comes
+    // to it (a second ray: what that meets from the cache, or the sky). A quarter of the
+    // pixels a frame always work it out and give it to the cache: enough to keep it fed, few
+    // enough that the atomics don't crowd
+    bool update = checkerboard ? ((uint(q.x) + uint(q.y) + pc.info.z) & 1u) == 0u : ((uint(p.x) + uint(p.y) * 2u + pc.info.z) & 3u) == 0u;
+    vec3 radiance;
+    if ((h.flags & kEmitter) != 0u) {
+        radiance = Albedo(h) * h.emission;
+    } else if (!update && pc.debug.x == 0u && h.t > 2.0 * CacheVoxelSize(h.pos) && CacheLookup(h.pos, h.normal, radiance)) {
+        // (the cache's)
+    } else {
+        vec3 lit_normal = (h.flags & kWaterfall) != 0u ? vec3(0.0, 1.0, 0.0) : h.normal;
+        // Two bounces, traced: the light that comes to the hit is a second ray's, the sky's
+        // where it gets out (skylight, shut out by what's in the way), or what it meets lit
+        // by the sun and the point lights (their shadows traced). No feedback through the
+        // cache: each bounce by its gain (rt_gi_bounce: the game's own bounce was baked at
+        // 1.5-3 times the sun, its look made with it), so they can't run away. The game's
+        // rasterized ambient (its sky cube map or probes, its shadow decals) only as much as
+        // rt_gi_raster_ambient asks (0 by default: none), a stand-in for the bounces after
+        vec3 dir2 = Cosine(lit_normal, seed);
+        Hit h2 = TraceClosest(h.pos + h.normal * (0.01 + h.t * 0.001), dir2, 10000.0, h.instance);
+        vec3 incoming;
+        if (!h2.hit) {
+            incoming = Sky(dir2);
+        } else if ((h2.flags & kEmitter) != 0u) {
+            incoming = Albedo(h2) * h2.emission;
+        } else {
+            vec3 lit_normal2 = (h2.flags & kWaterfall) != 0u ? vec3(0.0, 1.0, 0.0) : h2.normal;
+            vec3 beyond = pc.look.w > 0.0 ? GameAmbient(h2.pos + h2.normal * 0.05, lit_normal2) * pc.look.w : vec3(0.0);
+            incoming = Reflectance(Albedo(h2)) * (Direct(h2, lit_normal2, seed) + beyond);
+        }
+        radiance = Reflectance(Albedo(h)) * (Direct(h, lit_normal, seed) + incoming);
+        if (update) {
+            CacheAdd(h.pos, h.normal, radiance);
+        }
+    }
+    if (pc.debug.x == 2u) {
+        // (the cache's light given back here, as if it came from straight out of the surface)
+        vec3 cached;
+        CacheLookup(pos, n, cached);
+        Store(q, cached, 1.0, n * (2.0 / 3.0));  // (SH: resolves to the whole of it along n)
+        return;
+    }
+    Store(q, radiance, h.t, dir);
+}

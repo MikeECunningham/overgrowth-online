@@ -1,0 +1,181 @@
+//-----------------------------------------------------------------------------
+//           Name: rt_denoise.comp
+//      Developer: Overgrowth Online (crxhvrd)
+//    Description: rt_shadow.comp's raw sun shadow, ambient occlusion and point lights'
+//                 shadow (a few rays a pixel: noisy) made smooth, as shadow denoisers do
+//                 it (NVIDIA's SIGMA: over time, then across the penumbra).
+//                 TEMPORAL: last frame's result where this pixel's surface was then
+//                 (reprojected by the depth; taps whose depth disagrees left out),
+//                 clamped to what this frame's neighbourhood shows (a shadow that moved
+//                 leaves no trail), blended with this frame's (its share at least
+//                 params.x). Writes the history (sun, AO, frames in it, lights).
+//                 SPATIAL: the history blurred across a disk the size of the penumbra
+//                 there (the sun's: the distance to what blocks it, through the sun's
+//                 size; the lights': rt_shadow.comp's width) and of the AO's range, less
+//                 as the history fills up, over the same surface only (depth). Writes the
+//                 mask the colour pass reads: sun, depth, AO, lights
+//        License: Apache-2.0, like the rest of the engine (see LICENSE)
+//-----------------------------------------------------------------------------
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D raw;        // this frame's: sun, depth, AO, lights
+layout(set = 0, binding = 1, rgba32f) uniform readonly image2D raw_prev;   // last frame's (its depths)
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D history;    // TEMPORAL: last frame's; SPATIAL: this frame's
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D history_out;
+layout(set = 0, binding = 4, rgba32f) uniform writeonly image2D mask;
+layout(set = 0, binding = 5, rg16f) uniform readonly image2D extra;        // this frame's: the sun's blocker distance, the lights' penumbra width
+
+layout(push_constant) uniform Params {
+    mat4 reprojection;  // this frame's clip space (depth 0..1) to last frame's
+    uvec4 info;         // width, height, frame, flags (kHistory, kDenoise)
+    vec4 params;        // x the least share of a new frame, y the most frames kept, z the near plane, w a pixel's angle (radians)
+    vec4 extra;         // x the sun's diameter as a slope (2 tan(radius)), y the AO's range
+} pc;
+
+const uint kHistory = 1u;  // last frame's history is there to go on from
+const uint kDenoise = 2u;  // (off: the raw result goes through as it is)
+
+bool Inside(ivec2 q) {
+    return all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, ivec2(pc.info.xy)));
+}
+
+#if defined(TEMPORAL)
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!Inside(p)) {
+        return;
+    }
+    vec4 cur = imageLoad(raw, p);
+    float depth = cur.g;
+    bool traced_sun = cur.r >= 0.0;
+    if (depth <= 0.0 || (pc.info.w & kDenoise) == 0u) {
+        imageStore(history_out, p, vec4(cur.r, cur.b, 0.0, cur.a));
+        return;
+    }
+    // The signals: sun, AO, lights
+    vec3 now = cur.rba;
+    // This frame's range around the pixel (the history is held inside it)
+    vec3 lo = now, hi = now;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            ivec2 q = p + ivec2(x, y);
+            if (Inside(q)) {
+                vec4 r = imageLoad(raw, q);
+                if (r.g > 0.0) {
+                    lo = min(lo, r.rba);
+                    hi = max(hi, r.rba);
+                }
+            }
+        }
+    }
+    vec3 value = now;
+    float frames = 0.0;
+    if ((pc.info.w & kHistory) != 0u) {
+        vec2 size = vec2(pc.info.xy);
+        vec4 prev = pc.reprojection * vec4((vec2(p) + 0.5) / size * 2.0 - 1.0, depth, 1.0);
+        if (prev.w > 1e-6) {
+            prev.xyz /= prev.w;
+            vec2 at = (prev.xy * 0.5 + 0.5) * size - 0.5;  // (in last frame's pixels, centres at integers)
+            ivec2 base = ivec2(floor(at));
+            vec2 f = at - vec2(base);
+            vec4 sum = vec4(0.0);
+            float weights = 0.0;
+            for (int i = 0; i < 4; ++i) {
+                ivec2 o = ivec2(i & 1, i >> 1);
+                ivec2 q = base + o;
+                if (!Inside(q)) {
+                    continue;
+                }
+                float prev_depth = imageLoad(raw_prev, q).g;
+                // (the same surface: where this point was, last frame's depth agrees)
+                if (prev_depth <= 0.0 || abs(prev_depth - prev.z) > 0.02 * prev.z) {
+                    continue;
+                }
+                float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+                sum += imageLoad(history, q) * w;
+                weights += w;
+            }
+            if (weights > 0.05) {
+                sum /= weights;
+                frames = sum.b;
+                value = clamp(sum.rga, lo, hi);
+            }
+        }
+    }
+    float share = max(1.0 / (frames + 1.0), pc.params.x);
+    value = mix(value, now, share);
+    if (!traced_sun) {
+        value.x = -1.0;
+    }
+    imageStore(history_out, p, vec4(value.x, value.y, min(frames + 1.0, pc.params.y), value.z));
+}
+
+#elif defined(SPATIAL)
+
+// PCG (Jarzynski and Olano), each pixel's turn of the disk
+uint Hash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// A blur of the history's channel `c` (0 sun, 1 AO, 3 lights) over a disk of `radius`
+// pixels, the same surface's taps
+float Blur(ivec2 p, float depth, float center, int c, float radius, float turn) {
+    if (radius < 0.5) {
+        return center;
+    }
+    float sum = center, weights = 1.0;
+    for (int i = 0; i < 8; ++i) {
+        // (8 taps on a spiral: Vogel's disk)
+        float r = radius * sqrt((float(i) + 0.5) / 8.0);
+        float a = float(i) * 2.39996323 + turn;
+        ivec2 q = p + ivec2(round(vec2(cos(a), sin(a)) * r));
+        if (!Inside(q)) {
+            continue;
+        }
+        float d = imageLoad(raw, q).g;
+        float w = exp(-abs(d - depth) / (0.01 * depth));
+        if (d <= 0.0 || w < 0.01) {
+            continue;
+        }
+        sum += imageLoad(history, q)[c] * w;
+        weights += w;
+    }
+    return sum / weights;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!Inside(p)) {
+        return;
+    }
+    vec4 cur = imageLoad(raw, p);
+    float depth = cur.g;
+    vec4 h = imageLoad(history, p);
+    if (depth <= 0.0 || (pc.info.w & kDenoise) == 0u) {
+        imageStore(mask, p, vec4(h.r, depth, h.g, h.a));
+        return;
+    }
+    vec2 penumbras = imageLoad(extra, p).rg;
+    // A pixel's size there, in world units (reversed-Z, the far plane at infinity: depth = near / distance)
+    float pixel = pc.params.z / depth * pc.params.w;
+    // (less blur the more frames the history holds)
+    float settle = inversesqrt(max(h.b, 1.0));
+    float turn = float(Hash(uint(p.x) * 7919u + uint(p.y) * 104729u + pc.info.z * 13u) & 1023u) * (6.28318531 / 1024.0);
+    float sun = h.r;
+    if (sun >= 0.0) {
+        float penumbra = penumbras.r * pc.extra.x;  // (world units across)
+        sun = Blur(p, depth, sun, 0, clamp(penumbra / pixel * 0.5, 0.0, 12.0) * settle, turn);
+    }
+    float ao = Blur(p, depth, h.g, 1, clamp(pc.extra.y / pixel * 0.15, 1.0, 10.0) * settle, turn);
+    // (the lights': partly lit, at least a little: which lights a pixel's rays went to
+    // varies, a shadowed one's share with it)
+    float light = Blur(p, depth, h.a, 3, clamp(penumbras.g / pixel * 0.5, h.a < 0.999 ? 2.0 : 0.0, 12.0) * settle, turn);
+    imageStore(mask, p, vec4(sun, depth, ao, light));
+}
+
+#endif

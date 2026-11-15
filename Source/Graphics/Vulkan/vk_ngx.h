@@ -30,6 +30,8 @@ void AppendDeviceExtensions(VkInstance instance, VkPhysicalDevice physical, cons
 bool Requested();
 // DLSS can run on this PC (NGX started on the first call; why not is logged once)
 bool DlssAvailable();
+// ... and DLSS Ray Reconstruction (NGX's DLSSD: nvngx_dlssd.dll beside the game)
+bool RrAvailable();
 
 struct DlssFrame {
     // vk_gl texture names: the frame (HDR), its depth (reversed-Z), its motion, and where
@@ -42,6 +44,16 @@ struct DlssFrame {
     bool reset = false;  // a cut: no history
     int quality = 0;     // NVSDK_NGX_PerfQuality_Value (DLAA: render size = output size)
     int preset = 0;      // NVSDK_NGX_DLSS_Hint_Render_Preset (0: NGX's default)
+    // Ray Reconstruction in DLSS's place (it denoises the ray-traced light as it upscales):
+    // its guides, the scene target's (the colour pass writes them: #RR_GUIDES): the diffuse
+    // albedo, the specular albedo, the world-space normal and roughness (w); the camera,
+    // column-major, its projection's rows flipped as the images' rows are (GL's, bottom-up);
+    // the time since the last frame
+    bool ray_reconstruction = false;
+    GLuint diffuse_albedo = 0, specular_albedo = 0, normal_roughness = 0;
+    float world_to_view[16] = {}, view_to_clip[16] = {};
+    float frame_ms = 16.7f;
+    int rr_preset = 0;  // NVSDK_NGX_RayReconstruction_Hint_Render_Preset (0: NGX's default)
 };
 // Recorded now; false: not run (the caller resolves another way)
 bool EvaluateDlss(const DlssFrame& frame);

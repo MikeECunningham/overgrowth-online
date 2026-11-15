@@ -186,7 +186,7 @@ const uint32_t kOpName = 5, kOpDecorate = 71, kOpVariable = 59, kOpConstant = 43
 const uint32_t kOpTypeBool = 20, kOpTypeInt = 21, kOpTypeFloat = 22, kOpTypeVector = 23, kOpTypeMatrix = 24;
 const uint32_t kOpTypeArray = 28, kOpTypeStruct = 30, kOpTypePointer = 32;
 const uint32_t kDecLocation = 30, kDecBinding = 33, kDecSet = 34;
-const uint32_t kUniformConstant = 0, kInput = 1, kUniform = 2, kOutput = 3;
+const uint32_t kUniformConstant = 0, kInput = 1, kUniform = 2, kOutput = 3, kStorageBuffer = 12;
 
 struct Module {
     std::vector<uint32_t>& words;
@@ -333,6 +333,28 @@ bool AssignBindings(Module& m, std::string* unknown) {
         if (!m.Has(id, kDecBinding)) {
             continue;
         }
+        if (storage == kUniformConstant || storage == kStorageBuffer) {
+            // Overgrowth Online (RT): reflections' (rt_reflect.glsl): the scene and the
+            // materials in set 3 (vk_programs puts them in the push set), the texture slots
+            // in set 2 (VkRt's own set)
+            // (a block's by its type: its variable's name is empty)
+            std::string name = m.names.count(id) ? m.names[id] : std::string();
+            if (storage == kStorageBuffer && m.names.count(m.Pointee(pointer))) {
+                name = m.names[m.Pointee(pointer)];
+            }
+            if (name == "rt_scene" || name == "RtMaterials" || name == "rt_textures") {
+                if (m.Has(id, kDecSet)) {
+                    m.Set(id, kDecSet, name == "rt_textures" ? 2u : 3u);
+                }
+                m.Set(id, kDecBinding, name == "RtMaterials" ? 1u : 0u);
+                continue;
+            }
+            if (storage == kStorageBuffer) {
+                *unknown += (unknown->empty() ? "" : ", ") + name;
+                ok = false;
+                continue;
+            }
+        }
         if (storage == kUniformConstant) {
             const std::string name = m.names.count(id) ? m.names[id] : std::string();
             int unit = -1;
@@ -453,13 +475,57 @@ bool Compile(const char* const sources[kStages], std::vector<uint32_t> out[kStag
             const auto& d = modules.back().decorations[v.second.first];
             const uint32_t location = modules.back().words[d.at(kDecLocation)];
             if ((v.first == "out_color" && location != 0) || (v.first == "out_vel" && location != 1) ||
-                (v.first == "out_mv" && location != 2)) {  // (Overgrowth Online TAA: the motion)
+                (v.first == "out_mv" && location != 2) ||  // (Overgrowth Online TAA: the motion)
+                (v.first == "out_rr_albedo" && location != 3) || (v.first == "out_rr_specular" && location != 4) ||
+                (v.first == "out_rr_normal" && location != 5)) {  // (Overgrowth Online RT: Ray Reconstruction's guides)
                 *error = v.first + " at location " + std::to_string(location);
                 return false;
             }
         }
     }
     return true;
+}
+
+bool CompileComputeStage(const std::string& source, std::vector<uint32_t>* spirv, std::string* error) {
+    const glslang_messages_t messages = (glslang_messages_t)(GLSLANG_MSG_SPV_RULES_BIT | GLSLANG_MSG_VULKAN_RULES_BIT);
+    glslang_input_t input = {};
+    input.language = GLSLANG_SOURCE_GLSL;
+    input.stage = GLSLANG_STAGE_COMPUTE;
+    input.client = GLSLANG_CLIENT_VULKAN;
+    input.client_version = GLSLANG_TARGET_VULKAN_1_2;
+    input.target_language = GLSLANG_TARGET_SPV;
+    input.target_language_version = GLSLANG_TARGET_SPV_1_5;  // (ray queries need 1.4)
+    input.code = source.c_str();
+    input.default_version = 460;
+    input.default_profile = GLSLANG_NO_PROFILE;
+    input.messages = messages;
+    input.resource = g.resource;
+    glslang_shader_t* shader = g.shader_create(&input);
+    glslang_program_t* program = g.program_create();
+    bool ok = g.shader_preprocess(shader, &input) && g.shader_parse(shader, &input);
+    if (!ok) {
+        *error = g.shader_get_info_log(shader);
+    } else {
+        g.program_add_shader(program, shader);
+        ok = g.program_link(program, messages);
+        if (!ok) {
+            *error = std::string("link: ") + g.program_get_info_log(program);
+        }
+    }
+    if (ok) {
+        g.program_spirv_generate(program, GLSLANG_STAGE_COMPUTE);
+        spirv->resize(g.program_spirv_get_size(program));
+        if (spirv->empty()) {
+            const char* m = g.program_spirv_get_messages(program);
+            *error = std::string("no SPIR-V") + (m && *m ? std::string(": ") + m : std::string());
+            ok = false;
+        } else {
+            g.program_spirv_get(program, spirv->data());
+        }
+    }
+    g.program_delete(program);
+    g.shader_delete(shader);
+    return ok;
 }
 
 uint64_t Fnv(const void* data, size_t n, uint64_t h) {
@@ -558,6 +624,14 @@ std::string ProgramDir(const std::string& name, const char* const sources[kStage
     Write(done, note.c_str(), note.size());
     LOGI << "Vulkan: compiled " << name << " (" << (SDL_GetTicks() - start) << " ms)" << std::endl;
     return dir;
+}
+
+bool CompileCompute(const std::string& source, std::vector<uint32_t>* spirv, std::string* error) {
+    if (!Load()) {
+        *error = "no glslang";
+        return false;
+    }
+    return CompileComputeStage(source, spirv, error);
 }
 
 }  // namespace VkCompile

@@ -11,6 +11,7 @@
 #include "vk_ngx.h"
 
 #include <Logging/logdata.h>
+#include <Internal/config.h>
 #include <Internal/error.h>
 
 #include <SDL.h>
@@ -55,6 +56,10 @@ struct State {
     // only by the display handing images back in bursts: a run of fast frames, then a
     // long one, every 7-9 frames
     bool present_wait = false;
+    // Overgrowth Online (RT): acceleration structures and ray queries enabled (the device
+    // has them, with buffer device addresses)
+    bool ray_query = false;
+    bool rt_position_fetch = false;  // (Overgrowth Online RT: a hit's triangle read from its BLAS: reflections)
     uint64_t present_id = 0;
     uint64_t swapchain_first_id = 1;  // (the first id presented on the current swapchain)
     FrameDiag diag, last_diag;
@@ -205,7 +210,23 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBits
         }
         return VK_FALSE;
     }
-    if (data->pMessageIdName != NULL && strncmp(data->pMessageIdName, "VUID-VkCu", 9) == 0) {
+    // Overgrowth Online (RT): NRD's REBLUR writes its spherical harmonics as float3
+    // (REBLUR_SH_TYPE) into the RGBA16F images it asks for (there's no RGB16F storage
+    // format): the fourth channel is left undefined and nothing reads it
+    if (data->pMessageIdName != NULL && strcmp(data->pMessageIdName, "VUID-vkCmdDispatch-OpImageWrite-08795") == 0 &&
+        data->pMessage != NULL && strstr(data->pMessage, "variable \"gOut_") != NULL) {
+        static std::atomic<int> seen_nrd(0);
+        if (seen_nrd++ == 0) {
+            LOGW << "Vulkan (NRD's REBLUR, its SH written as float3; not counted): " << data->pMessage << std::endl;
+        }
+        return VK_FALSE;
+    }
+    // NGX's driver calls (VK_NVX_binary_import, above) and its barriers around its own
+    // resources (Ray Reconstruction's, named nv.ngx.*: cleared when its feature is made; the
+    // layer names an object "name = x" in some versions, "VkImage 0x...[x]" in others)
+    if ((data->pMessageIdName != NULL && strncmp(data->pMessageIdName, "VUID-VkCu", 9) == 0) ||
+        (data->pMessageIdName != NULL && strncmp(data->pMessageIdName, "SYNC-HAZARD", 11) == 0 && data->pMessage != NULL &&
+         (strstr(data->pMessage, "name = nv.ngx.") != NULL || strstr(data->pMessage, "[nv.ngx.") != NULL))) {
         static std::atomic<int> seen_ngx(0);
         if (seen_ngx++ == 0) {
             LOGW << "Vulkan (NGX's, DLSS; not counted): " << (data->pMessage ? data->pMessage : "") << std::endl;
@@ -471,6 +492,10 @@ bool CreateDevice() {
     // Overgrowth Online (FSR): FidelityFX picks its 16-bit shaders by what the device
     // has, not by what's enabled: on where it has them
     want.shaderInt16 = have.shaderInt16;
+    // Overgrowth Online (RT): NRD's passes read and write storage images declared without
+    // a format
+    want.shaderStorageImageReadWithoutFormat = have.shaderStorageImageReadWithoutFormat;
+    want.shaderStorageImageWriteWithoutFormat = have.shaderStorageImageWriteWithoutFormat;
 
     VkPhysicalDeviceVulkan11Features have11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
     VkPhysicalDeviceVulkan12Features have12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
@@ -538,6 +563,58 @@ bool CreateDevice() {
     if (HasExtension(available, VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME)) {
         extensions.push_back(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
     }
+    // Overgrowth Online (RT): acceleration structures and ray queries, where the device has
+    // them (config vk_no_ray_tracing: none, for comparisons)
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+    VkPhysicalDeviceRayQueryFeaturesKHR rq_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+    // (and a hit's triangle read back from its BLAS, where the device can: reflections shade their hits)
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR pf_features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR};
+    // (and the descriptor arrays its passes read textures from: alpha-tested hits)
+    const bool bindless = have12.runtimeDescriptorArray && have12.descriptorBindingPartiallyBound &&
+                          have12.descriptorBindingSampledImageUpdateAfterBind && have12.descriptorBindingUpdateUnusedWhilePending &&
+                          have12.shaderSampledImageArrayNonUniformIndexing;
+    if (bindless && f12.bufferDeviceAddress && !config["vk_no_ray_tracing"].toNumber<bool>() &&
+        HasExtension(available, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && HasExtension(available, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+        HasExtension(available, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 have_rt = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        have_rt.pNext = &as_features;
+        as_features.pNext = &rq_features;
+        const bool has_pf = HasExtension(available, VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
+        if (has_pf) {
+            rq_features.pNext = &pf_features;
+        }
+        vkGetPhysicalDeviceFeatures2(s.physical, &have_rt);
+        const bool position_fetch = has_pf && pf_features.rayTracingPositionFetch;
+        if (as_features.accelerationStructure && rq_features.rayQuery) {
+            VkPhysicalDeviceAccelerationStructureFeaturesKHR keep_as = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+            keep_as.accelerationStructure = VK_TRUE;
+            as_features = keep_as;
+            VkPhysicalDeviceRayQueryFeaturesKHR keep_rq = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+            keep_rq.rayQuery = VK_TRUE;
+            rq_features = keep_rq;
+            as_features.pNext = &rq_features;
+            rq_features.pNext = f2.pNext;
+            f2.pNext = &as_features;
+            if (position_fetch) {
+                VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR keep_pf = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR};
+                keep_pf.rayTracingPositionFetch = VK_TRUE;
+                pf_features = keep_pf;
+                pf_features.pNext = f2.pNext;
+                f2.pNext = &pf_features;
+                extensions.push_back(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
+                s.rt_position_fetch = true;
+            }
+            extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+            f12.runtimeDescriptorArray = VK_TRUE;
+            f12.descriptorBindingPartiallyBound = VK_TRUE;
+            f12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+            f12.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
+            f12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+            s.ray_query = true;
+        }
+    }
     VkPhysicalDevicePushDescriptorPropertiesKHR push = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
     VkPhysicalDeviceDepthStencilResolveProperties resolve = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES};
     push.pNext = &resolve;
@@ -565,6 +642,10 @@ bool CreateDevice() {
 
     VmaAllocatorCreateInfo allocator_info = {};
     allocator_info.vulkanApiVersion = VK_API_VERSION_1_3;
+    if (f12.bufferDeviceAddress) {
+        // (Overgrowth Online RT: acceleration structures and their inputs are found by address)
+        allocator_info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
     allocator_info.instance = s.instance;
     allocator_info.physicalDevice = s.physical;
     allocator_info.device = s.device;
@@ -1090,6 +1171,14 @@ const VkPhysicalDeviceFeatures& Features() {
 
 uint32_t MaxPushDescriptors() {
     return s.max_push_descriptors;
+}
+
+bool RtPositionFetch() {
+    return s.ray_query && s.rt_position_fetch;
+}
+
+bool RayQuery() {
+    return s.ray_query;
 }
 
 uint64_t FenceSerial() {

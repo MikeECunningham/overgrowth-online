@@ -1,0 +1,66 @@
+//-----------------------------------------------------------------------------
+//           Name: rt_cache.comp
+//      Developer: Overgrowth Online (crxhvrd)
+//    Description: rt_gi.comp's radiance cache, once a frame after it: each voxel's
+//                 samples this frame (their sum and count) into its average (a running
+//                 mean over up to info.x frames, so the light follows a change), the sums
+//                 cleared; a voxel nothing gave light to for info.y frames given back.
+//                 CLEAR: every voxel emptied (a level changed)
+//        License: Apache-2.0, like the rest of the engine (see LICENSE)
+//-----------------------------------------------------------------------------
+#version 460
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0, std430) buffer CacheKeys {
+    uint cache_keys[];
+};
+layout(set = 0, binding = 1, std430) buffer CacheAccum {
+    uvec4 cache_accum[];
+};
+layout(set = 0, binding = 2, std430) buffer CacheValues {
+    vec4 cache_values[];
+};
+layout(set = 0, binding = 3, std430) buffer CacheAges {
+    uint cache_ages[];
+};
+
+layout(push_constant) uniform Params {
+    uvec4 info;  // the most frames a voxel's average holds, the frames an unfed voxel lasts, 1: clear
+} pc;
+
+const float kCacheScale = 128.0;  // (rt_gi.comp's)
+
+void main() {
+    uint s = gl_GlobalInvocationID.x;
+    if (s >= uint(cache_keys.length())) {
+        return;
+    }
+    if (pc.info.z != 0u) {
+        cache_keys[s] = 0u;
+        cache_accum[s] = uvec4(0u);
+        cache_values[s] = vec4(0.0);
+        cache_ages[s] = 0u;
+        return;
+    }
+    if (cache_keys[s] == 0u) {
+        return;
+    }
+    uvec4 a = cache_accum[s];
+    if (a.w > 0u) {
+        vec3 sample_ = vec3(a.xyz) / (kCacheScale * float(a.w));
+        vec4 v = cache_values[s];
+        float frames = min(v.w + 1.0, float(pc.info.x));
+        cache_values[s] = vec4(mix(v.rgb, sample_, 1.0 / frames), frames);
+        cache_accum[s] = uvec4(0u);
+        cache_ages[s] = 0u;
+    } else {
+        uint age = cache_ages[s] + 1u;
+        if (age > pc.info.y) {
+            cache_keys[s] = 0u;
+            cache_values[s] = vec4(0.0);
+            age = 0u;
+        }
+        cache_ages[s] = age;
+    }
+}

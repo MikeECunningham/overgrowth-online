@@ -13,6 +13,7 @@
 #include <Graphics/Vulkan/vk_gl.h>
 #include <Graphics/Vulkan/vk_programs.h>
 #include <Graphics/Vulkan/vk_queries.h>
+#include <Graphics/Vulkan/vk_rt.h>
 #include <Graphics/textures.h>
 #include <Graphics/graphics.h>
 #include <Internal/filesystem.h>
@@ -569,10 +570,10 @@ bool ParseRecord(const std::string& r, int fsaa, std::string* name, uint32_t* fl
     memset(key, 0, sizeof(*key));
     *name = f[2];
     const std::vector<std::string> formats = Split(f[3], ',');
-    if (formats.size() != (size_t)Target::kMaxColor) {
+    if (formats.empty() || formats.size() > (size_t)Target::kMaxColor) {
         return false;
     }
-    for (int i = 0; i < Target::kMaxColor; ++i) {
+    for (size_t i = 0; i < formats.size(); ++i) {  // (records from when there were fewer: the rest none)
         key->color_formats[i] = U32(formats[i]);
     }
     key->depth_format = U32(f[4]);
@@ -981,12 +982,35 @@ void Draw(const State& st, GLuint program, GLenum mode, uint32_t first, uint32_t
         }
     }
     bool reads_depth = false;
+    // (Overgrowth Online RT: a program tracing reflections reads the scene VkRt traced)
+    VkRt::DrawScene rt_scene;
+    VkWriteDescriptorSetAccelerationStructureKHR rt_scene_write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+    bool rt_needed = prog->traces;
+    for (const VkPrograms::Binding& b : prog->bindings) {
+        rt_needed = rt_needed || b.type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR || b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    }
+    if (rt_needed) {
+        if (!VkRt::SceneForDraws(&rt_scene)) {
+            LogOnce("a draw that traces rays with no scene traced");
+            ++skipped;
+            return;
+        }
+        rt_scene_write.accelerationStructureCount = 1;
+        rt_scene_write.pAccelerationStructures = &rt_scene.tlas;
+    }
     for (const VkPrograms::Binding& b : prog->bindings) {
         VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstBinding = b.binding;
         w.descriptorCount = 1;
         w.descriptorType = b.type;
-        if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+        if (b.type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR || b.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+            if (b.type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
+                w.pNext = &rt_scene_write;
+            } else {
+                buffers.push_back({rt_scene.materials, 0, VK_WHOLE_SIZE});
+                w.pBufferInfo = &buffers.back();
+            }
+        } else if (b.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
             const Ubo& u = ubos[b.unit < 8 ? b.unit : 0];
             VkDeviceSize size = 0;
             VkBuffer vb = u.buffer != 0 ? vkgl::Buffer(u.buffer, &size) : VK_NULL_HANDLE;
@@ -1172,6 +1196,9 @@ void Draw(const State& st, GLuint program, GLenum mode, uint32_t first, uint32_t
 
     if (!writes.empty()) {
         vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, prog->layout, 0, (uint32_t)writes.size(), writes.data());
+    }
+    if (prog->traces) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, prog->layout, 1, 1, &rt_scene.textures, 0, NULL);
     }
 
     if (indexed) {

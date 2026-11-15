@@ -1,0 +1,87 @@
+//-----------------------------------------------------------------------------
+//           Name: rt_plant.comp
+//      Developer: Overgrowth Online (crxhvrd)
+//    Description: A plant near the camera moved for ray tracing as its draw moves it
+//                 (VkRt::AddPlant; envobject.vert #PLANT): its vertices placed by its
+//                 scale, rotation (the bend a character pushing through gives it) and
+//                 translation, then shaken by the wind and by that push
+//                 (CalcVertexOffset, lighting150.glsl, as written there), each by its
+//                 own stability (the model's aux); a waterfall (#WATERFALL) shaken as
+//                 its draw shakes it. Into world-space positions its own
+//                 BLAS is refitted from. Every buffer by address
+//        License: Apache-2.0, like the rest of the engine (see LICENSE)
+//-----------------------------------------------------------------------------
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+
+layout(local_size_x = 64) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Floats {
+    float f[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer OutFloats {
+    float f[];
+};
+
+layout(push_constant) uniform Params {
+    vec4 scale;        // xyz the plant's scale, w the time (the draw's `time` uniform)
+    vec4 rotation;     // the quaternion (xyz, w), its bend in
+    vec4 translation;  // xyz, w how much it shakes (its draw's colour tint alpha)
+    uvec2 positions;   // the model's, 3 floats each
+    uvec2 aux;         // the model's aux (r: the stability), 3 floats each
+    uvec2 out_positions;
+    uint vertices;
+    uint waterfall;    // envobject #WATERFALL: the shake at a fixed 0.1 and 1, not turned
+} pc;
+
+// (envobject.vert's)
+vec3 quat_mul_vec3(vec4 q, vec3 v) {
+    vec3 quat_vector = q.xyz;
+    vec3 uv = cross(quat_vector, v);
+    vec3 uuv = cross(quat_vector, uv);
+    return v + ((uv * q.w) + uuv) * 2;
+}
+
+// (lighting150.glsl's)
+vec3 CalcVertexOffset(const vec3 world_pos, float wind_amount, float time, float plant_shake) {
+    vec3 vertex_offset = vec3(0.0);
+
+    float wind_shake_amount = 0.02;
+    float wind_time_scale = 8.0;
+    float wind_shake_detail = 6.0;
+    float wind_shake_offset = (world_pos.x + world_pos.y) * wind_shake_detail;
+    wind_shake_amount *= max(0.0, sin((world_pos.x + world_pos.y) + time * 0.3));
+    wind_shake_amount *= sin((world_pos.x * 0.1 + world_pos.z) * 0.3 + time * 0.6) + 1.0;
+    wind_shake_amount = max(0.002, wind_shake_amount);
+    wind_shake_amount += plant_shake;
+    wind_shake_amount *= wind_amount;
+
+    vertex_offset.x += sin(time * wind_time_scale + wind_shake_offset);
+    vertex_offset.z += cos(time * wind_time_scale * 1.2 + wind_shake_offset);
+    vertex_offset.y += cos(time * wind_time_scale * 1.4 + wind_shake_offset);
+
+    vertex_offset *= wind_shake_amount;
+
+    return vertex_offset;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.vertices) {
+        return;
+    }
+    Floats positions = Floats(pc.positions);
+    vec3 v = vec3(positions.f[i * 3u], positions.f[i * 3u + 1u], positions.f[i * 3u + 2u]);
+    vec3 p = quat_mul_vec3(pc.rotation, pc.scale.xyz * v) + pc.translation.xyz;
+    if (pc.waterfall != 0u) {
+        p += CalcVertexOffset(p, 0.1, pc.scale.w, 1.0);
+    } else {
+        float stability = Floats(pc.aux).f[i * 3u];
+        p += quat_mul_vec3(pc.rotation, CalcVertexOffset(p, stability, pc.scale.w, max(0.0, pc.translation.w)));
+    }
+    OutFloats out_positions = OutFloats(pc.out_positions);
+    out_positions.f[i * 3u] = p.x;
+    out_positions.f[i * 3u + 1u] = p.y;
+    out_positions.f[i * 3u + 2u] = p.z;
+}

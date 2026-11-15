@@ -2895,7 +2895,7 @@ void Textures::UpdateRegion(const TextureRef& tex_ref, int level, int x, int y, 
 void Textures::ClearUnits(const std::vector<int>& units) {
     PROFILED_TEXTURE_MUTEX_LOCK
     for (int unit : units) {
-        if (unit >= 0 && unit < (int)_texture_units && bound_texture[unit] != INVALID_ID) {
+        if (unit >= 0 && unit < (int)_texture_units && bound_texture[unit] != INVALID_ID && !pinned_unit_[unit]) {
             // As the GL 3.2 code did (InvalidateBindCache): only a 2D or cube
             // texture leaves its unit. Array and 3D textures stay bound across
             // programs and some draws sample them there: grass (detail objects)
@@ -2917,6 +2917,12 @@ void Textures::ClearUnits(const std::vector<int>& units) {
         }
     }
     PROFILED_TEXTURE_MUTEX_UNLOCK
+}
+
+void Textures::PinUnit(int unit, bool pinned) {
+    if (unit >= 0 && unit < (int)_texture_units) {
+        pinned_unit_[unit] = pinned;
+    }
 }
 
 void Textures::bindBlankTexture(int which_unit) {

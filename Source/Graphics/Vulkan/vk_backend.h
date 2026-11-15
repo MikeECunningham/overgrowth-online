@@ -89,6 +89,9 @@ VmaAllocator Allocator();
 // Every submit is numbered (a timeline semaphore): what is recorded now finishes
 // with RecordingSerial(). Waiting for one not yet submitted submits it first
 uint32_t MaxPushDescriptors();
+// Overgrowth Online (RT): acceleration structures and ray queries are enabled
+bool RayQuery();
+bool RtPositionFetch();  // (Overgrowth Online RT: ray queries read a hit's triangle back: VK_KHR_ray_tracing_position_fetch)
 uint64_t RecordingSerial();
 uint64_t FenceSerial();  // what a GL fence made now waits for (the last submit, if nothing's recorded since)
 uint64_t CompletedSerial();

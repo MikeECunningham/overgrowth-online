@@ -228,7 +228,7 @@ struct ViewportDims {
 // each a texture at a mip level and, for cube maps and texture arrays, a layer (a
 // cube face is layer 0-5); a multisample texture for MSAA. No attachments: the window
 struct RenderTarget {
-    static const int kMaxColor = 4;
+    static const int kMaxColor = 8;  // (Overgrowth Online RT: the scene's 6 with Ray Reconstruction's guides)
     struct Attachment {
         TextureRef tex;
         int level;
@@ -402,6 +402,13 @@ class Graphics {
     // frame's, w: 1), the rest stays clear (Temporal::Resolve takes its motion from depth)
     TextureRef screen_mv_tex;
     int old_temporal_aa = 0;
+    // Overgrowth Online (RT): DLSS Ray Reconstruction's guides, the scene target's fourth
+    // to sixth colour attachments (Temporal::RayReconstructionWanted()): the diffuse
+    // albedo, the specular albedo, the world-space normal and roughness (w); the opaque
+    // part of the scene writes them (#RR_GUIDES)
+    TextureRef screen_rr_albedo_tex, screen_rr_specular_tex, screen_rr_normal_tex;
+    bool rr_guides = false;
+    bool old_rr_guides = false;
     // Overgrowth Online (DLSS): an upscaler draws the scene at scene_dims (its targets
     // above) and brings it up to render_dims into post_color_tex, where the post effects
     // start; without one they're the same and the post effects start from screen_color_tex

@@ -1,0 +1,229 @@
+//-----------------------------------------------------------------------------
+//           Name: rt_nrd.comp
+//      Developer: Overgrowth Online (crxhvrd)
+//    Description: rt_shadow.comp's raw result through NVIDIA's denoisers (VkNrd), in
+//                 place of rt_denoise.comp.
+//                 PREPARE: NRD's inputs from the raw result (its depth, the sun's and the
+//                 lights' shares, the AO; the extra image's blocker distance and
+//                 penumbra): view Z, the depth's normal (NRD_FrontEnd_PackNormalAndRoughness,
+//                 R10G10B10A2, roughness 1), 2.5D motion from the depth and the camera
+//                 (where the point was last frame: this frame's motion isn't drawn yet),
+//                 SIGMA's penumbras (SIGMA_FrontEnd_PackPenumbra; the lights' as NRD's
+//                 README has many lights: their share of light as SIGMA's translucency)
+//                 and REBLUR's normalized hit distance (the AO as it is).
+//                 COMPOSITE: NRD's outputs into the mask the colour pass reads: sun,
+//                 depth, AO, lights (SIGMA_BackEnd_UnpackShadow: squared)
+//        License: Apache-2.0, like the rest of the engine (see LICENSE)
+//-----------------------------------------------------------------------------
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const uint kSun = 1u, kAo = 2u, kLights = 4u, kGi = 8u;  // (info.z: the signals traced and denoised)
+const float kFp16Max = 65504.0;                 // (NRD_FP16_MAX: lit)
+
+layout(set = 0, binding = 0, rgba32f) uniform readonly image2D raw;  // sun, depth, AO, lights
+
+#if defined(PREPARE)
+
+layout(set = 0, binding = 1, rg16f) uniform readonly image2D extra;  // the sun's blocker distance, the lights' penumbra width
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D out_view_z;
+layout(set = 0, binding = 3, rgb10_a2) uniform writeonly image2D out_normal_roughness;
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D out_motion;
+layout(set = 0, binding = 5, r16f) uniform writeonly image2D out_sun_penumbra;
+layout(set = 0, binding = 6, r16f) uniform writeonly image2D out_light_penumbra;
+layout(set = 0, binding = 7, rgba8) uniform writeonly image2D out_light_translucency;
+layout(set = 0, binding = 8, r16f) uniform writeonly image2D out_ao;
+layout(set = 0, binding = 9, rgba16f) uniform readonly image2D gi_raw;        // rt_gi.comp's: radiance, hit distance
+layout(set = 0, binding = 10, rgba16f) uniform readonly image2D gi_dir;        // ... the ray's direction
+layout(set = 0, binding = 11, rgba16f) uniform writeonly image2D out_gi_sh0;  // REBLUR's inputs (REBLUR_FrontEnd_PackSh)
+layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D out_gi_sh1;
+
+layout(push_constant) uniform Params {
+    mat4 inv_view_proj;  // clip space (depth 0..1) to world, as drawn (jittered)
+    mat4 cur;            // world to this frame's clip space, unjittered
+    mat4 prev;           // world to last frame's, unjittered
+    vec4 params;         // x tan(the sun's angular radius), y the sky's view Z
+    uvec4 info;          // width, height, signals (kSun, kAo, kLights, kGi), GI's checkerboard phase
+} pc;
+
+bool Inside(ivec2 q) {
+    return all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, ivec2(pc.info.xy)));
+}
+
+vec3 WorldPos(ivec2 p, float depth) {
+    vec2 ndc = (vec2(p) + 0.5) / vec2(pc.info.xy) * 2.0 - 1.0;
+    vec4 w = pc.inv_view_proj * vec4(ndc, depth, 1.0);
+    return w.xyz / w.w;
+}
+
+// (rt_shadow.comp's: the step to the neighbour on the side whose depth is closer)
+vec3 Step(ivec2 p, float depth, vec3 pos, ivec2 dir) {
+    ivec2 a = p + dir, b = p - dir;
+    float da = Inside(a) ? imageLoad(raw, a).g : -1.0;
+    float db = Inside(b) ? imageLoad(raw, b).g : -1.0;
+    bool use_a = da > 0.0 && (db <= 0.0 || abs(da - depth) <= abs(db - depth));
+    if (use_a) {
+        return WorldPos(a, da) - pos;
+    }
+    if (db > 0.0) {
+        return pos - WorldPos(b, db);
+    }
+    return vec3(0.0);
+}
+
+// NRD.hlsli's _NRD_EncodeNormalRoughness101010 (R10G10B10A2: NRD_NORMAL_ENCODING 2, linear roughness)
+vec4 PackNormalRoughness(vec3 n, float roughness) {
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    vec3 r;
+    r.y = n.y * 0.5 + 0.5;
+    r.x = n.x * 0.5 + r.y;
+    r.y -= n.x * 0.5;
+    roughness = max(roughness, 1.5 / 512.0);
+    float s = n.z < 0.0 ? -roughness : roughness;
+    r.z = s * 0.5 + 0.5;
+    return vec4(r, 0.0);  // (material 0)
+}
+
+// GI's input for REBLUR (REBLUR_FrontEnd_PackSh: YCoCg and the direction * Y, the hit
+// distance normalized as REBLUR_FrontEnd_GetNormHitDist with REBLUR's default parameters,
+// roughness 1). A checkerboard: rt_gi.comp's results packed to the left half, each the
+// pixel (2x + ((y + phase) & 1), y), as NRD's BLACK mode reads them
+void PrepareGi(ivec2 p) {
+    if (uint(p.x) >= (pc.info.x + 1u) / 2u) {
+        return;  // (NRD reads only the left half)
+    }
+    ivec2 s = ivec2(2 * p.x + int((uint(p.y) + pc.info.w) & 1u), p.y);
+    float depth = Inside(s) ? imageLoad(raw, s).g : 0.0;
+    if (depth <= 0.0) {
+        imageStore(out_gi_sh0, p, vec4(0.0));
+        imageStore(out_gi_sh1, p, vec4(0.0));
+        return;
+    }
+    float view_z = -(pc.cur * vec4(WorldPos(s, depth), 1.0)).w;
+    vec4 g = imageLoad(gi_raw, p);
+    vec3 radiance = clamp(g.rgb, vec3(0.0), vec3(65504.0));
+    if (any(isnan(radiance)) || any(isinf(radiance))) {
+        radiance = vec3(0.0);
+    }
+    vec3 dir = clamp(imageLoad(gi_dir, p).xyz, vec3(-1.0), vec3(1.0));
+    if (any(isnan(dir))) {
+        dir = vec3(0.0);
+    }
+    float norm_hit = clamp(g.a / (3.0 + abs(view_z) * 0.1), 0.0, 1.0);
+    vec3 ycocg = vec3(dot(radiance, vec3(0.25, 0.5, 0.25)), dot(radiance, vec3(0.5, 0.0, -0.5)), dot(radiance, vec3(-0.25, 0.5, -0.25)));
+    imageStore(out_gi_sh0, p, vec4(ycocg, norm_hit));
+    imageStore(out_gi_sh1, p, vec4(dir * ycocg.x, 0.0));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!Inside(p)) {
+        return;
+    }
+    if ((pc.info.z & kGi) != 0u) {
+        PrepareGi(p);
+    }
+    vec4 cur = imageLoad(raw, p);
+    float depth = cur.g;
+    if (depth <= 0.0) {
+        // The sky: beyond the denoising range (NRD leaves it alone)
+        imageStore(out_view_z, p, vec4(pc.params.y));
+        imageStore(out_normal_roughness, p, PackNormalRoughness(vec3(0.0, 1.0, 0.0), 1.0));
+        imageStore(out_motion, p, vec4(0.0));
+        imageStore(out_sun_penumbra, p, vec4(kFp16Max));
+        imageStore(out_light_penumbra, p, vec4(kFp16Max));
+        imageStore(out_light_translucency, p, vec4(1.0));
+        imageStore(out_ao, p, vec4(1.0));
+        return;
+    }
+    vec3 pos = WorldPos(p, depth);
+    vec4 clip = pc.cur * vec4(pos, 1.0);
+    vec4 clip_prev = pc.prev * vec4(pos, 1.0);
+    // (view Z = -w in a right-handed view: negative ahead)
+    float view_z = -clip.w;
+    imageStore(out_view_z, p, vec4(view_z));
+
+    vec3 n = cross(Step(p, depth, pos, ivec2(1, 0)), Step(p, depth, pos, ivec2(0, 1)));
+    vec3 to_camera = WorldPos(p, 1.0) - pos;  // (toward the near plane along the pixel's ray)
+    float n_len = length(n);
+    n = n_len > 1e-12 ? n / n_len : normalize(to_camera);
+    if (dot(n, to_camera) < 0.0) {
+        n = -n;
+    }
+    imageStore(out_normal_roughness, p, PackNormalRoughness(n, 1.0));
+
+    // Motion: last frame's uv minus this frame's (in the image's rows, as NRD reads them)
+    vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+    vec2 uv_prev = clip_prev.w > 1e-6 ? clip_prev.xy / clip_prev.w * 0.5 + 0.5 : uv;
+    imageStore(out_motion, p, vec4(uv_prev - uv, (-clip_prev.w) - view_z, 0.0));
+
+    vec2 penumbra = imageLoad(extra, p).rg;
+    if ((pc.info.z & kSun) != 0u) {
+        // (one ray: lit; blocked this far away; or a surface turned from the sun, not traced:
+        // 0, as NRD has it)
+        float radius = cur.r >= 1.0 ? kFp16Max : penumbra.r <= 0.0 ? 0.0 : clamp(penumbra.r * pc.params.x * 0.5, 1e-4, 32768.0);
+        imageStore(out_sun_penumbra, p, vec4(radius));
+    }
+    if ((pc.info.z & kLights) != 0u) {
+        // (all their rays got through: lit; else the penumbra's radius, its width halved)
+        bool lit = cur.a >= 0.999;
+        imageStore(out_light_penumbra, p, vec4(lit ? kFp16Max : clamp(penumbra.g * 0.5, 1e-4, 32768.0)));
+        imageStore(out_light_translucency, p, vec4(lit ? 1.0 : 0.0, vec3(clamp(cur.a, 0.0, 1.0))));
+    }
+    if ((pc.info.z & kAo) != 0u) {
+        imageStore(out_ao, p, vec4(clamp(cur.b, 0.0, 1.0)));
+    }
+}
+
+#elif defined(COMPOSITE)
+
+layout(set = 0, binding = 1, r8) uniform readonly image2D sun_shadow;
+layout(set = 0, binding = 2, rgba8) uniform readonly image2D light_shadow;
+layout(set = 0, binding = 3, r8) uniform readonly image2D ao_out;
+layout(set = 0, binding = 4, rgba32f) uniform writeonly image2D mask;
+layout(set = 0, binding = 5, rgba16f) uniform readonly image2D gi_sh0;        // REBLUR's SH0 and SH1
+layout(set = 0, binding = 6, rgba16f) uniform readonly image2D gi_sh1;
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D gi_final0;    // ... copied for the colour pass to resolve
+layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D gi_final1;
+
+layout(push_constant) uniform Params {
+    uvec4 info;  // width, height, signals denoised (kSun, kAo, kLights)
+} pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, ivec2(pc.info.xy)))) {
+        return;
+    }
+    vec4 cur = imageLoad(raw, p);
+    if (cur.g <= 0.0) {
+        imageStore(mask, p, vec4(cur.r, cur.g, 1.0, 1.0));  // (the sky: as traced)
+        if ((pc.info.z & kGi) != 0u) {
+            imageStore(gi_final0, p, vec4(0.0));
+            imageStore(gi_final1, p, vec4(0.0));
+        }
+        return;
+    }
+    if ((pc.info.z & kGi) != 0u) {
+        imageStore(gi_final0, p, imageLoad(gi_sh0, p));
+        imageStore(gi_final1, p, imageLoad(gi_sh1, p));
+    }
+    float sun = cur.r;
+    if ((pc.info.z & kSun) != 0u) {
+        float s = imageLoad(sun_shadow, p).r;
+        sun = s * s;
+    }
+    float ao = cur.b;
+    if ((pc.info.z & kAo) != 0u) {
+        ao = imageLoad(ao_out, p).r;
+    }
+    float light = cur.a;
+    if ((pc.info.z & kLights) != 0u) {
+        float s = imageLoad(light_shadow, p).y;
+        light = s * s;
+    }
+    imageStore(mask, p, vec4(sun, cur.g, ao, light));
+}
+
+#endif

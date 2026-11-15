@@ -7,6 +7,7 @@
 #include "vk_programs.h"
 
 #include <Graphics/Vulkan/vk_backend.h>
+#include <Graphics/Vulkan/vk_rt.h>
 #include <Graphics/shaders.h>
 #include <Logging/logdata.h>
 #include <Internal/config.h>
@@ -189,6 +190,20 @@ bool Create(GLuint name, const std::string& dir, Program& program) {
                 nb.multisampled = b->image.ms != 0;
                 nb.shadow = b->image.depth == 1;
                 nb.integer = b->type_description && (b->type_description->type_flags & SPV_REFLECT_TYPE_FLAG_INT);
+            } else if (b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR && b->set == 3) {
+                nb.type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;  // (Overgrowth Online RT: the scene)
+                nb.unit = kRtSceneBinding;
+                nb.binding = kRtSceneBinding;
+            } else if (b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER && b->set == 3) {
+                nb.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;  // (its materials)
+                nb.unit = kRtMaterialsBinding;
+                nb.binding = kRtMaterialsBinding;
+            } else if (b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->set == 2) {
+                // (its texture slots: VkRt's set, bound as set 1, not pushed)
+                info->traces = true;
+                code[b->word_offset.set] = 1;
+                code[b->word_offset.binding] = 0;
+                continue;
             } else {
                 LOGE << "Vulkan: " << program.name << ": a descriptor the engine doesn't bind (" << (b->name ? b->name : "?") << ", set "
                      << b->set << ", binding " << b->binding << ", type " << (int)b->descriptor_type << ")" << std::endl;
@@ -344,6 +359,16 @@ bool Create(GLuint name, const std::string& dir, Program& program) {
     VkPipelineLayoutCreateInfo pli = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pli.setLayoutCount = 1;
     pli.pSetLayouts = &info->set_layout;
+    // (Overgrowth Online RT: a program tracing reflections reads VkRt's texture slots as set 1)
+    const VkDescriptorSetLayout with_rt[2] = {info->set_layout, info->traces ? VkRt::TexturesLayout() : VK_NULL_HANDLE};
+    if (info->traces) {
+        if (with_rt[1] == VK_NULL_HANDLE) {
+            LOGE << "Vulkan: " << program.name << " traces rays, but ray tracing isn't running" << std::endl;
+            ok = false;
+        }
+        pli.setLayoutCount = 2;
+        pli.pSetLayouts = with_rt;
+    }
     if (ok && vkCreatePipelineLayout(device, &pli, NULL, &info->layout) != VK_SUCCESS) {
         ok = false;
     }
@@ -381,7 +406,8 @@ bool Create(GLuint name, const std::string& dir, Program& program) {
     program.tex_uniform.assign(32, -1);
     program.sampler_units.clear();
     for (const Binding& b : info->bindings) {
-        if (b.type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+        if (b.type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b.type != VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR &&
+            b.type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             program.sampler_units.push_back((int)b.unit);
             if (b.unit < 32) {
                 program.tex_uniform[b.unit] = (GLint)b.unit;  // (sampled: "texN" reads unit N)

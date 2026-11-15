@@ -1,0 +1,63 @@
+//-----------------------------------------------------------------------------
+//           Name: rt_skin.comp
+//      Developer: Overgrowth Online (crxhvrd)
+//    Description: A character's mesh skinned for ray tracing (VkRt::AddSkinnedMesh):
+//                 its bind pose through its bones, as envobject.vert #CHARACTER
+//                 #GPU_SKINNING does it (the morphs' offsets too), into world-space
+//                 positions its BLAS is refitted from. Every buffer by address
+//        License: Apache-2.0, like the rest of the engine (see LICENSE)
+//-----------------------------------------------------------------------------
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+
+layout(local_size_x = 64) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Floats {
+    float f[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Vec4s {
+    vec4 v[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Mat4s {
+    mat4 m[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer OutFloats {
+    float f[];
+};
+
+layout(push_constant) uniform Params {
+    uvec2 positions;  // the bind pose, 3 floats each
+    uvec2 bone_ids;   // 4 per vertex (floats)
+    uvec2 weights;    // 4 per vertex
+    uvec2 morphs;     // 3 floats each (has_morphs)
+    uvec2 bones;      // the bones, column-major 4x4s
+    uvec2 out_positions;
+    uint vertices;
+    uint has_morphs;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.vertices) {
+        return;
+    }
+    Floats positions = Floats(pc.positions);
+    vec4 ids = Vec4s(pc.bone_ids).v[i];
+    vec4 w = Vec4s(pc.weights).v[i];
+    Mat4s bones = Mat4s(pc.bones);
+    mat4 concat_bone = bones.m[int(ids.x)] * w.x;
+    concat_bone += bones.m[int(ids.y)] * w.y;
+    concat_bone += bones.m[int(ids.z)] * w.z;
+    concat_bone += bones.m[int(ids.w)] * w.w;
+    if (pc.has_morphs != 0u) {
+        Floats morphs = Floats(pc.morphs);
+        vec3 offset = (concat_bone * vec4(morphs.f[i * 3u], morphs.f[i * 3u + 1u], morphs.f[i * 3u + 2u], 0.0)).xyz;
+        concat_bone[3] += vec4(offset, 0.0);
+    }
+    vec3 p = (concat_bone * vec4(positions.f[i * 3u], positions.f[i * 3u + 1u], positions.f[i * 3u + 2u], 1.0)).xyz;
+    OutFloats out_positions = OutFloats(pc.out_positions);
+    out_positions.f[i * 3u] = p.x;
+    out_positions.f[i * 3u + 1u] = p.y;
+    out_positions.f[i * 3u + 2u] = p.z;
+}

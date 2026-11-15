@@ -48,6 +48,13 @@ int Mode();
 bool Enabled();  // a temporal mode is on (MSAA is off then)
 // The scene's size over the render size: below 1 when DLSS upscales (it can run here)
 float RenderScale();
+// DLSS Ray Reconstruction in DLSS's place (config rt_rr, a DLSS mode, ray-traced lighting
+// asked for, and RR able to run here): the scene target gets its guides
+// (Graphics::rr_guides), the colour pass writes them (#RR_GUIDES)
+bool RayReconstructionWanted();
+// ... and this frame's scene resolves through it: the ray-traced light goes in raw (GI
+// not denoised by NRD), RR denoises it as it upscales
+bool RayReconstruction();
 
 // Engine::DrawScene, a screen's full draw: the camera jittered for this frame (the
 // scene at width x height, the post effects at out_width x out_height). False: no

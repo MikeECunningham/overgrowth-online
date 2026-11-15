@@ -33,6 +33,7 @@
 #include <Graphics/sky.h>
 #include <Graphics/shaders.h>
 #include <Graphics/camera.h>
+#include <Graphics/raytrace.h>
 
 #include <Math/vec2math.h>
 #include <Math/vec3math.h>
@@ -419,7 +420,7 @@ void DetailObjectSurface::PreDrawCamera(const mat4& transform) {
     }
 }
 
-void DetailObjectSurface::Draw(const mat4& transform, DetailObjectShaderType shader_type, vec3 color_tint, const TextureRef& light_cube, LightProbeCollection* light_probe_collection, SceneGraph* scenegraph_) {
+void DetailObjectSurface::Draw(const mat4& transform, DetailObjectShaderType shader_type, vec3 color_tint, const TextureRef& light_cube, LightProbeCollection* light_probe_collection, SceneGraph* scenegraph_, bool depth_only) {
     if (g_debug_runtime_disable_detail_object_surface_draw) {
         return;
     }
@@ -476,6 +477,10 @@ void DetailObjectSurface::Draw(const mat4& transform, DetailObjectShaderType sha
 
     FormatString(shader_str[1], kShaderStrSize, "%s %s", shader_str[0], global_shader_suffix);
     std::swap(shader_str[0], shader_str[1]);
+    if (depth_only) {
+        FormatString(shader_str[1], kShaderStrSize, "%s #DEPTH_ONLY", shader_str[0]);
+        std::swap(shader_str[0], shader_str[1]);
+    }
 
     batch.shader_id = shaders->returnProgram(shader_str[0]);
     batch.use_cam_pos = true;
@@ -639,15 +644,38 @@ void DetailObjectSurface::Draw(const mat4& transform, DetailObjectShaderType sha
 
         int kBatchSize = 200 * (shader_is_v1_5_or_greater && !g_ubo_batch_multiplier_force_1x ? ubo_batch_size_multiplier : 1);
 
+        // (Overgrowth Online RT: the depth prepass draws only the blades in the RT scene,
+        // within rt_grass_range: those the rays start from. Every blade on screen cost as
+        // much again as the colour pass's grass; past the range the colour pass reads the
+        // ground's light behind them, as before)
+        const std::vector<DetailInstance>* draw_instances = &draw_detail_instances;
+        const std::vector<mat4>* draw_transforms = &draw_detail_instance_transforms;
+        static std::vector<DetailInstance> near_instances;
+        static std::vector<mat4> near_transforms;
+        if (depth_only && draw_detail_instances.size() == draw_detail_instance_transforms.size()) {
+            const float range = Raytrace::GrassRange();
+            const vec3 cam_pos = cam->GetPos();
+            near_instances.clear();
+            near_transforms.clear();
+            for (size_t i = 0; i < draw_detail_instance_transforms.size(); ++i) {
+                const mat4& t = draw_detail_instance_transforms[i];
+                if (distance_squared(vec3(t.entries[12], t.entries[13], t.entries[14]), cam_pos) <= range * range) {
+                    near_instances.push_back(draw_detail_instances[i]);
+                    near_transforms.push_back(t);
+                }
+            }
+            draw_instances = &near_instances;
+            draw_transforms = &near_transforms;
+        }
         {
             PROFILER_ZONE(g_profiler_ctx, "Issue draw calls");
-            for (int i = 0, len = draw_detail_instances.size(); i < len; i += kBatchSize) {
+            for (int i = 0, len = draw_instances->size(); i < len; i += kBatchSize) {
                 int to_draw = min(kBatchSize, len - i);
                 if (indices[0] != GL_INVALID_INDEX) {
-                    memcpy(&transforms[0], &draw_detail_instance_transforms[i], to_draw * sizeof(mat4));
+                    memcpy(&transforms[0], &(*draw_transforms)[i], to_draw * sizeof(mat4));
                 }
                 if (indices[1] != GL_INVALID_INDEX) {
-                    memcpy(&texcoords2[0], &draw_detail_instances[i], to_draw * sizeof(vec4));
+                    memcpy(&texcoords2[0], &(*draw_instances)[i], to_draw * sizeof(vec4));
                 }
 
                 // Copying over the whole block because fields aren't contiguous (struct of arrays), so at best can only save the final field's gap until the end of the buffer
@@ -670,6 +698,13 @@ void DetailObjectSurface::Draw(const mat4& transform, DetailObjectShaderType sha
 
     batch.SetEndState();
     CHECK_GL_ERROR();
+}
+
+TextureRef DetailObjectSurface::ColorTexture() const {
+    if (!ofr.valid() || !ofr->color_map_texture.valid()) {
+        return TextureRef();
+    }
+    return ofr->color_map_texture->GetTextureRef();
 }
 
 void DetailObjectSurface::SetBaseTextures(const TextureAssetRef& color_ref,

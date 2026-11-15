@@ -164,6 +164,7 @@ void BuildUI(string landing_screen){
     // upscaling) and Graphics (the detail drawn; the old Advanced checkboxes too)
     AddCategoryButton("Screen", buttons_holder);
     AddCategoryButton("Graphics", buttons_holder);
+    AddCategoryButton("Ray Tracing", buttons_holder);
     AddCategoryButton("Audio", buttons_holder);
     AddCategoryButton("Game", buttons_holder);
     AddCategoryButton("Controls", buttons_holder);
@@ -240,6 +241,9 @@ void SwitchSettingsScreen(string screen_name){
     }
     else if(screen_name == "Graphics"){
         AddGraphicsScreen();
+    }
+    else if(screen_name == "Ray Tracing"){
+        AddRayTracingScreen();
     }
     else if(screen_name == "Audio"){
         AddAudioScreen();
@@ -397,6 +401,119 @@ void AddGraphicsScreen(){
     settings_content.append(dual_columns.main);
 
     AddLabel("*Requires Restart", settings_content);
+    AddNote("Ray-traced shadows, lighting and reflections: the Ray Tracing tab", settings_content);
+}
+
+// Overgrowth Online (RT): ray tracing, on a tab of its own. What this PC can do first; a
+// preset that sets every effect and how many rays it takes (Custom once one is changed);
+// the effects, one line each; one denoiser; then the tuning of the effects that are on;
+// and only the problems that stop something working, each with what to change
+void AddRayTracingScreen(){
+    current_screen = "Ray Tracing";
+
+    const int support = RayTracingSupport();
+    const bool vulkan = (support & 1) != 0 || GetConfigValueString("renderer") == "vulkan";
+    const bool can_trace = (support & 2) != 0;
+    const bool has_nrd = (support & 4) != 0;
+    const bool has_rr = (support & 8) != 0;
+    if((support & 1) == 0) {
+        AddSection(GetConfigValueString("renderer") == "vulkan" ? "Status: Vulkan is set; restart the game to use it"
+                                                                  : "Status: needs the Vulkan renderer (Screen tab)", settings_content);
+    } else if(!can_trace) {
+        AddSection("Status: this GPU can't ray trace", settings_content);
+    } else {
+        string denoisers = has_nrd ? "NVIDIA NRD" : "the built-in denoiser";
+        if(has_rr) {
+            denoisers += ", DLSS Ray Reconstruction";
+        }
+        AddSection("Status: ready (" + denoisers + ")", settings_content);
+    }
+
+    // The preset: every effect, and the rays a pixel each takes (sun, AO, lights)
+    array<string> preset_names = { "rt_shadows", "rt_ao", "rt_light_shadows", "rt_reflections", "rt_gi", "rt_grass", "rt_shadow_rays", "rt_ao_rays", "rt_light_rays" };
+    array<array<int>> preset_values = {
+        { 0, 0, 0, 0, 0, 0, 2, 2, 2 },   // Off
+        { 1, 1, 0, 0, 0, 0, 1, 1, 1 },   // Low: shadows and AO
+        { 1, 1, 1, 1, 0, 1, 1, 2, 1 },   // Medium: + light shadows, reflections, grass
+        { 1, 1, 1, 1, 1, 1, 2, 2, 2 },   // High: + global illumination
+        { 1, 1, 1, 1, 1, 1, 4, 4, 4 } }; // Ultra: more rays
+    array<string> preset_options = { "Off", "Low", "Medium", "High", "Ultra" };
+    AddDropDown("Preset", settings_content, DropdownConfiguration(preset_values, preset_options, preset_names));
+
+    AddSection("Effects", settings_content);
+    array<int> on_off_values = { 0, 1 };
+    array<string> on_off = { "Off", "On" };
+    array<string> sun_options = { "Shadow maps", "Ray traced" };
+    AddDropDown("Sun shadows", settings_content, DropdownConfiguration(on_off_values, sun_options, "rt_shadows"));
+    AddDropDown("Ambient occlusion", settings_content, DropdownConfiguration(on_off_values, on_off, "rt_ao"));
+    AddDropDown("Lamp and fire shadows", settings_content, DropdownConfiguration(on_off_values, on_off, "rt_light_shadows"));
+    AddDropDown("Reflections", settings_content, DropdownConfiguration(on_off_values, on_off, "rt_reflections"));
+    AddDropDown("Global illumination", settings_content, DropdownConfiguration(on_off_values, on_off, "rt_gi"));
+    AddDropDown("Grass in ray tracing", settings_content, DropdownConfiguration(on_off_values, on_off, "rt_grass"));
+
+    // One denoiser: NRD, DLSS Ray Reconstruction (NRD's settings kept under it) or the
+    // built-in one (no GI)
+    array<array<int>> denoiser_values = { { 1, 0 }, { 1, 1 }, { 0, 0 } };
+    array<string> denoiser_names = { "rt_nrd", "rt_rr" };
+    array<string> denoiser_options = { "NVIDIA NRD", "DLSS Ray Reconstruction", "Built-in" };
+    AddDropDown("Denoiser", settings_content, DropdownConfiguration(denoiser_values, denoiser_options, denoiser_names));
+
+    // The tuning, for the effects that are on
+    const bool shadows = GetConfigValueBool("rt_shadows");
+    const bool ao = GetConfigValueBool("rt_ao");
+    const bool gi = GetConfigValueBool("rt_gi");
+    const bool grass = GetConfigValueBool("rt_grass");
+    if(shadows || ao || gi || grass) {
+        AddSection("Tuning", settings_content);
+    }
+    if(shadows) {
+        array<string> soft_values = { "0.53", "1.5", "3" };
+        array<string> soft_options = { "Sharp", "Soft", "Softer" };
+        AddDropDown("Shadow softness", settings_content, DropdownConfiguration(soft_values, soft_options, "rt_sun_size"));
+    }
+    if(ao) {
+        array<string> range_values = { "0.75", "1.5", "3" };
+        array<string> range_options = { "Small", "Medium", "Large" };
+        AddDropDown("AO radius", settings_content, DropdownConfiguration(range_values, range_options, "rt_ao_range"));
+    }
+    if(gi) {
+        AddSlider("GI strength", settings_content, "rt_gi_strength", 2.0f, 200.0f);
+        AddSlider("Bounce light", settings_content, "rt_gi_bounce", 3.0f, 300.0f);
+    }
+    if(grass) {
+        array<string> grass_values = { "15", "25", "40" };
+        array<string> grass_options = { "Near", "Medium", "Far" };
+        AddDropDown("Grass distance", settings_content, DropdownConfiguration(grass_values, grass_options, "rt_grass_range"));
+    }
+
+    // What stops something working, and what to change
+    const bool any = shadows || ao || gi || GetConfigValueBool("rt_light_shadows") || GetConfigValueBool("rt_reflections");
+    if(any && !vulkan) {
+        AddNote("Set the renderer to Vulkan (Screen tab) for ray tracing", settings_content);
+    }
+    const bool rr = GetConfigValueBool("rt_rr");
+    if(gi && !rr && !GetConfigValueBool("rt_nrd")) {
+        AddNote("Global illumination needs NVIDIA NRD or Ray Reconstruction as the denoiser", settings_content);
+    }
+    if(rr && GetConfigValueInt("upscaler") != 1) {
+        AddNote("Ray Reconstruction needs DLSS as the upscaler (Screen tab)", settings_content);
+    } else if(rr && (support & 1) != 0 && !has_rr) {
+        AddNote("Ray Reconstruction isn't available on this PC: NRD is used", settings_content);
+    }
+    if(!rr && GetConfigValueBool("rt_nrd") && (support & 1) != 0 && can_trace && !has_nrd) {
+        AddNote("NVIDIA NRD isn't available: the built-in denoiser is used", settings_content);
+    }
+}
+
+// Overgrowth Online: a heading over a group of options, or a status line
+void AddSection(string text, IMDivider@ parent){
+    IMContainer section_container("section_container" + text, DOHorizontal);
+    IMText section(text, button_font_small);
+    section_container.setAlignment(CALeft, CACenter);
+    section_container.setElement(section);
+    section_container.setSizeY(60.0f);
+    section_container.setSizeX(800.0f);
+    parent.append(section_container);
 }
 
 // Overgrowth Online: a line of explanation under the options (no asterisk: not a footnote)

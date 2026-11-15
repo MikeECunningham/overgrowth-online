@@ -28,6 +28,7 @@
 #include <Graphics/textures.h>
 #include <Graphics/shaders.h>
 #include <Graphics/sky.h>
+#include <Graphics/raytrace.h>
 
 #include <Physics/bulletworld.h>
 #include <Physics/bulletobject.h>
@@ -251,6 +252,15 @@ void TerrainObject::DrawDepthMap(const mat4& proj_view_matrix, const vec4* cull_
     }
     graphics->EndVertexLayout();
     graphics->ResetVertexAttribArrays();
+
+    // Overgrowth Online (RT): its grass in the depth prepass too, where it's ray traced (the
+    // rays then start from the blades, not the ground under them)
+    if (draw_type == kDrawDepthOnly && Raytrace::GrassInPrepass()) {
+        static const mat4 identity;
+        for (auto& detail_object_surface : terrain_.detail_object_surfaces) {
+            detail_object_surface->Draw(identity, DetailObjectSurface::TERRAIN, vec3(1.0f), scenegraph_->sky->GetSpecularCubeMapTexture(), &scenegraph_->light_probe_collection, scenegraph_, true);
+        }
+    }
 }
 
 bool TerrainObject::Initialize() {

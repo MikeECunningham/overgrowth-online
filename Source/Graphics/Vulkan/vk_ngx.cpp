@@ -25,6 +25,7 @@
 #endif
 #include <nvsdk_ngx_vk.h>
 #include <nvsdk_ngx_helpers_vk.h>
+#include <nvsdk_ngx_helpers_dlssd_vk.h>
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif
@@ -43,6 +44,8 @@ struct State {
     bool tried = false;       // NGX started (or failed to) on the first ask
     bool available = false;
     bool started = false;     // NVSDK_NGX_VULKAN_Init succeeded (Shutdown1 owed)
+    bool rr_available = false;  // Ray Reconstruction too (nvngx_dlssd.dll)
+    bool rr = false;            // the feature made is Ray Reconstruction's
     NVSDK_NGX_Parameter* params = NULL;
     NVSDK_NGX_Handle* feature = NULL;
     uint32_t width = 0, height = 0, out_width = 0, out_height = 0;
@@ -74,11 +77,11 @@ const NVSDK_NGX_FeatureCommonInfo* CommonInfo() {
     return &common_info;
 }
 
-NVSDK_NGX_FeatureDiscoveryInfo Discovery() {
+NVSDK_NGX_FeatureDiscoveryInfo Discovery(NVSDK_NGX_Feature feature) {
     NVSDK_NGX_FeatureDiscoveryInfo info;
     memset(&info, 0, sizeof(info));
     info.SDKVersion = NVSDK_NGX_Version_API;
-    info.FeatureID = NVSDK_NGX_Feature_SuperSampling;
+    info.FeatureID = feature;
     info.Identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Project_Id;
     info.Identifier.v.ProjectDesc.ProjectId = kProjectId;
     info.Identifier.v.ProjectDesc.EngineType = NVSDK_NGX_ENGINE_TYPE_CUSTOM;
@@ -120,6 +123,7 @@ void Shutdown() {
         s.started = false;
     }
     s.available = false;
+    s.rr_available = false;
     s.tried = false;  // (a renderer started again asks again)
 }
 
@@ -163,6 +167,10 @@ bool Start() {
     }
     s.available = true;
     LOGI << "DLSS: available (NGX started)" << std::endl;
+    int rr = 0;
+    NVSDK_NGX_Parameter_GetI(s.params, NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &rr);
+    s.rr_available = rr != 0;
+    LOGI << "DLSS Ray Reconstruction: " << (s.rr_available ? "available" : "not available (is nvngx_dlssd.dll beside the game?)") << std::endl;
     return true;
 }
 
@@ -205,18 +213,88 @@ bool CreateFeature(VkCommandBuffer cmd, const DlssFrame& f) {
     s.out_height = f.output_height;
     s.quality = f.quality;
     s.preset = f.preset;
+    s.rr = false;
     LOGI << "DLSS: " << f.render_width << "x" << f.render_height << " -> " << f.output_width << "x" << f.output_height << ", quality "
          << f.quality << ", preset " << f.preset << std::endl;
     return true;
 }
 
+// Ray Reconstruction's feature (DLSSD): as DLSS's, with its guides (roughness in the
+// normals' w) and the hardware depth
+bool CreateRrFeature(VkCommandBuffer cmd, const DlssFrame& f) {
+    ReleaseFeature();
+    const char* const presets[] = {NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA,
+                                   NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality,
+                                   NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced,
+                                   NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance,
+                                   NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance};
+    for (const char* p : presets) {
+        NVSDK_NGX_Parameter_SetUI(s.params, p, (unsigned)f.rr_preset);
+    }
+    NVSDK_NGX_DLSSD_Create_Params create;
+    memset(&create, 0, sizeof(create));
+    create.InDenoiseMode = NVSDK_NGX_DLSS_Denoise_Mode_DLUnified;
+    create.InRoughnessMode = NVSDK_NGX_DLSS_Roughness_Mode_Packed;
+    create.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_HW;
+    create.InWidth = f.render_width;
+    create.InHeight = f.render_height;
+    create.InTargetWidth = f.output_width;
+    create.InTargetHeight = f.output_height;
+    create.InPerfQualityValue = (NVSDK_NGX_PerfQuality_Value)f.quality;
+    create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+                                  NVSDK_NGX_DLSS_Feature_Flags_DepthInverted | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+    NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSSD_EXT1(VkBackend::Device(), cmd, 1, 1, &s.feature, s.params, &create);
+    if (NVSDK_NGX_FAILED(r) || s.feature == NULL) {
+        LOGE << "DLSS Ray Reconstruction: couldn't make the " << f.render_width << "x" << f.render_height << " -> " << f.output_width << "x"
+             << f.output_height << " feature (0x" << std::hex << (unsigned)r << std::dec << "): off" << std::endl;
+        s.feature = NULL;
+        s.rr_available = false;
+        return false;
+    }
+    s.width = f.render_width;
+    s.height = f.render_height;
+    s.out_width = f.output_width;
+    s.out_height = f.output_height;
+    s.quality = f.quality;
+    s.preset = f.rr_preset;
+    s.rr = true;
+    LOGI << "DLSS Ray Reconstruction: " << f.render_width << "x" << f.render_height << " -> " << f.output_width << "x" << f.output_height
+         << ", quality " << f.quality << ", preset " << f.rr_preset << std::endl;
+    return true;
+}
+
+// What NGX needs of the instance or the device for DLSS and Ray Reconstruction (once each)
+std::vector<std::string> Needed(VkInstance instance, VkPhysicalDevice physical, bool device) {
+    std::vector<std::string> names;
+    for (NVSDK_NGX_Feature feature : {NVSDK_NGX_Feature_SuperSampling, NVSDK_NGX_Feature_RayReconstruction}) {
+        const NVSDK_NGX_FeatureDiscoveryInfo info = Discovery(feature);
+        uint32_t count = 0;
+        VkExtensionProperties* needed = NULL;
+        const NVSDK_NGX_Result r = device ? NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(instance, physical, &info, &count, &needed)
+                                          : NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&info, &count, &needed);
+        if (NVSDK_NGX_FAILED(r) || needed == NULL) {
+            continue;
+        }
+        for (uint32_t i = 0; i < count; ++i) {
+            const std::string name = needed[i].extensionName;
+            bool have = false;
+            for (const std::string& n : names) {
+                have = have || n == name;
+            }
+            if (!have) {
+                names.push_back(name);
+            }
+        }
+    }
+    return names;
+}
+
 }  // namespace
 
 void AppendInstanceExtensions(std::vector<const char*>* extensions) {
-    const NVSDK_NGX_FeatureDiscoveryInfo info = Discovery();
-    uint32_t count = 0;
-    VkExtensionProperties* needed = NULL;
-    if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&info, &count, &needed)) || needed == NULL) {
+    const std::vector<std::string> needed = Needed(VK_NULL_HANDLE, VK_NULL_HANDLE, false);
+    const uint32_t count = (uint32_t)needed.size();
+    if (count == 0) {
         return;
     }
     uint32_t n = 0;
@@ -226,7 +304,7 @@ void AppendInstanceExtensions(std::vector<const char*>* extensions) {
     s.instance_names.clear();  // (a new instance's; reserved: the pointers handed out stay)
     s.instance_names.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
-        const char* name = needed[i].extensionName;
+        const char* name = needed[i].c_str();
         bool present = false;
         for (const VkExtensionProperties& h : have) {
             present = present || strcmp(h.extensionName, name) == 0;
@@ -246,16 +324,12 @@ void AppendDeviceExtensions(VkInstance instance, VkPhysicalDevice physical, cons
     if (p.vendorID != 0x10DE) {
         return;
     }
-    const NVSDK_NGX_FeatureDiscoveryInfo info = Discovery();
-    uint32_t count = 0;
-    VkExtensionProperties* needed = NULL;
-    if (NVSDK_NGX_FAILED(NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(instance, physical, &info, &count, &needed)) || needed == NULL) {
-        return;
-    }
+    const std::vector<std::string> needed = Needed(instance, physical, true);
+    const uint32_t count = (uint32_t)needed.size();
     s.device_names.clear();
     s.device_names.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
-        const char* name = needed[i].extensionName;
+        const char* name = needed[i].c_str();
         bool present = false;
         for (const VkExtensionProperties& h : available) {
             present = present || strcmp(h.extensionName, name) == 0;
@@ -282,28 +356,75 @@ bool DlssAvailable() {
     return s.available;
 }
 
+bool RrAvailable() {
+    return DlssAvailable() && s.rr_available;
+}
+
 bool EvaluateDlss(const DlssFrame& f) {
-    if (!DlssAvailable()) {
+    const bool rr = f.ray_reconstruction;
+    if (!DlssAvailable() || (rr && !s.rr_available)) {
         return false;
     }
-    const GLuint names[4] = {f.color, f.depth, f.motion, f.output};
-    vkgl::ImageInfo img[4];
+    const GLuint names[7] = {f.color, f.depth, f.motion, f.output, f.diffuse_albedo, f.specular_albedo, f.normal_roughness};
+    const int count = rr ? 7 : 4;
+    vkgl::ImageInfo img[7];
     int begun = 0;
-    for (; begun < 4; ++begun) {
+    for (; begun < count; ++begun) {
         if (!vkgl::BeginExternal(names[begun], VK_IMAGE_LAYOUT_GENERAL, &img[begun])) {
             break;
         }
     }
-    bool ok = begun == 4;
+    bool ok = begun == count;
     if (ok) {
         VkCommandBuffer cmd = VkBackend::TransferCommands();
         bool reset = f.reset;
-        if (s.feature == NULL || s.width != f.render_width || s.height != f.render_height || s.out_width != f.output_width ||
-            s.out_height != f.output_height || s.quality != f.quality || s.preset != f.preset) {
-            ok = CreateFeature(cmd, f);
+        const int preset = rr ? f.rr_preset : f.preset;
+        if (s.feature == NULL || s.rr != rr || s.width != f.render_width || s.height != f.render_height || s.out_width != f.output_width ||
+            s.out_height != f.output_height || s.quality != f.quality || s.preset != preset) {
+            ok = rr ? CreateRrFeature(cmd, f) : CreateFeature(cmd, f);
             reset = true;
         }
-        if (ok) {
+        if (ok && rr) {
+            NVSDK_NGX_Resource_VK color = Wrap(img[0], false, false);
+            NVSDK_NGX_Resource_VK depth = Wrap(img[1], true, false);
+            NVSDK_NGX_Resource_VK motion = Wrap(img[2], false, false);
+            NVSDK_NGX_Resource_VK output = Wrap(img[3], false, true);
+            NVSDK_NGX_Resource_VK diffuse = Wrap(img[4], false, false);
+            NVSDK_NGX_Resource_VK specular = Wrap(img[5], false, false);
+            NVSDK_NGX_Resource_VK normals = Wrap(img[6], false, false);
+            float world_to_view[16], view_to_clip[16];
+            memcpy(world_to_view, f.world_to_view, sizeof(world_to_view));
+            memcpy(view_to_clip, f.view_to_clip, sizeof(view_to_clip));
+            NVSDK_NGX_VK_DLSSD_Eval_Params eval;
+            memset(&eval, 0, sizeof(eval));
+            eval.pInColor = &color;
+            eval.pInOutput = &output;
+            eval.pInDiffuseAlbedo = &diffuse;
+            eval.pInSpecularAlbedo = &specular;
+            eval.pInNormals = &normals;
+            eval.pInRoughness = &normals;  // (its w: InRoughnessMode packed)
+            eval.pInDepth = &depth;
+            eval.pInMotionVectors = &motion;
+            eval.InJitterOffsetX = f.jitter_x;
+            eval.InJitterOffsetY = f.jitter_y;
+            eval.InRenderSubrectDimensions.Width = f.render_width;
+            eval.InRenderSubrectDimensions.Height = f.render_height;
+            eval.InReset = reset ? 1 : 0;
+            eval.InMVScaleX = f.motion_scale_x;
+            eval.InMVScaleY = f.motion_scale_y;
+            eval.InPreExposure = 1.0f;
+            eval.InExposureScale = 1.0f;
+            eval.pInWorldToViewMatrix = world_to_view;
+            eval.pInViewToClipMatrix = view_to_clip;
+            eval.InFrameTimeDeltaInMsec = f.frame_ms;
+            const NVSDK_NGX_Result r = NGX_VULKAN_EVALUATE_DLSSD_EXT(cmd, s.feature, s.params, &eval);
+            if (NVSDK_NGX_FAILED(r)) {
+                LOGE << "DLSS Ray Reconstruction: evaluate failed (0x" << std::hex << (unsigned)r << std::dec << "): off" << std::endl;
+                ReleaseFeature();
+                s.rr_available = false;
+                ok = false;
+            }
+        } else if (ok) {
             NVSDK_NGX_Resource_VK color = Wrap(img[0], false, false);
             NVSDK_NGX_Resource_VK depth = Wrap(img[1], true, false);
             NVSDK_NGX_Resource_VK motion = Wrap(img[2], false, false);
@@ -366,6 +487,10 @@ bool DlssAvailable() {
         logged = true;
         LOGI << "DLSS: not in this build (CMake's DLSS_SDK)" << std::endl;
     }
+    return false;
+}
+
+bool RrAvailable() {
     return false;
 }
 

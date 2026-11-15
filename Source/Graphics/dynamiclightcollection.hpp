@@ -55,6 +55,8 @@ class DynamicLightCollection {
     void Init();
     void Dispose();
     DynamicLight* GetLightFromID(int id);
+    // Overgrowth Online (RT): every light, to trace their shadows
+    const std::vector<DynamicLight>& GetLights() const { return dynamic_lights; }
 
    private:
     std::vector<DynamicLight> dynamic_lights;

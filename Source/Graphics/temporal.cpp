@@ -13,6 +13,7 @@
 #include <Graphics/textures.h>
 #include <Graphics/vbocontainer.h>
 #include <Graphics/render_backend.h>
+#include <Graphics/raytrace.h>
 #include <Graphics/Vulkan/vk_ffx.h>
 #include <Graphics/Vulkan/vk_gl.h>
 #include <Graphics/Vulkan/vk_ngx.h>
@@ -49,6 +50,7 @@ struct State {
     int phases = kPhases;
     vec2 jitter;
     mat4 view_proj, prev_view_proj;
+    mat4 view, proj;  // (this frame's camera, unjittered: Ray Reconstruction's)
     bool have_prev = false;
     vec3 prev_cam_pos, prev_cam_dir;
     bool history_valid = false;
@@ -187,6 +189,14 @@ bool Enabled() {
     return Mode() != kOff && Graphics::Instance()->features().HDR_enable();
 }
 
+bool RayReconstructionWanted() {
+    return UseVulkan() && Enabled() && IsDlss(Mode()) && config["rt_rr"].toNumber<bool>() && Raytrace::Wanted() && VkNgx::RrAvailable();
+}
+
+bool RayReconstruction() {
+    return s.in_scene && Graphics::Instance()->rr_guides && RayReconstructionWanted();
+}
+
 float RenderScale() {
     const int mode = Mode();
     if (!Enabled() || !UseVulkan()) {
@@ -233,6 +243,8 @@ bool BeginScene(Camera* camera, int width, int height, int out_width, int out_he
     const mat4 view = camera->GetViewMatrix();
     const mat4 proj = camera->GetUnjitteredProjMatrix();
     s.view_proj = proj * view;
+    s.view = view;
+    s.proj = proj;
     // (FSR's camera: the near plane, the vertical field of view; the time since the last)
     s.camera_near = camera->GetNearPlane();
     s.fov_vertical = 2.0f * std::atan(1.0f / std::max(1e-6f, proj.entries[5]));
@@ -371,7 +383,33 @@ bool Resolve(const VBOContainer& quad_vert_vbo, const VBOContainer& quad_index_v
         f.reset = !s.history_valid || s.resolver != kResolverDLSS;
         f.quality = DlssQuality(mode);
         f.preset = config["dlss_preset"].toNumber<int>();
+        if (graphics->rr_guides && RayReconstructionWanted()) {
+            // Ray Reconstruction: the colour pass's guides; the camera, NRD's way (the
+            // projection's rows flipped: the images' first row is the bottom)
+            f.ray_reconstruction = true;
+            f.diffuse_albedo = textures->returnTexture(graphics->screen_rr_albedo_tex);
+            f.specular_albedo = textures->returnTexture(graphics->screen_rr_specular_tex);
+            f.normal_roughness = textures->returnTexture(graphics->screen_rr_normal_tex);
+            mat4 view_to_clip = s.proj;
+            for (int c = 0; c < 4; ++c) {
+                view_to_clip.entries[c * 4 + 1] = -view_to_clip.entries[c * 4 + 1];
+            }
+            memcpy(f.world_to_view, s.view.entries, sizeof(f.world_to_view));
+            memcpy(f.view_to_clip, view_to_clip.entries, sizeof(f.view_to_clip));
+            f.frame_ms = s.frame_ms;
+            f.rr_preset = config["rr_preset"].toNumber<int>();
+        }
         dlss = VkNgx::EvaluateDlss(f);
+        if (dlss && f.ray_reconstruction) {
+            // (diagnostics, config rr_debug_guide: 1 the diffuse albedo, 2 the specular
+            // albedo, 3 the normals and roughness, shown in place of the result)
+            const int guide = config["rr_debug_guide"].toNumber<int>();
+            if (guide >= 1 && guide <= 3) {
+                const TextureRef& tex = guide == 1 ? graphics->screen_rr_albedo_tex : guide == 2 ? graphics->screen_rr_specular_tex : graphics->screen_rr_normal_tex;
+                graphics->BlitRenderTarget(RenderTarget().Color(tex), 0, PixelRect(0, 0, s.width, s.height), RenderTarget().Color(s.output), 0,
+                                           PixelRect(0, 0, s.out_width, s.out_height));
+            }
+        }
         if (dlss) {
             result = s.output;
             result_width = s.out_width;

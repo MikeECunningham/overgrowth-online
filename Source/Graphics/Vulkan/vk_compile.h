@@ -15,7 +15,9 @@
 //-----------------------------------------------------------------------------
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace VkCompile {
 
@@ -35,5 +37,10 @@ std::string ProgramDir(const std::string& name, const char* const sources[kStage
 // Data/VulkanShaders beside the game's exe, with its "/" (packages ship the known programs
 // and pipelines there); "" when there's none
 std::string ShippedDir();
+
+// Overgrowth Online (RT): a compute shader of our own (GLSL 460, its bindings as written,
+// no engine patches) to SPIR-V for Vulkan 1.2. False: no glslang, or it doesn't compile
+// (the reason in *error)
+bool CompileCompute(const std::string& source, std::vector<uint32_t>* spirv, std::string* error);
 
 }  // namespace VkCompile

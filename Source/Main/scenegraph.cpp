@@ -25,6 +25,7 @@
 #include <Graphics/decaltextures.h>
 #include <Graphics/flares.h>
 #include <Graphics/graphics.h>
+#include <Graphics/raytrace.h>
 #include <Graphics/temporal.h>
 #include <Graphics/models.h>
 #include <Graphics/sky.h>
@@ -494,6 +495,26 @@ static void UpdateShaderSuffix(SceneGraph* scenegraph, Object::DrawType object_d
             FormatString(shader_str[1], kShaderStrSize, "%s #ALBEDO_ONLY", shader_str[0]);
             std::swap(shader_str[0], shader_str[1]);
         }
+        if (Raytrace::MaskReady()) {  // Overgrowth Online (RT): the sun's shadow and AO traced for this scene
+            FormatString(shader_str[1], kShaderStrSize, "%s #RT_LIGHTING", shader_str[0]);
+            std::swap(shader_str[0], shader_str[1]);
+            if (config["rt_debug"].toNumber<int>() > 0) {  // (1: the mask; 2: the ambient light alone)
+                FormatString(shader_str[1], kShaderStrSize, config["rt_debug"].toNumber<int>() == 2 ? "%s #RT_AMBIENT_DEBUG" : "%s #RT_LIGHTING_DEBUG", shader_str[0]);
+                std::swap(shader_str[0], shader_str[1]);
+            }
+            if (Raytrace::ReflectionsReady()) {  // (and its reflections traced in the colour pass)
+                FormatString(shader_str[1], kShaderStrSize, "%s #RT_REFLECTIONS", shader_str[0]);
+                std::swap(shader_str[0], shader_str[1]);
+            }
+            if (Raytrace::GiReady()) {  // (and its ambient light traced: GI)
+                FormatString(shader_str[1], kShaderStrSize, "%s #RT_GI", shader_str[0]);
+                std::swap(shader_str[0], shader_str[1]);
+            }
+        }
+        if (Temporal::RayReconstruction()) {  // Overgrowth Online (RT): DLSS Ray Reconstruction's guides
+            FormatString(shader_str[1], kShaderStrSize, "%s #RR_GUIDES", shader_str[0]);
+            std::swap(shader_str[0], shader_str[1]);
+        }
         if (g_simple_water) {
             FormatString(shader_str[1], kShaderStrSize, "%s #SIMPLE_WATER", shader_str[0]);
             std::swap(shader_str[0], shader_str[1]);
@@ -570,7 +591,9 @@ static void UpdateShaderSuffix(SceneGraph* scenegraph, Object::DrawType object_d
         FormatString(shader_str[1], kShaderStrSize, "%s #CAN_USE_3D_TEX", shader_str[0]);
         std::swap(shader_str[0], shader_str[1]);
     }
-    if (!(Graphics::Instance()->config_.motion_blur_amount_ > 0.01f)) {
+    // (Overgrowth Online RT: with Ray Reconstruction's guides the opaque part writes every
+    // attachment, its velocity none for what doesn't move)
+    if (!(Graphics::Instance()->config_.motion_blur_amount_ > 0.01f) && !Temporal::RayReconstruction()) {
         FormatString(shader_str[1], kShaderStrSize, "%s #NO_VELOCITY_BUF", shader_str[0]);
         std::swap(shader_str[0], shader_str[1]);
     }
@@ -618,6 +641,14 @@ void SceneGraph::Draw(SceneGraph::SceneDrawType scene_draw_type) {
     if (graphics->queued_screenshot && graphics->screenshot_mode == Graphics::kTransparentGameplay) {
         graphics->SetClearColor(vec4(0.0f, 0.0f, 0.0f, 0.0f));
         graphics->Clear(true);
+    }
+
+    // Overgrowth Online (RT): DLSS Ray Reconstruction's guides are written by the opaque
+    // part of the scene (every colour attachment: 6); the transparent things and particles
+    // leave them as the surface behind has them
+    const int opaque_draw_count = Temporal::RayReconstruction() && graphics->CurrentRenderTarget().num_color >= 6 ? 6 : 1;
+    if (opaque_draw_count > 1) {
+        graphics->SetDrawBuffers(opaque_draw_count);
     }
 
     // List static meshes
@@ -762,7 +793,7 @@ void SceneGraph::Draw(SceneGraph::SceneDrawType scene_draw_type) {
                 const bool output_motion = moves && Temporal::InScene();
                 bool output_velocity_buffer = ((graphics->config_.motion_blur_amount_ > 0.01f) && moves) || output_motion;
                 if (output_velocity_buffer) {
-                    graphics->SetDrawBuffers(output_motion ? 3 : 2);  // (Overgrowth Online stage 5.0: colour + velocity)
+                    graphics->SetDrawBuffers(std::max(opaque_draw_count, output_motion ? 3 : 2));  // (Overgrowth Online stage 5.0: colour + velocity)
                 }
                 // We want to hide the terrain if we're rendering the navmesh.
                 if (obj_type == _terrain_type && nav_mesh_renderer_.IsCollisionMeshVisible()) {
@@ -770,9 +801,12 @@ void SceneGraph::Draw(SceneGraph::SceneDrawType scene_draw_type) {
                 }
                 obj.ReceiveObjectMessage(OBJECT_MSG::DRAW);
                 if (output_velocity_buffer) {
-                    graphics->SetDrawBuffers(1);
+                    graphics->SetDrawBuffers(opaque_draw_count);
                 }
             }
+        }
+        if (opaque_draw_count > 1) {
+            graphics->SetDrawBuffers(1);
         }
 
         Temporal::OpaqueDrawn();  // Overgrowth Online (FSR): the reactive mask is what comes after
@@ -1862,7 +1896,8 @@ void SceneGraph::DrawDepthMap(const mat4& proj_view_matrix, const vec4* cull_pla
             }
         }
         EnvObject::AfterDrawInstances();
-        if (object_draw_type != Object::kDrawDepthOnly) {
+        // (Overgrowth Online RT: the prepass draws the grass too where it's ray traced)
+        if (object_draw_type != Object::kDrawDepthOnly || Raytrace::GrassInPrepass()) {
             // Batch and draw detail objects
             static std::vector<DetailObjectSurfaceDrawCall> detail_objects_surfaces_to_draw;
             detail_objects_surfaces_to_draw.clear();

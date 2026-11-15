@@ -27,6 +27,9 @@ class Program;
 namespace VkPrograms {
 
 const uint32_t kBlockBindingBase = 64;  // uniform block B at binding 64 + B (textures: their unit)
+// Overgrowth Online (RT): a program tracing reflections (rt_reflect.glsl): the scene's TLAS
+// and its materials in the push set, the texture slots VkRt's own set (set 1)
+const uint32_t kRtSceneBinding = 96, kRtMaterialsBinding = 97;
 
 struct Binding {
     uint32_t binding = 0;  // in the push set
@@ -64,6 +67,7 @@ struct Info {
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     bool tessellation = false;
+    bool traces = false;  // (Overgrowth Online RT: set 1 is VkRt's texture slots: vk_draw binds it)
     uint64_t id = 0;  // (pipeline keys)
     uint32_t flags = 0;  // the engine's optional stages (Shaders::OptionalShaders)
 };

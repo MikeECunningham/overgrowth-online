@@ -25,6 +25,7 @@
 #include <Graphics/reversez.h>
 #include <Graphics/frame_timers.h>
 #include <Graphics/render_backend.h>
+#include <Graphics/raytrace.h>
 #include <Graphics/temporal.h>
 #include <Graphics/Vulkan/vk_draw.h>
 #include <Game/hardcoded_assets.h>
@@ -3038,9 +3039,15 @@ void Engine::DrawScene(DrawingViewport drawing_viewport, Engine::PostEffectsType
             mat4 proj = ActiveCameras::Get()->GetProjMatrix();
             mat4 view = ActiveCameras::Get()->GetViewMatrix();
             scenegraph_->DrawDepthMap(proj * view, (const vec4*)ActiveCameras::Get()->frustumPlanes, 6, SceneGraph::kDepthPrePass, scene_draw_type);
+            // Overgrowth Online (RT): the sun's shadow and the ambient occlusion traced from
+            // the prepass's depth (a single screen's final frame)
+            if (post_effects_type == Engine::kFinal && drawing_viewport == kScreen && temporal_one_screen) {
+                Raytrace::TraceLighting(scenegraph_, ActiveCameras::Get(), proj, view, graphics->scene_dims[0], graphics->scene_dims[1]);
+            }
         }
         PROFILER_GPU_ZONE(g_profiler_ctx, "Draw color pass");
         scenegraph_->Draw(scene_draw_type);
+        Raytrace::EndScene();
     }
 
     if (graphics->multisample_framebuffer_exists) {

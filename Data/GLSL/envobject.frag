@@ -29,6 +29,31 @@
 uniform float time;
 uniform vec3 cam_pos;
 
+#if defined(RT_LIGHTING)
+// Overgrowth Online (RT): the sun's shadow and the ambient occlusion ray traced from the
+// depth prepass and denoised (Raytrace): r the sun's visibility (-1: not traced), g the
+// depth it was traced from, b the ambient light left
+uniform sampler2D tex21;
+#endif
+#if defined(RT_GI) && (defined(PARTICLE) || defined(GPU_PARTICLE_FIELD) || defined(SKY) || defined(DEPTH_ONLY))
+    #undef RT_GI  // (Overgrowth Online RT: GI is the main path's draws' alone)
+#endif
+#if defined(RT_LIGHTING) && defined(RT_GI)
+// Overgrowth Online (RT): the light that comes to each pixel from around it, ray traced and
+// denoised (Raytrace): in place of the ambient light where the pixel is the surface the
+// depth prepass saw. NRD's spherical harmonics: SH0 (Y, Co, Cg, hit distance), SH1 (the
+// direction * Y), resolved with the surface's own normal (NRD_SH_ResolveDiffuse)
+uniform sampler2D tex22;
+uniform sampler2D tex23;
+
+vec3 RtGiResolve(vec4 sh0, vec3 sh1, vec3 n) {
+    float y = max(sh0.x * (1.0 / 3.0) + dot(sh1, n), 0.0);
+    vec2 co_cg = sh0.yz * ((y + 1e-6) / (max(sh0.x, 0.0) + 1e-6));
+    float t = y - co_cg.y;
+    return max(vec3(t + co_cg.x, y + co_cg.y, t - co_cg.x), vec3(0.0));
+}
+#endif
+
 //#define VOLCANO
 //#define MISTY
 //#define WATER_HORIZON
@@ -277,6 +302,11 @@ uniform mat4 projection_view_mat;
 
 #include "decals.glsl"
 
+#if defined(RT_REFLECTIONS) && (defined(PARTICLE) || defined(GPU_PARTICLE_FIELD) || defined(SKY) || defined(DETAIL_OBJECT) || defined(DEPTH_ONLY))
+    #undef RT_REFLECTIONS  // (Overgrowth Online RT: reflections are traced in the main path's draws only)
+#endif
+#include "rt_reflect.glsl"
+
 in vec3 world_vert;
 
 #if defined(PARTICLE)
@@ -423,6 +453,21 @@ out vec4 out_color;
     in vec4 taa_clip;
     in vec4 taa_prev_clip;
     out vec4 out_mv;
+#endif
+
+// Overgrowth Online (RT): DLSS Ray Reconstruction's guides, the scene target's fourth to
+// sixth attachments (after the motion: locations 3 to 5; the motion written as none of
+// its own where this doesn't move): the diffuse albedo, the specular albedo, the world-
+// space normal and roughness. Written where the surface is worked out; elsewhere (the sky,
+// what the main path doesn't light) a grey albedo and no normal
+#if defined(RR_GUIDES) && !defined(DEPTH_ONLY) && !defined(NO_VELOCITY_BUF)
+    #define RR_WRITES_GUIDES
+    #if !defined(TAA_WRITES_MOTION)
+        out vec4 out_mv;
+    #endif
+    out vec4 out_rr_albedo;
+    out vec4 out_rr_specular;
+    out vec4 out_rr_normal;
 #endif
 
 #define shadow_tex_coords tc1
@@ -1116,6 +1161,15 @@ void main() {
     #if defined(INVISIBLE) && !defined(COLLISION)
         discard;
     #endif
+    #if defined(RR_WRITES_GUIDES)
+        // (Overgrowth Online RT: Ray Reconstruction's guides where nothing below sets them)
+        #if !defined(TAA_WRITES_MOTION)
+            out_mv = vec4(0.0);
+        #endif
+        out_rr_albedo = vec4(0.5, 0.5, 0.5, 0.0);
+        out_rr_specular = vec4(0.0);
+        out_rr_normal = vec4(0.0);
+    #endif
 
     /*{
     vec3 world_dx = dFdx(world_vert);
@@ -1693,6 +1747,24 @@ void main() {
                     vec3 shadow_tex = vec3(0.5f);
                 #endif
 
+                // (Overgrowth Online RT: the sun's traced shadow of the blade itself, where it's
+                // in the prepass (rt_grass: Raytrace::GrassInPrepass), else of what's just behind
+                // it, its ground, where that's close behind (within a quarter of its distance).
+                // The sun's shadow and the AO: grass keeps the game's own ambient, no GI (it
+                // darkened every field)
+                float rt_grass_ao = 1.0;
+                #if defined(RT_LIGHTING)
+                    vec4 rt_grass = texelFetch(tex21, ivec2(gl_FragCoord.xy), 0);
+                    bool rt_grass_here = rt_grass.g > 0.0 && rt_grass.g <= gl_FragCoord.z * 1.001 &&
+                                         gl_FragCoord.z - rt_grass.g <= 0.25 * gl_FragCoord.z;
+                    if (rt_grass_here) {
+                        if (rt_grass.r >= 0.0) {
+                            shadow_tex.r = rt_grass.r * CloudShadow(world_vert);
+                        }
+                        rt_grass_ao = mix(1.0, rt_grass.b, 0.5);  // (half strength: full, a field read darker than the game's)
+                    }
+                #endif
+
                 vec3 ambient_cube_color[6];
 
                 for(int i=0; i<6; ++i){
@@ -1710,9 +1782,9 @@ void main() {
                 diffuse_color += decal_diffuse_color;  // Is zero if decals aren't enabled
 
                 if(!use_amb_cube){
-                    diffuse_color += LookupCubemapSimpleLod(ws_normal, spec_cubemap, 5.0) * GetAmbientContrib(1.0) * ambient_mult * env_ambient_mult;
+                    diffuse_color += LookupCubemapSimpleLod(ws_normal, spec_cubemap, 5.0) * GetAmbientContrib(1.0) * ambient_mult * env_ambient_mult * rt_grass_ao;
                 } else {
-                    diffuse_color += SampleAmbientCube(ambient_cube_color, ws_normal) * GetAmbientContrib(1.0) * ambient_mult * env_ambient_mult;
+                    diffuse_color += SampleAmbientCube(ambient_cube_color, ws_normal) * GetAmbientContrib(1.0) * ambient_mult * env_ambient_mult * rt_grass_ao;
                 }
 
                 vec3 spec_color = vec3(0.0);
@@ -2776,19 +2848,109 @@ void main() {
                 #endif
 
                 vec3 shadow_tex = vec3(1.0);
+                float rt_ao = 1.0;  // (Overgrowth Online RT: the ambient light left after occlusion)
+                vec4 rt_gi_sh0 = vec4(0.0);  // (... and the light traced in its place: GI's SH)
+                vec3 rt_gi_sh1 = vec3(0.0);
+                bool rt_gi_here = false;
 
                 #if defined(SIMPLE_SHADOW)
+                    // (out of the branch below: derivatives in uniform control flow)
+                    vec3 simple_shadow_X = dFdx(world_vert);
+                    vec3 simple_shadow_Y = dFdy(world_vert);
+                #endif
+                #if defined(RT_LIGHTING)
+                    // Overgrowth Online (RT): the traced shadow and AO where this is the surface
+                    // the depth prepass saw (its depth within a thousandth), else the shadow map.
+                    // A pixel on an edge (MSAA: the mask was traced from the depth's first
+                    // sample, often the surface behind) takes the neighbour on its own surface
+                    // (the closest depth within a hundredth): falling back there drew every
+                    // silhouette in the shadow map's light and the probes' ambient, an outline
+                    // of light round characters and ledges in the dark
+                    ivec2 rt_texel = ivec2(gl_FragCoord.xy);
+                    vec4 rt_lighting = texelFetch(tex21, rt_texel, 0);
+                    bool rt_here = abs(rt_lighting.g - gl_FragCoord.z) <= 0.001 * rt_lighting.g;
+                    #if defined(WATERFALL)
+                        // (a waterfall's sheet isn't in the prepass, and its draw lights it as
+                        // facing the sky: it borrowed the dark rock's behind it, shadow and GI, a
+                        // grey waterfall. It keeps its own lighting, as its draw is made)
+                        const bool rt_borrow = false;
+                        rt_here = false;
+                    #else
+                        const bool rt_borrow = true;
+                    #endif
+                    // A character's fur (shells a few centimetres off its body, never in the
+                    // prepass) matches nothing that close: a wider ring and a looser match then
+                    // (a twentieth), still far short of the wall behind; without it the fur lit
+                    // as the shadow map has it, a glowing outline in the dark. A character's
+                    // own pixels then take the closest of all 25, however far: its fur's tufts
+                    // stand off further still, and the surface RT saw beside them is its body
+                    // or what it stands against, never the shadow map's sun
+                    if (!rt_here && rt_borrow) {
+                        ivec2 rt_size = textureSize(tex21, 0);
+                        for (int ring = 1; ring <= 2 && !rt_here; ++ring) {
+                            #if defined(CHARACTER)
+                                float rt_best = ring == 1 ? 0.01 * gl_FragCoord.z : 1e30;
+                                bool rt_whole = ring == 2;
+                            #else
+                                float rt_best = (ring == 1 ? 0.01 : 0.05) * gl_FragCoord.z;
+                                bool rt_whole = false;
+                            #endif
+                            for (int dy = -ring; dy <= ring; ++dy) {
+                                for (int dx = -ring; dx <= ring; ++dx) {
+                                    if (max(abs(dx), abs(dy)) != ring && !rt_whole) {
+                                        continue;  // (the ring's edge: the inside was looked at)
+                                    }
+                                    ivec2 q = clamp(ivec2(gl_FragCoord.xy) + ivec2(dx, dy), ivec2(0), rt_size - 1);
+                                    vec4 n = texelFetch(tex21, q, 0);
+                                    float diff = abs(n.g - gl_FragCoord.z);
+                                    if (n.g > 0.0 && diff <= rt_best) {  // (not the sky's: nothing traced there)
+                                        rt_best = diff;
+                                        rt_lighting = n;
+                                        rt_texel = q;
+                                        rt_here = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    #if defined(RT_LIGHTING_DEBUG)
+                        // (config rt_debug: red the sun's visibility, green the AO, blue the point
+                        // lights' share where they're used, 0 where not)
+                        out_color = vec4(max(rt_lighting.r, 0.0), rt_lighting.b, rt_here ? rt_lighting.a : 0.0, 1.0);
+                        return;
+                    #endif
+                    if (rt_here) {
+                        rt_ao = rt_lighting.b;
+                        rt_light_ratio = rt_lighting.a;
+                    }
+                    #if defined(RT_GI)
+                        // (the traced light in place of the ambient light. Its occlusion is in
+                        // it, but denoised at GI's scale: the creases and contacts the AO rays
+                        // see (rt_ao) still darken it, or RTAO did nothing with GI on)
+                        if (rt_here) {
+                            rt_gi_sh0 = texelFetch(tex22, rt_texel, 0);
+                            rt_gi_sh1 = texelFetch(tex23, rt_texel, 0).xyz;
+                            rt_gi_here = true;
+                        }
+                    #endif
+                    if (rt_here && rt_lighting.r >= 0.0) {
+                        shadow_tex.r = rt_lighting.r;
+                    } else
+                #endif
+                {
+                #if defined(SIMPLE_SHADOW)
                     {
-                        vec3 X = dFdx(world_vert);
-                        vec3 Y = dFdy(world_vert);
-                        vec3 norm = normalize(cross(X, Y));
+                        vec3 norm = normalize(cross(simple_shadow_X, simple_shadow_Y));
                         float slope_dot = dot(norm, ws_light);
                         slope_dot = min(slope_dot, 1);
                         shadow_tex.r = GetCascadeShadow(tex4, shadow_coords, length(ws_vertex), slope_dot);
                     }
-                    shadow_tex.r *= ambient_mult;
                 #else
                     shadow_tex.r = GetCascadeShadow(tex4, shadow_coords, length(ws_vertex));
+                #endif
+                }
+                #if defined(SIMPLE_SHADOW)
+                    shadow_tex.r *= ambient_mult;
                 #endif
 
                 shadow_tex.r *= CloudShadow(world_vert);
@@ -2918,6 +3080,20 @@ void main() {
                     #if defined(WATER)
                         vec3 screen_space_reflect;
 
+                        #if defined(RT_REFLECTIONS)
+                        {
+                            // Overgrowth Online (RT): the water's reflection traced (the captures where nothing's met)
+                            vec3 spec_map_vec = normalize(reflect(ws_vertex,ws_normal));
+                            vec3 water_normal = gl_FrontFacing ? ws_normal : -ws_normal;
+                            #if defined(NO_REFLECTION_CAPTURE)
+                                vec3 captured = vec3(0.0);
+                            #else
+                                vec3 captured = LookUpReflectionShapes(ref_cap_cubemap, world_vert, spec_map_vec, 0.0) * ambient_mult * env_ambient_mult;
+                            #endif
+                            screen_space_reflect = RtReflect(world_vert, water_normal, spec_map_vec, 0.0, captured);
+                            out_color.xyz = screen_space_reflect;
+                        }
+                        #else
                         {
                             vec3 spec_map_vec = normalize(reflect(ws_vertex,ws_normal));
                             //out_color.xyz = vec3(0.0);
@@ -3035,6 +3211,7 @@ void main() {
                             //out_color.xyz = vec3(reflect_amount);
                             //out_color.xyz = vec3(abs(depth - proj_test_point.z) * 0.1);
                         }
+                        #endif  // RT_REFLECTIONS
                     #endif  // WATER
                 #endif  // defined(SCREEN_SPACE_REFLECTION) && !defined(DEPTH_ONLY)
 
@@ -3042,7 +3219,25 @@ void main() {
                     env_ambient_mult *= SSAO(ws_vertex);
                 #endif
 
-                diffuse_color += ambient_color * GetAmbientContrib(shadow_tex.g) * ambient_mult * env_ambient_mult;
+                // (the ambient light's dimming by the level's shadow decals: the rasterized
+                // ambient's own way of keeping caves dark)
+                float ambient_dim = ambient_mult * env_ambient_mult;
+                #if defined(RT_GI)
+                    if (rt_gi_here) {
+                        // (Overgrowth Online RT: GI's two traced bounces and skylight in place of
+                        // the game's rasterized ambient (its sky cube map wherever a surface is),
+                        // as traced: their occlusion is in them, so the shadow decals don't dim
+                        // them again)
+                        ambient_color = RtGiResolve(rt_gi_sh0, rt_gi_sh1, normalize(ws_normal));
+                        ambient_dim = 1.0;
+                    }
+                #endif
+                diffuse_color += ambient_color * GetAmbientContrib(shadow_tex.g) * ambient_dim * rt_ao;
+                #if defined(RT_AMBIENT_DEBUG)
+                    // (config rt_debug 2: the ambient light alone, GI's or the probes' and the sky's)
+                    out_color = vec4(ambient_color * GetAmbientContrib(shadow_tex.g) * ambient_dim * rt_ao, 1.0);
+                    return;
+                #endif
 
                 #if defined(BEACH)
                     float kBeachLevel = 16.7 + sin(time*0.5-2.0)*0.05;
@@ -3055,7 +3250,7 @@ void main() {
                 #if defined(PLANT)
                     vec3 spec_color = vec3(0.0);
                     vec3 translucent_lighting = GetDirectColor(shadow_tex.r) * primary_light_color.a;
-                    translucent_lighting += ambient_color * GetAmbientContrib(shadow_tex.g) * ambient_mult * env_ambient_mult;
+                    translucent_lighting += ambient_color * GetAmbientContrib(shadow_tex.g) * ambient_mult * env_ambient_mult * rt_ao;
                     translucent_lighting *= GammaCorrectFloat(0.6);
                     vec3 translucent_map = texture(translucency_tex, frag_tex_coords).xyz;
                     /*
@@ -3135,11 +3330,23 @@ void main() {
                             vec3 reflection_color = LookUpReflectionShapes(ref_cap_cubemap, world_vert, normalize(spec_map_vec), reflection_roughness*3.0);
                         #endif
 
+                        #if defined(RT_GI)
+                        if (rt_gi_here) {
+                            // (Overgrowth Online RT: the captured cubemap knows no walls, and on
+                            // a volcano level nothing dimmed it: the skin mirrored the open lava
+                            // light in a dark cave, a glowing character, brightest at its edges.
+                            // The traced light from the reflected direction instead, occluded
+                            // and dimmed as the ambient light is)
+                            spec_color += RtGiResolve(rt_gi_sh0, rt_gi_sh1, normalize(spec_map_vec)) * GetAmbientContrib(shadow_tex.g) * rt_ao * ambient_mult * env_ambient_mult;
+                        } else
+                        #endif
+                        {
                         #if defined(VOLCANO)
                             spec_color += reflection_color;
                         #else
                             spec_color += reflection_color * ambient_mult * env_ambient_mult;
                         #endif
+                        }
 
                         float glancing = max(0.0, min(1.0, 1.0 + dot(normalize(ws_vertex), ws_normal)));
                         float base_reflectivity = mix(spec_amount * 0.1, 0.03, wet);
@@ -3339,6 +3546,25 @@ void main() {
                         #else
                             vec3 reflection_color = LookUpReflectionShapes(ref_cap_cubemap, world_vert, spec_map_vec, min(2.5, reflection_roughness * 5.0));
                         #endif
+                        #if defined(RT_GI)
+                            // (Overgrowth Online RT: the captured cubemap knows no walls: at a
+                            // grazing angle the Fresnel turned the skin into a mirror of the open
+                            // capture, a glowing outline in a cave. The traced light from the
+                            // reflected direction instead, occluded as the ambient is)
+                            if (rt_gi_here) {
+                                reflection_color = RtGiResolve(rt_gi_sh0, rt_gi_sh1, spec_map_vec) * GetAmbientContrib(shadow_tex.g) * rt_ao;
+                            }
+                        #endif
+                        #if defined(RT_REFLECTIONS)
+                            // (this path dims the whole reflection after, as the captured one wants: the
+                            // traced one has its own dimming where it hit, so it's undone for that part)
+                            #if defined(VOLCANO)
+                                float rt_dim = max(ambient_mult, 0.05);
+                            #else
+                                float rt_dim = max(ambient_mult * env_ambient_mult, 0.05);
+                            #endif
+                            reflection_color = RtReflection(world_vert, ws_normal, spec_map_vec, reflection_roughness, reflection_color * rt_dim) / rt_dim;
+                        #endif
 
                         // Disabled in case ambient_cube_color is not initialized
                         //reflection_color = mix(reflection_color, SampleAmbientCube(ambient_cube_color, spec_map_vec), max(0.0, reflection_roughness * 2.0 - 1.0));
@@ -3405,6 +3631,15 @@ void main() {
                             #else
                                 vec3 reflection_color = LookUpReflectionShapes(ref_cap_cubemap, world_vert, spec_map_vec, reflection_roughness * 3.0) * ambient_mult * env_ambient_mult;
                             #endif
+                            #if defined(RT_GI) && !defined(WATER)
+                                // (the same: the traced light from the reflected direction, not the capture's)
+                                if (rt_gi_here) {
+                                    reflection_color = RtGiResolve(rt_gi_sh0, rt_gi_sh1, spec_map_vec) * GetAmbientContrib(shadow_tex.g) * rt_ao * ambient_mult * env_ambient_mult;
+                                }
+                            #endif
+                            #if defined(RT_REFLECTIONS)
+                                reflection_color = RtReflection(world_vert, ws_normal, spec_map_vec, reflection_roughness, reflection_color);
+                            #endif
                         #endif
 
                         spec_color += reflection_color;
@@ -3464,6 +3699,12 @@ void main() {
                     #endif
 
                     vec3 color = mix(diffuse_color * colormap.xyz, spec_color, spec_amount);
+                    #if defined(RR_WRITES_GUIDES)
+                        // (Overgrowth Online RT: Ray Reconstruction's guides, as the colour is made)
+                        out_rr_albedo = vec4(clamp(colormap.xyz * (1.0 - spec_amount), 0.0, 1.0), 0.0);
+                        out_rr_specular = vec4(vec3(clamp(spec_amount, 0.0, 1.0)), 0.0);
+                        out_rr_normal = vec4(normalize(ws_normal), clamp(roughness, 0.0, 1.0));
+                    #endif
 
                     #if defined(INSTANCED_MESH) && defined(WATERFALL)
                         if(instance_color_tint[3] == -1.0){
@@ -3805,6 +4046,12 @@ void main() {
                     out_color = vec4(color,colormap.a);
                 #elif defined(WATER)
                     out_color = vec4(color,spec_val);
+                    #if defined(RR_WRITES_GUIDES)
+                        // (Overgrowth Online RT: water, mostly what it reflects)
+                        out_rr_albedo = vec4(vec3(clamp(1.0 - spec_val, 0.0, 1.0)) * 0.5, 0.0);
+                        out_rr_specular = vec4(vec3(clamp(spec_val, 0.0, 1.0)), 0.0);
+                        out_rr_normal = vec4(normalize(ws_normal), 0.05);
+                    #endif
                 #else
                     out_color = vec4(color,1.0);
                 #endif

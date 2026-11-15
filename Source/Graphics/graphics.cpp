@@ -1127,6 +1127,10 @@ void Graphics::Dispose() {
     screen_vel_tex.clear();
     screen_depth_tex.clear();
     screen_mv_tex.clear();
+    screen_rr_albedo_tex.clear();
+    screen_rr_specular_tex.clear();
+    screen_rr_normal_tex.clear();
+    rr_guides = false;
     post_color_tex.clear();
 
     post_effects.temp_screen_tex.clear();
@@ -1863,8 +1867,10 @@ void Graphics::InitScreen() {
             scene_dims[i] = scale < 1.0f ? std::max(1, (int)((float)render_dims[i] * scale + 0.5f)) : render_dims[i];
         }
     }
+    const bool rr_wanted = Temporal::RayReconstructionWanted();
     if (render_dims[0] != old_render_dims[0] || render_dims[1] != old_render_dims[1] || config_.FSAA_samples() != old_FSAA_samples ||
-        config_.temporal_aa() != old_temporal_aa || scene_dims[0] != old_scene_dims[0] || scene_dims[1] != old_scene_dims[1]) {
+        config_.temporal_aa() != old_temporal_aa || scene_dims[0] != old_scene_dims[0] || scene_dims[1] != old_scene_dims[1] ||
+        rr_wanted != old_rr_guides) {
         PROFILER_GPU_ZONE(g_profiler_ctx, "Setting up framebuffers for post effects");
         PushRenderTarget();
 
@@ -1936,6 +1942,21 @@ void Graphics::InitScreen() {
             textures->SetTextureName(screen_mv_tex, "Post::Screen Motion");
             scene_target.Color(screen_mv_tex);
         }
+        screen_rr_albedo_tex.clear();
+        screen_rr_specular_tex.clear();
+        screen_rr_normal_tex.clear();
+        rr_guides = false;
+        if (Temporal::Enabled() && rr_wanted) {  // Overgrowth Online (RT): Ray Reconstruction's guides
+            screen_rr_albedo_tex = textures->makeRectangularTexture(scene_dims[0], scene_dims[1], GL_RGBA8, GL_RGBA);
+            textures->SetTextureName(screen_rr_albedo_tex, "RR::Diffuse Albedo");
+            screen_rr_specular_tex = textures->makeRectangularTexture(scene_dims[0], scene_dims[1], GL_RGBA8, GL_RGBA);
+            textures->SetTextureName(screen_rr_specular_tex, "RR::Specular Albedo");
+            screen_rr_normal_tex = textures->makeRectangularTexture(scene_dims[0], scene_dims[1], GL_RGBA16F, GL_RGBA);
+            textures->SetTextureName(screen_rr_normal_tex, "RR::Normal Roughness");
+            scene_target.Color(screen_rr_albedo_tex).Color(screen_rr_specular_tex).Color(screen_rr_normal_tex);
+            rr_guides = true;
+            LOGI << "DLSS Ray Reconstruction: the scene writes its guides" << std::endl;
+        }
         scene_target.Depth(screen_depth_tex);
         BindRenderTarget(scene_target);
         CHECK_FBO_ERROR();
@@ -1979,6 +2000,7 @@ void Graphics::InitScreen() {
     old_scene_dims[1] = scene_dims[1];
     old_FSAA_samples = config_.FSAA_samples();
     old_temporal_aa = config_.temporal_aa();
+    old_rr_guides = rr_wanted;
     first_load = false;
     gl_lib_loaded_ = true;
     settings_changed = true;

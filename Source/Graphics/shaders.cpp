@@ -233,8 +233,13 @@ static void Preprocess(Shader *shader, ShaderType type, const std::vector<std::s
     std::string &text = shader->text;
 
     bool no_velocity_buf_defined = false;
+    bool rt_reflections = false;  // (Overgrowth Online RT: reflections traced in this draw, rt_reflect.glsl)
+    bool includes_rt = false;
 
     for (const auto &definition : definitions) {
+        if (definition == "RT_REFLECTIONS") {
+            rt_reflections = true;
+        }
         if (definition == "TANGENT") {
             shader->use_tangent = true;
         }
@@ -283,6 +288,7 @@ static void Preprocess(Shader *shader, ShaderType type, const std::vector<std::s
                         if (FindFilePath(rel_path, abs_path, kPathSize, kDataPaths | kModPaths) == -1) {
                             FatalError("Error", "Could not find shader include file: %s", rel_path);
                         }
+                        includes_rt = includes_rt || pd.data == "rt_reflect.glsl";
                         HandleInclude(&text, line_start, abs_path, &cursor);
                         shader->include_files.push_back(abs_path);
                         shader->include_modified.push_back(GetDateModifiedInt64(shader->include_files.back().c_str()));
@@ -365,6 +371,18 @@ static void Preprocess(Shader *shader, ShaderType type, const std::vector<std::s
     }
     if ((UseVulkan() || GLAD_GL_ARB_shader_texture_lod) && type == _fragment) {
         text.insert(0, "#extension GL_ARB_shader_texture_lod : enable\n");
+    }
+
+    // Overgrowth Online (RT): a fragment shader tracing reflections (rt_reflect.glsl, Vulkan):
+    // GLSL 4.6 and the ray query extensions
+    if (rt_reflections && includes_rt && UseVulkan() && type == _fragment) {
+        text.insert(0,
+                    "#extension GL_EXT_ray_query : require\n"
+                    "#extension GL_EXT_ray_tracing_position_fetch : require\n"
+                    "#extension GL_EXT_nonuniform_qualifier : require\n"
+                    "#extension GL_EXT_buffer_reference : require\n"
+                    "#extension GL_EXT_buffer_reference_uvec2 : require\n");
+        version = version < 460 ? 460 : version;
     }
 
     // This must be the last directive added to make sure that #version is at the beginning of the file

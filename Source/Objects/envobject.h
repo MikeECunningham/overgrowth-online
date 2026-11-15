@@ -150,6 +150,8 @@ class EnvObject : public Object {
     void DrawInstances(EnvObject **instance_array, int num_instances, const mat4 &proj_view_matrix, const mat4 &prev_proj_view_matrix, const std::vector<mat4> *shadow_matrix, const vec3 &cam_pos, Object::DrawType type);
     static void AfterDrawInstances();
     bool HasDetailObjectSurfaces() const { return !detail_object_surfaces.empty(); }
+    // Overgrowth Online (RT): its grass and other detail objects, for the ray-traced scene
+    const std::vector<DetailObjectSurface *> &DetailObjectSurfaces() const { return detail_object_surfaces; }
     void DrawDetailObjectInstances(EnvObject **instance_array, int num_instances, Object::DrawType type);
     void PreDrawCamera(float curr_game_time) override;
     void DrawDepthMap(const mat4 &proj_view_matrix, const vec4 *cull_planes, int num_cull_planes, Object::DrawType draw_type) override;
@@ -195,6 +197,8 @@ class EnvObject : public Object {
     void UpdateParentHierarchy() override;
     void SetCSGModified();
     typedef std::vector<DetailObjectSurface *> DOSList;
+    // Overgrowth Online (RT): the colour tint its draw gives it (reflections see it)
+    vec3 RtDisplayTint() { return GetDisplayTint(); }
 
    protected:
     EntityType GetType() const override { return _env_object; }

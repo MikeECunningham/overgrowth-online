@@ -827,14 +827,15 @@ void EnvObject::DrawDetailObjectInstances(EnvObject** instance_array, int num_in
         return;
     }
 
-    // Note: Should never get called with Object::kDrawDepthOnly. When this comment was written, that was true
-
-    if (!detail_object_surfaces.empty() && type == Object::kFullDraw) {
+    // (Overgrowth Online RT: kDrawDepthOnly too, the depth prepass's cut-out, where its grass
+    // is ray traced: SceneGraph::DrawDepthMap calls it then)
+    const bool depth_only = type == Object::kDrawDepthOnly;
+    if (!detail_object_surfaces.empty() && (type == Object::kFullDraw || depth_only)) {
         for (int i = 0; i < num_instances; ++i) {
             EnvObject* obj = instance_array[i];
             for (DOSList::iterator iter = obj->detail_object_surfaces.begin();
                  iter != obj->detail_object_surfaces.end(); ++iter) {
-                (*iter)->Draw(obj->GetTransform(), DetailObjectSurface::ENVOBJECT, obj->GetDisplayTint(), scenegraph_->sky->GetSpecularCubeMapTexture(), &scenegraph_->light_probe_collection, scenegraph_);
+                (*iter)->Draw(obj->GetTransform(), DetailObjectSurface::ENVOBJECT, obj->GetDisplayTint(), scenegraph_->sky->GetSpecularCubeMapTexture(), &scenegraph_->light_probe_collection, scenegraph_, depth_only);
             }
         }
     }

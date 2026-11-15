@@ -1198,8 +1198,29 @@ IF(BUILD_OVERGROWTH)
         target_compile_definitions(Overgrowth PRIVATE OG_DLSS=1)
         add_custom_command(TARGET Overgrowth POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DLSS_SDK}/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$<TARGET_FILE_DIR:Overgrowth>/"
+            # (Ray Reconstruction's, NGX's DLSSD: rt_rr)
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DLSS_SDK}/lib/Windows_x86_64/rel/nvngx_dlssd.dll" "$<TARGET_FILE_DIR:Overgrowth>/"
             # (its licence goes with it: whoever passes the DLL on, under terms as protective)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DLSS_SDK}/LICENSE.txt" "$<TARGET_FILE_DIR:Overgrowth>/nvngx_dlss_LICENSE.txt")
+    ENDIF()
+    # Overgrowth Online (RT): NVIDIA's real-time denoisers (NRD) for the ray-traced
+    # lighting. Not in this repository either (NVIDIA's RTX SDK licence): NRD_SDK is a
+    # github.com/NVIDIA-RTX/NRD checkout built with its CMake (NRD.dll in _Bin/Release,
+    # SPIR-V shaders, NRD_NORMAL_ENCODING 2). Tested with v4.18.0, configured with
+    # -DNRD_SUPPORTS_QUAD_INTRINSICS=OFF (on, its shaders need VK_KHR_compute_shader_derivatives,
+    # which the device isn't asked for) -DNRD_EMBEDS_DXIL_SHADERS=OFF -DNRD_EMBEDS_DXBC_SHADERS=OFF
+    # (Vulkan only). NRD.dll is delay-loaded, so the game starts
+    # without it (our own denoiser then); without NRD_SDK it's built without NRD
+    SET(NRD_SDK "" CACHE PATH "NVIDIA's NRD, built (Include/, _Bin/Release/NRD.lib and NRD.dll), for the ray tracing's denoisers on Vulkan")
+    IF(WIN32 AND NOT NRD_SDK STREQUAL "" AND EXISTS "${NRD_SDK}/Include/NRD.h" AND EXISTS "${NRD_SDK}/_Bin/Release/NRD.lib")
+        MESSAGE(STATUS "NRD: in ${NRD_SDK}")
+        target_include_directories(Overgrowth PRIVATE "${NRD_SDK}/Include")
+        target_link_libraries(Overgrowth "${NRD_SDK}/_Bin/Release/NRD.lib" delayimp.lib)
+        target_link_options(Overgrowth PRIVATE "/DELAYLOAD:NRD.dll")
+        target_compile_definitions(Overgrowth PRIVATE OG_NRD=1)
+        add_custom_command(TARGET Overgrowth POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NRD_SDK}/_Bin/Release/NRD.dll" "$<TARGET_FILE_DIR:Overgrowth>/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NRD_SDK}/LICENSE.txt" "$<TARGET_FILE_DIR:Overgrowth>/NRD_LICENSE.txt")
     ENDIF()
     # Overgrowth Online (FSR): FSR 3.1 on the Vulkan renderer through AMD's FidelityFX API
     # (MIT): FIDELITYFX_SDK is a copy of the FidelityFX SDK 1.1 (ffx-api/include, the

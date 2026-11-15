@@ -1,0 +1,465 @@
+//-----------------------------------------------------------------------------
+//           Name: rt_shadow.comp
+//      Developer: Overgrowth Online (crxhvrd)
+//    Description: The sun's shadow and the ambient occlusion, ray traced (Vulkan;
+//                 VkRt::TraceLighting): from each pixel of the depth prepass, rays
+//                 toward points on the sun's disk, and short rays over the hemisphere
+//                 around the surface (cosine-weighted), through the scene's TLAS.
+//                 Writes the raw result rt_denoise.comp cleans up: r the share of sun
+//                 rays that got through (-1: the sun isn't traced), g the depth it was
+//                 traced from, b the ambient light left (1: AO isn't traced), a the point
+//                 lights' (below); and how far the sun rays went before something stopped
+//                 them (their mean; 0: none did), which sizes the shadow's penumbra, in
+//                 the extra image. The sun's rays start on its
+//                 side of the surface; the colour pass weighs the sun by its own normal.
+//                 Foliage (an alpha-tested mesh the pixel shows) isn't its own shadow:
+//                 its sun rays pass its own leaves. Alpha-tested meshes (leaves, grass cards,
+//                 fences) stop a ray only where their colour texture's alpha is 0.5 or
+//                 more, as their draw's discard.
+//                 The point lights' shadows (Heitz et al. 2018's ratio estimator): the
+//                 colour pass adds up its lights unshadowed, then scales them by the share
+//                 of their light that gets here, which this traces: a few rays a pixel,
+//                 each toward a light picked by how much light it gives here in the colour
+//                 pass (its falloff, facing and brightness), the share that got through in
+//                 the raw result's alpha (1: not traced, or no light here). The extra
+//                 image holds what sizes the penumbras: r the sun's blocker distance, g how
+//                 wide the lights' penumbra is here (world units)
+//        License: Apache-2.0, like the rest of the engine (see LICENSE)
+//-----------------------------------------------------------------------------
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+#if defined(MSAA_DEPTH)
+layout(set = 0, binding = 1) uniform sampler2DMS depth_tex;  // (its first sample)
+#else
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+#endif
+layout(set = 0, binding = 2, rgba32f) uniform writeonly image2D raw;
+
+// The scene's instances' materials (their instanceCustomIndex: vk_rt.cpp's Material) and the textures they read
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Indices {
+    uint index[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Uvs {
+    vec2 uv[];
+};
+struct Material {
+    uvec2 indices;  // (device addresses)
+    uvec2 uvs;
+    uint texture;   // (a slot; 0xFFFFFFFF none)
+    float scroll;   // how far its texture moves down a second (envobject #SCROLL_*)
+    uint flags;     // 1 alpha-tested, 2 emitter, 4 waterfall
+    uint tint_mask; // (rt_reflect.glsl's)
+    vec3 tint;
+    uint pad;
+};
+layout(set = 0, binding = 3, std430) readonly buffer Materials {
+    Material materials[];
+};
+layout(set = 1, binding = 0) uniform sampler2D textures[];
+layout(set = 0, binding = 4, rg16f) uniform writeonly image2D extra;  // r the sun's blocker distance, g the lights' penumbra width
+
+// The scene's point lights, as the colour pass's (VkRt::LightingPass::lights)
+struct Light {
+    vec4 pos_radius;  // xyz where it is, w how far its light reaches (the colour pass's l.radius)
+    vec4 color;       // rgb, a its luminance
+};
+layout(set = 0, binding = 5, std430) readonly buffer Lights {
+    Light lights[];
+};
+
+layout(push_constant) uniform Params {
+    mat4 inv_view_proj;  // clip space (depth 0..1) to world, as drawn
+    vec4 sun;            // xyz toward the sun, w its angular radius (radians)
+    uvec4 info;          // width, height, frame; rays per pixel: the sun's (bits 0-7), AO (8-15), the lights' (16-23); the lights' clearance in cm (24-31)
+    vec4 camera;         // xyz the camera, w the ray's start off the surface per unit of distance
+    vec4 ao;             // x how far AO rays look (world units), y the time (the draw's), z the lights' count, w their radius (world units)
+} pc;
+
+// (instance masks; an emitter is opaque, but it glows: lava, #GLOW, #EMISSIVE, whose light
+// the point lights in and around it are, so their rays pass it)
+const uint kOpaque = 0x01u, kAlphaTested = 0x02u, kEmitter = 0x04u;
+const uint kCharacter = 0x08u;  // (a character's skinned mesh carries it beside kOpaque)
+const uint kEverything = kOpaque | kAlphaTested | kEmitter;
+// (grass: its own mask. It shadows the sun, but AO and lamp rays pass it: under a lawn every
+// AO ray met a blade at once, black ground and black grass)
+const uint kGrass = 0x10u;
+const float kGrassShadow = 1.5;  // (how far along a sun ray grass still shadows, metres)
+
+float Depth(ivec2 p) {
+    return texelFetch(depth_tex, p, 0).r;
+}
+
+vec3 WorldPos(ivec2 p, float depth) {
+    vec2 ndc = (vec2(p) + 0.5) / vec2(pc.info.xy) * 2.0 - 1.0;
+    vec4 w = pc.inv_view_proj * vec4(ndc, depth, 1.0);
+    return w.xyz / w.w;
+}
+
+// The step to the neighbour on the side whose depth is closer (not across an edge)
+vec3 Step(ivec2 p, float depth, vec3 pos, ivec2 dir) {
+    ivec2 size = ivec2(pc.info.xy);
+    ivec2 a = p + dir, b = p - dir;
+    bool a_in = all(greaterThanEqual(a, ivec2(0))) && all(lessThan(a, size));
+    bool b_in = all(greaterThanEqual(b, ivec2(0))) && all(lessThan(b, size));
+    float da = a_in ? Depth(a) : -1.0;
+    float db = b_in ? Depth(b) : -1.0;
+    bool use_a = a_in && da > 0.0 && (!b_in || db <= 0.0 || abs(da - depth) <= abs(db - depth));
+    if (use_a) {
+        return WorldPos(a, da) - pos;
+    }
+    if (b_in && db > 0.0) {
+        return pos - WorldPos(b, db);
+    }
+    return vec3(0.0);
+}
+
+// A candidate hit on an alpha-tested mesh: solid where its texture is (the top mip: the
+// texels the draw's discard reads up close)
+bool AlphaSolid(rayQueryEXT q) {
+    Material a = materials[rayQueryGetIntersectionInstanceCustomIndexEXT(q, false)];
+    uint tri = uint(rayQueryGetIntersectionPrimitiveIndexEXT(q, false)) * 3u;
+    Indices indices = Indices(a.indices);
+    Uvs uvs = Uvs(a.uvs);
+    vec2 uv0 = uvs.uv[indices.index[tri]];
+    vec2 uv1 = uvs.uv[indices.index[tri + 1u]];
+    vec2 uv2 = uvs.uv[indices.index[tri + 2u]];
+    vec2 bary = rayQueryGetIntersectionBarycentricsEXT(q, false);
+    vec2 uv = uv0 * (1.0 - bary.x - bary.y) + uv1 * bary.x + uv2 * bary.y;
+    uv.y = 1.0 - (uv.y - pc.ao.y * a.scroll);  // (as envobject.vert hands its draw the uvs: scrolled, flipped)
+    return textureLod(textures[nonuniformEXT(a.texture)], uv, 0.0).a >= 0.5;
+}
+
+// The distance to the first thing a ray meets within t_max, but the instance `own`; a
+// negative number: nothing. `flags`: more ray flags (a face culling); `mask`: the
+// instances it can meet
+float Trace(vec3 origin, vec3 dir, float t_max, int own, uint flags, uint mask) {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT | flags, mask, origin, 0.0, dir, t_max);
+    while (rayQueryProceedEXT(q)) {
+        // (only alpha-tested instances are candidates: the rest are forced opaque)
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT &&
+            rayQueryGetIntersectionInstanceIdEXT(q, false) != own && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+        return -1.0;
+    }
+    return rayQueryGetIntersectionTEXT(q, true);
+}
+
+// The alpha-tested mesh this pixel shows (a bush, a tree's leaves), found by a short ray
+// along the view across the depth's point (only what's there: not every leaf on the way);
+// -1: another kind of surface. Foliage lets the light through its own leaves: rays from it
+// pass them (as the shadow map's bias and blur did), while they still shadow everything
+// else and are shadowed by it
+int Foliage(vec3 pos, float dist) {
+    vec3 dir = (pos - pc.camera.xyz) / max(dist, 1e-6);
+    float span = max(0.05, dist * 0.01);
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsNoneEXT, kAlphaTested | kGrass, pos - dir * span, 0.0, dir, span * 2.0);
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+        return rayQueryGetIntersectionInstanceIdEXT(q, true);
+    }
+    return -1;
+}
+
+// Whether the pixel shows a grass blade, by the same short ray along the view
+bool OnGrass(vec3 pos, float dist) {
+    vec3 dir = (pos - pc.camera.xyz) / max(dist, 1e-6);
+    float span = max(0.05, dist * 0.01);
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsNoneEXT, kGrass, pos - dir * span, 0.0, dir, span * 2.0);
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
+}
+
+// Whether the depth's point lies on a surface of the RT scene other than grass (ground, rock,
+// a bush's leaves, a character), by a tight ray along the view across it
+bool OnWorld(vec3 pos, float dist) {
+    vec3 dir = (pos - pc.camera.xyz) / max(dist, 1e-6);
+    float span = 0.02 + dist * 0.004;
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsNoneEXT, kEverything, pos - dir * span, 0.0, dir, span * 2.0);
+    while (rayQueryProceedEXT(q)) {
+        if (rayQueryGetIntersectionTypeEXT(q, false) == gl_RayQueryCandidateIntersectionTriangleEXT && AlphaSolid(q)) {
+            rayQueryConfirmIntersectionEXT(q);
+        }
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
+}
+
+// Whether a grass card (its whole quad, not its blades' alpha) crosses the view line near the
+// depth's point, within the wind's sway of it
+bool NearGrass(vec3 pos, float dist) {
+    vec3 dir = (pos - pc.camera.xyz) / max(dist, 1e-6);
+    float span = max(0.3, dist * 0.02);
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, kGrass, pos - dir * span, 0.0, dir, span * 2.0);
+    while (rayQueryProceedEXT(q)) {
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
+}
+
+// Whether the pixel shows a character (its skinned mesh), by the same short ray along the view
+bool Character(vec3 pos, float dist) {
+    vec3 dir = (pos - pc.camera.xyz) / max(dist, 1e-6);
+    float span = max(0.05, dist * 0.01);
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q, scene, gl_RayFlagsTerminateOnFirstHitEXT, kCharacter, pos - dir * span, 0.0, dir, span * 2.0);
+    while (rayQueryProceedEXT(q)) {
+    }
+    return rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
+}
+
+// PCG (Jarzynski and Olano), for the rays' directions
+uint Hash(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float Random(inout uint seed) {
+    seed = Hash(seed);
+    return float(seed) * (1.0 / 4294967296.0);
+}
+
+// Two directions square to `axis`
+void Basis(vec3 axis, out vec3 t, out vec3 b) {
+    t = normalize(abs(axis.y) < 0.99 ? cross(axis, vec3(0.0, 1.0, 0.0)) : cross(axis, vec3(1.0, 0.0, 0.0)));
+    b = cross(axis, t);
+}
+
+// How much light `i` gives this point in the colour pass (CalculateLightContrib's falloff
+// and facing, by its brightness): what the lights' rays are picked by. The facing by the
+// depth's normal (its draw's may be bent by a normal map); foliage's either way, as a
+// #PLANT draw's
+float LightWeight(uint i, vec3 pos, vec3 n, bool foliage) {
+    vec4 pos_radius = lights[i].pos_radius;
+    vec3 to_light = pos_radius.xyz - pos;
+    float len = length(to_light);
+    float dist = max(0.8, len);  // (the colour pass's light_size)
+    float falloff = min(1.0, max(0.0, (1.0 / (dist * dist)) * (1.0 - dist / pos_radius.w)));
+    if (falloff <= 0.0) {
+        return 0.0;
+    }
+    float facing = dot(n, to_light / max(len, 1e-6));
+    float bias = max(0.0, (0.8 - len) / 0.8 * 2.0);  // (near the light: lit all round)
+    float d = (foliage ? abs(facing + bias) : max(0.0, facing + bias)) / (1.0 + bias);
+    return falloff * d * abs(lights[i].color.a);  // (a's sign: negative for a fill light, not shadowed)
+}
+
+// A ray from the point toward a spot on light `i` (on a disk of the lights' radius, facing
+// the point), stopped the clearance short of it (its lamp's own housing doesn't shadow it).
+// Only faces turned toward the light stop it: a light set inside a rock, under the ground
+// or in lava shines out through them as it always did (the colour pass had no shadows),
+// while what stands between it and the point (its far side faces the light) shadows
+uint light_cull = gl_RayFlagsCullFrontFacingTrianglesEXT;
+
+void LightRay(uint i, vec3 pos, vec3 n, float offset, int own, float clearance, inout uint seed, inout float lit, inout float blocked,
+              inout float penumbra) {
+    vec3 center = lights[i].pos_radius.xyz;
+    vec3 to_light = center - pos;
+    vec3 l = to_light / max(length(to_light), 1e-6);
+    vec3 origin = pos + n * (dot(n, l) >= 0.0 ? offset : -offset);
+    vec3 t, b;
+    Basis(l, t, b);
+    float r = pc.ao.w * sqrt(Random(seed));
+    float a = 6.28318531 * Random(seed);
+    vec3 dir = center + t * (r * cos(a)) + b * (r * sin(a)) - origin;
+    float reach = length(dir);
+    float t_max = reach - clearance;
+    if (t_max <= 0.0) {
+        lit += 1.0;
+        return;
+    }
+    float hit = Trace(origin, dir / reach, t_max, own, light_cull, kOpaque | kAlphaTested);
+    if (hit < 0.0) {
+        lit += 1.0;
+    } else {
+        blocked += 1.0;
+        // (the light's disk through the blocker onto the point: the penumbra's width)
+        penumbra += 2.0 * pc.ao.w * hit / max(reach - hit, 0.05);
+    }
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.info.x) || p.y >= int(pc.info.y)) {
+        return;
+    }
+    uint sun_rays = pc.info.w & 0xFFu;
+    uint ao_rays = (pc.info.w >> 8u) & 0xFFu;
+    uint light_rays = (pc.info.w >> 16u) & 0x7Fu;
+    light_cull = (pc.info.w & 0x800000u) == 0u ? gl_RayFlagsCullFrontFacingTrianglesEXT : gl_RayFlagsNoneEXT;  // (diagnostics: rt_light_cull 0)
+    float clearance = float(pc.info.w >> 24u) * 0.01;
+    uint light_count = uint(pc.ao.z + 0.5);
+    float depth = Depth(p);
+    if (depth <= 0.0) {  // the sky (reversed-Z: 0 is the far plane)
+        imageStore(raw, p, vec4(sun_rays > 0u ? 1.0 : -1.0, depth, 1.0, 1.0));
+        imageStore(extra, p, vec4(0.0));
+        return;
+    }
+    vec3 pos = WorldPos(p, depth);
+    vec3 to_camera = pc.camera.xyz - pos;
+    float dist = length(to_camera);
+    vec3 n = cross(Step(p, depth, pos, ivec2(1, 0)), Step(p, depth, pos, ivec2(0, 1)));
+    float n_len = length(n);
+    n = n_len > 1e-12 ? n / n_len : to_camera / max(dist, 1e-6);
+    if (dot(n, to_camera) < 0.0) {
+        n = -n;
+    }
+    // (off the surface: along its normal, more the further it is, as the depth's precision goes)
+    float offset = 0.01 + pc.camera.w * dist;
+    vec3 origin = pos + n * offset;
+    uint seed = Hash(uint(p.x) + uint(p.y) * 65536u) ^ Hash(pc.info.z * 9781u + 1u);
+    int own = Foliage(pos, dist);
+    // A grass blade takes only the sun's shadow and AO (its colour pass keeps the game's ambient):
+    // from the up normal, the depth's normal across thin cards being noise, and no grass
+    // shadows grass (blades shading each other turned every field dark). Grass still shadows
+    // everything else, and the world's shadows fall on it
+    // (the drawn blades sway in the wind, the RT scene's stand still: near the camera a
+    // blade's pixel missed its card, and went as ground with a noisy normal, half of it
+    // black. A grass pixel: a blade's card where the ray meets it, or else a point on no
+    // surface of the scene with a grass card about it)
+    bool grass = own >= 0 ? OnGrass(pos, dist) : !OnWorld(pos, dist) && NearGrass(pos, dist);
+    if (grass) {
+        n = vec3(0.0, 1.0, 0.0);
+        origin = pos + n * offset;
+    }
+
+    bool character = own < 0 && (sun_rays > 0u || ao_rays > 0u) && Character(pos, dist);
+    float sun = -1.0, blocker = 0.0;
+    if (sun_rays > 0u) {
+        vec3 l = pc.sun.xyz;
+        sun = 0.0;
+        // The sun's rays start on the sun's side of the surface, and a little toward the
+        // sun: a leaf turned away from it isn't its own shadow (its draw lights it through,
+        // as with the shadow map, which sees the leaf as the nearest thing to the sun).
+        // Other surfaces facing away from the sun are in shadow without a ray (foliage is
+        // traced either way: the depth's normal is noise across its leaves)
+        vec3 sun_origin = pos + n * (dot(n, l) >= 0.0 ? offset : -offset) + l * offset;
+        // A character's mesh is coarse, its shading smooth: the depth's normal is a flat
+        // triangle's, so facets turned from the sun went black whole, and rays from a flat
+        // facet near the terminator met the mesh's next triangles: blocky shadows across a
+        // smooth face. Its pixels are traced whichever way the facet turns (the colour pass's
+        // own smooth normal shades the terminator), the rays starting a few centimetres
+        // toward the sun, clear of the facets round them (a limb over the body still shadows)
+        if (character) {
+            sun_origin = pos + n * offset + l * (offset + 0.06);
+        }
+        if (own >= 0 || character || dot(n, l) > 0.0) {
+            vec3 t, b;
+            Basis(l, t, b);
+            float radius = tan(pc.sun.w);
+            float lit = 0.0, blocked = 0.0;
+            for (uint i = 0u; i < sun_rays; ++i) {
+                // (a point on the disk: the square root spreads them evenly)
+                float r = radius * sqrt(Random(seed));
+                float a = 6.28318531 * Random(seed);
+                vec3 dir = normalize(l + t * (r * cos(a)) + b * (r * sin(a)));
+                // (grass only the first kGrassShadow metres: blades shadow each other and the
+                // ground round them, but a low sun's ray crossed a whole field before it rose
+                // above it, and the sun went out over every lawn)
+                float hit = Trace(sun_origin, dir, 100000.0, own, gl_RayFlagsNoneEXT, kEverything);
+                if (hit < 0.0 && !grass) {
+                    hit = Trace(sun_origin, dir, kGrassShadow, own, gl_RayFlagsNoneEXT, kGrass);
+                }
+                if (hit < 0.0) {
+                    lit += 1.0;
+                } else {
+                    blocker += hit;
+                    blocked += 1.0;
+                }
+            }
+            sun = lit / float(sun_rays);
+            blocker = blocked > 0.0 ? blocker / blocked : 0.0;
+        }
+    }
+
+    // (a grass blade: AO from its up normal, grass passed as for every AO ray: only rocks,
+    // walls and slopes round it shut its sky out; no lamp rays for it)
+    float ao = 1.0;
+    if (ao_rays > 0u) {
+        vec3 t, b;
+        Basis(n, t, b);
+        float range = max(pc.ao.x, 0.01);
+        float open = 0.0;
+        for (uint i = 0u; i < ao_rays; ++i) {
+            // (cosine-weighted: the ambient light's own weighting, a point on the disk raised)
+            float r = sqrt(Random(seed));
+            float a = 6.28318531 * Random(seed);
+            vec3 dir = t * (r * cos(a)) + b * (r * sin(a)) + n * sqrt(max(0.0, 1.0 - r * r));
+            // (a character's start a few centimetres out: its coarse skinned mesh round a flat
+            // facet shut every ray in, as with the sun's)
+            vec3 ao_origin = character ? origin + n * 0.04 + dir * 0.04 : origin;
+            float hit = Trace(ao_origin, dir, range, -1, gl_RayFlagsNoneEXT, kEverything);  // (a bush's own leaves do shut ambient light out inside it)
+            // (what's near shuts the light out more than what's at the range's edge)
+            float closeness = hit < 0.0 ? 0.0 : 1.0 - hit / range;
+            open += 1.0 - closeness * closeness * (3.0 - 2.0 * closeness);
+        }
+        ao = open / float(ao_rays);
+    }
+
+    float light = 1.0, penumbra = 0.0;
+    if (light_rays > 0u && light_count > 0u && !grass) {
+        // (the level's fill lights, their weight's sign negative, are lit whatever's in the
+        // way: rays only for the rest, their share of the light scaled by what got through)
+        bool foliage = own >= 0;
+        float total = 0.0, fills = 0.0;
+        for (uint i = 0u; i < light_count; ++i) {
+            float w = LightWeight(i, pos, n, foliage);
+            if (lights[i].color.a < 0.0) {
+                fills += w;
+            } else {
+                total += w;
+            }
+        }
+        if (total > 0.0) {
+            // The rays' lights picked by their weights, stratified: the weights laid end to
+            // end, a ray at each of `light_rays` evenly spaced places along them from a
+            // random start (one walk over the lights)
+            float spacing = total / float(light_rays);
+            float next = spacing * Random(seed);
+            float run = 0.0;
+            uint traced = 0u, last = 0u;
+            float lit = 0.0, blocked = 0.0;
+            for (uint i = 0u; i < light_count && traced < light_rays; ++i) {
+                float w = lights[i].color.a < 0.0 ? 0.0 : LightWeight(i, pos, n, foliage);
+                if (w <= 0.0) {
+                    continue;
+                }
+                last = i;
+                run += w;
+                while (traced < light_rays && next < run) {
+                    LightRay(i, pos, n, offset, own, clearance, seed, lit, blocked, penumbra);
+                    ++traced;
+                    next += spacing;
+                }
+            }
+            for (; traced < light_rays; ++traced) {  // (the sum's rounding: the last few to the last light)
+                LightRay(last, pos, n, offset, own, clearance, seed, lit, blocked, penumbra);
+            }
+            light = (fills + total * lit / float(light_rays)) / (fills + total);
+            penumbra = blocked > 0.0 ? penumbra / blocked : 0.0;
+        }
+    }
+    imageStore(raw, p, vec4(sun, depth, ao, light));
+    imageStore(extra, p, vec4(min(blocker, 60000.0), min(penumbra, 60000.0), 0.0, 0.0));
+}

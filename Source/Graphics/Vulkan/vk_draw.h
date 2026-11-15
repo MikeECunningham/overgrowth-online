@@ -33,7 +33,7 @@ struct TargetAttachment {
     bool operator==(const TargetAttachment& o) const { return texture == o.texture && level == o.level && layer == o.layer; }
 };
 struct Target {
-    static const int kMaxColor = 4;
+    static const int kMaxColor = 8;  // (Overgrowth Online RT: 6 with Ray Reconstruction's guides; write masks 4 bits each in 32)
     TargetAttachment color[kMaxColor];
     int num_color = 0;
     TargetAttachment depth;

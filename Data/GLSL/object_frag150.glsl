@@ -68,6 +68,10 @@ const uint INDEX_MASK = ((1u << (COUNT_BITS)) - 1u);
         return l;
     }
 
+    // Overgrowth Online (RT): the share of the point lights' light that gets here (their
+    // shadows, ray traced: envobject.frag sets it from the mask; 1 otherwise)
+    float rt_light_ratio = 1.0;
+
     void CalculateLightContrib(inout vec3 diffuse_color, inout vec3 spec_color, vec3 ws_vertex, vec3 world_vert, vec3 ws_normal, float roughness, uint light_val, float ambient_mult) {
         // number of lights in current cluster
         uint light_count = (light_val >> COUNT_BITS) & COUNT_MASK;
@@ -130,6 +134,7 @@ const uint INDEX_MASK = ((1u << (COUNT_BITS)) - 1u);
             #endif
 
             falloff = min(1.0, falloff);
+            temp_ambient_mult *= rt_light_ratio;
             diffuse_color += falloff * d * l.color * temp_ambient_mult;
 
             #if !defined(SWAMP2)

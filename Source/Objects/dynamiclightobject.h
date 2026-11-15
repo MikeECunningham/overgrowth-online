@@ -44,6 +44,7 @@ class DynamicLightObject : public Object {
     ~DynamicLightObject() override;
     void ReceiveObjectMessageVAList(OBJECT_MSG::Type type, va_list args) override;
     void SetEnabled(bool val) override;
+    int LightId() const { return light_id_; }  // Overgrowth Online (RT): its DynamicLightCollection entry
 
    private:
     int light_id_;

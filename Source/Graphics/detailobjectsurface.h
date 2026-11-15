@@ -172,7 +172,8 @@ class DetailObjectSurface {
     void PreDrawCamera(const mat4 &transform);
     // void GetTrisInSphere( const vec3 &center, float radius );
     void Cluster();
-    void Draw(const mat4 &transform, DetailObjectShaderType shader_type, vec3 color_tint, const TextureRef &light_cube, LightProbeCollection *light_probe_collection, SceneGraph *scenegraph);
+    // (depth_only: the depth prepass's, its cut-out alone: Overgrowth Online RT traces from it)
+    void Draw(const mat4 &transform, DetailObjectShaderType shader_type, vec3 color_tint, const TextureRef &light_cube, LightProbeCollection *light_probe_collection, SceneGraph *scenegraph, bool depth_only = false);
     TriInt GetTriInt(const vec3 &pos);
     void GetTrisInPatches(mat4 transform);
     void CalcPatchInstances(const TriInt &coords, DOPatch &patch, mat4 transform);
@@ -189,4 +190,14 @@ class DetailObjectSurface {
     void SetJitterDegrees(float _jitter_degrees);
     void SetOverbright(float _overbright);
     void SetCollisionType(CollisionType _collision);
+    // Overgrowth Online (RT): what this frame draws (PreDrawCamera's), for the ray-traced
+    // scene: its instances' transforms and their embedding, its model, colour texture,
+    // height and how far it's drawn
+    const std::vector<mat4>& DrawnTransforms() const { return draw_detail_instance_transforms; }
+    const std::vector<DetailInstance>& DrawnInstances() const { return draw_detail_instances; }
+    int DetailModelId() const { return detail_model_id; }
+    TextureRef ColorTexture() const;
+    float BatchHeight() const { return bm.height; }
+    float ViewDist() const { return view_dist; }
+    bool DoubleSided() const { return double_sided; }
 };

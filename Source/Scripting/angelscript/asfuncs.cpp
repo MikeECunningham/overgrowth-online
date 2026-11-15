@@ -42,6 +42,9 @@
 #include <UserInput/input.h>
 
 #include <Graphics/textures.h>
+#include <Graphics/render_backend.h>
+#include <Graphics/Vulkan/vk_ngx.h>
+#include <Graphics/Vulkan/vk_rt.h>
 #include <Graphics/sky.h>
 #include <Graphics/particles.h>
 #include <Graphics/bonetransform.h>
@@ -6635,6 +6638,20 @@ int AS_GetMonitorCount() {
     return SDL_GetNumVideoDisplays();
 }
 
+// Overgrowth Online (RT): what the ray tracing can use on this PC, for the settings menu:
+// 1 the Vulkan renderer runs, 2 its GPU ray traces, 4 NVIDIA NRD is there, 8 DLSS Ray
+// Reconstruction is
+int AS_RayTracingSupport() {
+    int support = 0;
+    if (UseVulkan()) {
+        support |= 1;
+        support |= VkRt::Available() ? 2 : 0;
+        support |= VkRt::NrdAvailable() ? 4 : 0;
+        support |= VkNgx::RrAvailable() ? 8 : 0;
+    }
+    return support;
+}
+
 static CScriptArray* AS_GetPossibleResolutions() {
     asIScriptContext* ctx = asGetActiveContext();
     asIScriptEngine* engine = ctx->GetEngine();
@@ -6770,6 +6787,9 @@ void AttachConfig(ASContext* context) {
                                     asCALL_CDECL);
     context->RegisterGlobalFunction("int GetMonitorCount()",
                                     asFUNCTION(AS_GetMonitorCount),
+                                    asCALL_CDECL);
+    context->RegisterGlobalFunction("int RayTracingSupport()",
+                                    asFUNCTION(AS_RayTracingSupport),
                                     asCALL_CDECL);
     context->RegisterGlobalFunction("array<vec2>@ GetPossibleResolutions()",
                                     asFUNCTION(AS_GetPossibleResolutions),

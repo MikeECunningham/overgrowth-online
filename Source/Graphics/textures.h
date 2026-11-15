@@ -67,6 +67,9 @@
 #define TEX_AMBIENT_COLOR_BUFFER 12
 
 #define TEX_BONES 20  // Overgrowth Online: GPU skinning's bones (a buffer texture over the frame ring)
+#define TEX_RT_LIGHTING 21  // Overgrowth Online (RT): the sun's shadow and ambient occlusion, ray traced (Raytrace, envobject #RT_LIGHTING)
+#define TEX_RT_GI 22        // Overgrowth Online (RT): global illumination, ray traced and denoised (Raytrace, envobject #RT_GI): SH0
+#define TEX_RT_GI_SH1 23    // ... and its SH1 (the colour pass resolves the two with its own normals)
 
 //-----------------------------------------------------------------------------
 // Class Definition
@@ -193,6 +196,7 @@ class Textures {
     GLuint m_wrap_t, m_wrap_s, min_filter, mag_filter;            // These settings are applied to the next texture that is loaded or created
     unsigned int bound_texture[PhoenixTextures::_texture_units];  // Shadow GL texture units
     GLuint unit_texture_[PhoenixTextures::_texture_units][kUnitKinds] = {};  // (UnitBinding)
+    bool pinned_unit_[PhoenixTextures::_texture_units] = {};                   // (PinUnit)
     GLuint unit_sampler_[PhoenixTextures::_texture_units] = {};
     // Overgrowth Online (DLSS): SetSceneLodBias's, and what the textures' scene samplers have
     float scene_lod_bias_ = 0.0f;
@@ -269,6 +273,9 @@ class Textures {
     // Overgrowth Online: empty these units (a program switch: a sampler its draw
     // doesn't bind reads zero, as when every unit was emptied on each switch)
     void ClearUnits(const std::vector<int>& units);
+    // Overgrowth Online (RT): a unit whose texture stays bound when programs change (ClearUnits
+    // leaves it): one a whole pass reads, bound once before it (the ray-traced sun shadow)
+    void PinUnit(int unit, bool pinned);
     int frame_ring_texel_unit_ = -1;
     // Overgrowth Online (GL 4.6 stage 2.2): sampler objects. A draw that samples a
     // texture differently binds its own sampler after the texture (the next bind of
