@@ -157,7 +157,26 @@ void AvatarControlManager::Update() {
                 MovementObject* avatar = (MovementObject*)obj;
 
                 // If we're in a multiplayer game, don't switch other players characters to NPC mode, only do it to ours.
-                if (online->IsHosting() == false || online->IsLocalAvatar(engine->avatar_ids[i])) {
+                // (Overgrowth Online: a guest's too: the others' there run on the host's stream)
+                if (!online->IsActive() || online->IsLocalAvatar(engine->avatar_ids[i])) {
+                    avatar->ChangeControlScript(scenegraph_->level->GetNPCScript(avatar));
+                    avatar->controlled = false;
+                    avatar->camera_id = 0;
+                }
+            }
+        }
+        // Overgrowth Online: our own avatar in a session, is_player here or not. A guest's comes from
+        // the host's player states: in a build session its editor opened over a character that kept
+        // its player script, camera and the mouse (the view jumped between the editor's camera and
+        // the character's, and the character still ran)
+        if (online->IsActive()) {
+            for (auto& player_state : online->GetPlayerStates()) {
+                if (player_state.object_id == -1 || !online->IsLocalAvatar(player_state.object_id)) {
+                    continue;
+                }
+                Object* obj = scenegraph_->GetObjectFromID(player_state.object_id);
+                if (obj != nullptr && obj->GetType() == _movement_object) {
+                    MovementObject* avatar = (MovementObject*)obj;
                     avatar->ChangeControlScript(scenegraph_->level->GetNPCScript(avatar));
                     avatar->controlled = false;
                     avatar->camera_id = 0;
