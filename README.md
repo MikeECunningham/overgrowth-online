@@ -45,6 +45,42 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 | Who may change what | Any connected player could delete, spawn or move any object and rewrite player states and settings | The host checks every message: a player can only affect their own character; hits and grabs must be in reach |
 | Malformed packets | Could crash the game | Dropped unread; tested with forged attacks |
 
+## Build a level
+
+Several people can build one level together, live. Multiplayer > Build a level offers an empty level, your saved levels and autosaves, mods' levels and the campaigns' levels. The level you pick is hosted as a build session and opens in the editor. Friends join the usual way: Steam friends, the server browser or direct IP. Each player who is allowed to build opens their own editor with F1 and goes back to play with F1. The game keeps running for everyone meanwhile. A line at the top of the screen says what F1 and Ctrl+S do and whether time is running.
+
+The host controls the session from the Build session panel in the editor (top right), or from Windows > Multiplayer settings:
+
+- **Freeze time** pauses the game for everyone.
+- **Restart the level** restarts it for everyone, after rebuilding the AI's paths.
+- **Rebuild the AI's paths** appears once edits have made them out of date.
+- **Players who join may build** and a box per player decide who may use the editor.
+- **Builders may save** lets builders save with Ctrl+S.
+- **Edit lines in the chat** posts lines like "Bob placed 3 objects and changed 1 object".
+
+In any other online session, the host can turn building on with "Building in this session".
+
+### What you can do
+
+- **Edit with every editor tool:** place, move, rotate and scale objects, copy and paste, delete, group and ungroup, use prefabs, change object properties, colours, script parameters and connections, decals, lights and hotspots, including modded objects. Anything an object saves in its parameters goes to everyone.
+- **Change the sky and the level's settings.** These are sent after an editor operation, or at once while time is frozen.
+- **See the other builders:** each one's camera appears as a named marker in their own colour, and what they have selected is outlined.
+- **Watch drags live:** other builders see your objects move while you drag them, and the final position arrives when you let go.
+- **Undo and redo** (Ctrl+Z, Ctrl+Y) your own edits. Everyone has their own history.
+- **Join a session already under way:** you load the level, then receive every edit made since it was loaded or last saved.
+- **Rely on autosaves:** while a build session is on, the host saves a copy every 5 minutes if anything changed. It goes to `Data/Levels/autosave/<level>_autosave.xml` in the host's write folder, and the level's own file is left alone. The editor shows when the level was last saved and whether there are unsaved changes.
+- **Get fresh reflections and AI paths:** reflection captures re-render on every machine shortly after edits stop. The host rebuilds the AI's paths when the level restarts and saves them with the level.
+
+### What you can't do (yet)
+
+- **Edit an object someone else has selected.** The first player to select an object holds it until they deselect it. Others' changes to it are put back, with a message saying why.
+- **Move players' characters.** A player's character isn't part of the level, so a builder can't move someone else's character. Moving your own isn't saved into the level either.
+- **Save unless allowed.** Only the host's copy of the level is saved. Without "Builders may save", a builder's Ctrl+S asks the host, who gets a Save / Not now prompt.
+- **Use files only you have.** Builders can only place what every machine has: the stock game and the mods everyone has enabled. New models, textures or sounds aren't sent. The one exception is the level file itself: a level from the host's write folder is sent to the guests.
+- **Edit things that move by themselves without selecting them.** While time runs, characters, items and hotspots count as edits only while you hold them (selected) and use an editor tool on them. Otherwise their movement is the game's, and nothing is sent. Freeze time to rearrange a level that is in motion.
+- **Keep a hotspot's running state.** An edited object is recreated from its saved description on every machine, so a hotspot's script state that isn't stored in its parameters restarts. Data a mod keeps outside the level, such as in the save file, isn't synced. A mod can sync that data itself through the [script API](Docs/Markdown/Overgrowth%20Online%20Script%20API.md): `Online_Send`, `Online_SendToHost` or `Online_SendToPlayer` to send, `Online_Listen` to receive, and the `online:joined` event to bring new players up to date.
+- **Save the AI's paths under a folder with non-English characters.** This is a known issue from the original game: a level saved inside the game's folders under such a folder name fails when its AI paths are written.
+
 ## Mods
 
 Other mods are not guaranteed to work online and have not been tested.
