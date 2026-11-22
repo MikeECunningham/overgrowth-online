@@ -22,6 +22,7 @@
 //
 //-----------------------------------------------------------------------------
 #include "text.h"
+#include "font_bitmap.h"
 
 #include <Graphics/reversez.h>
 #include <Graphics/textures.h>
@@ -127,9 +128,8 @@ void TextCanvas::AddBitmap(int x, int y, const FT_Bitmap& bitmap) {
     int pen_alpha = pen_color_.a;
     for (int i = bottom; i < top; ++i) {
         int index = (height_ - i) * width_ * 4 + left * 4;
-        int bitmap_index = (i - y) * bitmap.width;
         for (int j = left; j < right; ++j) {
-            int opac = bitmap.buffer[bitmap_index + (j - x)];
+            int opac = FontBitmap::Coverage(bitmap, j - x, i - y);
             opac = (opac * pen_alpha) / 255;
             unsigned char* pixel = &pixels_[index];
             pixel[0] = mix((int)pixel[0], (int)pen_color_.r, opac);
@@ -773,9 +773,9 @@ bool TextAtlas::Pack(unsigned char* pixels, int atlas_dims[2],
     for (; character != alphabet.end(); character++) {
         bool lowercase = (character->lowercase && lowercase_font_face_id != -1);
         FT_GlyphSlot slot =
-            font_renderer->RenderCharacterBitmap(
+            font_renderer->RenderAtlasCharacterBitmap(
                 lowercase ? lowercase_font_face_id : font_face_id,
-                character->codepoint, FontRenderer::RCB_RENDER);
+                character->codepoint);
         FT_Bitmap* bitmap = &slot->bitmap;
         if (character->width + draw[0] > atlas_dims[0]) {
             draw[0] = 0;
@@ -788,7 +788,7 @@ bool TextAtlas::Pack(unsigned char* pixels, int atlas_dims[2],
         for (int x = 0; x < character->width; ++x) {
             for (int y = 0; y < character->height; ++y) {
                 if (draw[0] + x < atlas_dims[0] && draw[1] + y < atlas_dims[1]) {
-                    pixels[(draw[1] + y) * atlas_dims[0] + draw[0] + x] = bitmap->buffer[y * character->width + x];
+                    pixels[(draw[1] + y) * atlas_dims[0] + draw[0] + x] = FontBitmap::Coverage(*bitmap, x, y);
                 } else {
                     return false;
                 }
@@ -815,15 +815,14 @@ void TextAtlas::Create(const char* path, int _pixel_height, FontRenderer* font_r
     std::vector<CharacterInfo>::iterator character = alphabet.begin();
     for (; character != alphabet.end(); character++) {
         bool lowercase = (character->lowercase && lowercase_font_face_id != -1);
-        FT_GlyphSlot slot = font_renderer->RenderCharacterBitmap(
+        FT_GlyphSlot slot = font_renderer->RenderAtlasCharacterBitmap(
             lowercase ? lowercase_font_face_id : font_face_id,
-            character->codepoint, FontRenderer::RCB_METRIC);
-        // FT_Bitmap* bitmap = &slot->bitmap;
-        character->width = slot->metrics.width / 64;
-        character->height = slot->metrics.height / 64;
+            character->codepoint);
+        character->width = static_cast<int>(slot->bitmap.width);
+        character->height = static_cast<int>(slot->bitmap.rows);
         character->advance_x = slot->metrics.horiAdvance / 64;
-        character->bearing[0] = slot->metrics.horiBearingX / 64;
-        character->bearing[1] = slot->metrics.horiBearingY / 64;
+        character->bearing[0] = slot->bitmap_left;
+        character->bearing[1] = slot->bitmap_top;
     }
 
     // Pack all characters into the smallest possible atlas

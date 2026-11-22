@@ -48,6 +48,7 @@ class ScriptableUI : public ModLoadingCallback {
     void* callback_instance_;
     bool to_delete_;
     bool mod_activation_change_;
+    bool initialized_ = false;
     NotificationCallback notification_callback_;
 
     int currentWindowDims[2];
@@ -77,7 +78,8 @@ class ScriptableUI : public ModLoadingCallback {
     bool CanGoBack();
     void ScheduleDelete();
     bool IsDeleteScheduled();
-    void Initialize(const Path& script_path, const ASData& data, bool debug_break = false);
+    void Initialize(const Path& script_path, const ASData& data, bool debug_break = false, bool personal_menu = false);
+    bool IsInitialized() const { return initialized_; }
     void Update();
     void Draw();
     void QueueBasicPopup(const std::string& title, const std::string& body);

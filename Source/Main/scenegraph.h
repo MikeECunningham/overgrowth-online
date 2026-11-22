@@ -216,6 +216,9 @@ class SceneGraph {
     void GetPlayerCharacterIDs(int *num_avatars, int avatar_ids[], int max_avatars);
     void GetNPCCharacterIDs(int *num_avatars, int avatar_ids[], int max_avatars);
     void GetCharacterIDs(int *num_avatars, int avatar_ids[], int max_avatars);
+    void GetPlayerCharacterIDs(std::vector<int> &avatar_ids);
+    void GetNPCCharacterIDs(std::vector<int> &avatar_ids);
+    void GetCharacterIDs(std::vector<int> &avatar_ids);
     void SendMessageToAllObjects(OBJECT_MSG::Type type);
     void SendScriptMessageToAllObjects(std::string &msg);
     std::vector<MovementObject *> GetControlledMovementObjects();

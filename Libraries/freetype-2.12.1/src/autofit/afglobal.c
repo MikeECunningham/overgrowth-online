@@ -358,6 +358,14 @@
 
 #ifdef FT_CONFIG_OPTION_USE_HARFBUZZ
     globals->hb_font = hb_ft_font_create( face, NULL );
+    /* The auto-hinter shapes in font units, independently of the active
+     * FT_Size.  Recent hb-ft versions synchronize hb_font_set_scale back to
+     * their FT_Face.  Using those callbacks here changes the application's
+     * pixel size while the first glyph is being loaded (and subsequent
+     * glyphs then rasterize at units_per_EM / 64 pixels).  OpenType callbacks
+     * provide the unscaled metrics we need without changing this face.
+     */
+    hb_ot_font_set_funcs( globals->hb_font );
     globals->hb_buf  = hb_buffer_create();
 #endif
 

@@ -31,9 +31,10 @@ class PlayerInputMessage : public OnlineMessageBase {
     uint16_t depth_count;
     uint16_t count;
     uint8_t id;
+    PlayerID player_id;
 
    public:
-    PlayerInputMessage(float depth, uint16_t depth_count, uint16_t count, uint8_t id);
+    PlayerInputMessage(float depth, uint16_t depth_count, uint16_t count, uint8_t id, PlayerID player_id = 0);
 
     static binn* Serialize(void* object);
     static void Deserialize(void* object, binn* source);

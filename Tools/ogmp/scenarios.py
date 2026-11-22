@@ -679,6 +679,14 @@ def _splitscreen_join(ctx):
 SCENARIOS["splitscreen_join"] = _splitscreen_join
 
 
+def _local_splitscreen(ctx):
+    from .splitscreen_suite import local_splitscreen
+    return local_splitscreen(ctx)
+
+
+SCENARIOS["local_splitscreen"] = _local_splitscreen
+
+
 def _guest_waits_host(ctx):
     from .load_wait_suite import guest_waits_host
     return guest_waits_host(ctx)
@@ -1021,6 +1029,37 @@ def _arena_pickups(ctx):
 
 SCENARIOS["arena_pickups"] = _arena_pickups
 SCENARIOS["stress_4"] = _stress_4
+
+def _local_lobby(ctx):
+    from .lobby_suite import local_lobby
+    return local_lobby(ctx)
+
+
+SCENARIOS["local_lobby"] = _local_lobby
+
+
+def _lobby_lifecycle(ctx):
+    from .lobby_suite import lobby_lifecycle
+    return lobby_lifecycle(ctx)
+
+
+SCENARIOS["lobby_lifecycle"] = _lobby_lifecycle
+
+
+def _mode_teams(ctx):
+    from .mode_team_suite import mode_teams
+    return mode_teams(ctx)
+
+
+SCENARIOS["mode_teams"] = _mode_teams
+
+
+def _player_menus(ctx):
+    from .player_menu_suite import player_menus
+    return player_menus(ctx)
+
+
+SCENARIOS["player_menus"] = _player_menus
 
 SUITES = {
     "smoke": ["boot", "move", "connect"],

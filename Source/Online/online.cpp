@@ -174,7 +174,7 @@ void Online::ClearIDTranslations() {
 }
 
 bool Online::SendingRemovePackages() const {
-    return !loading;
+    return !loading && !lobby_waiting_;
 }
 
 void Online::RemoveObject(Object* o, ObjectID my_id) {
@@ -198,6 +198,8 @@ static bool Finite3(const vec3& v) {
 }
 
 void Online::ChangeLevel(const string& id) {
+    mode_teams_.clear();
+    BroadcastLobby();
     campaign_id = ModLoading::Instance().WhichCampaignLevelBelongsTo(id);
     host_started_level = false;
     level_name = id;
@@ -235,6 +237,10 @@ void Online::ChangeLevel(const string& id) {
     SendLevelFile(0, level_name);  // (a level of the host's own: the file first)
     Send<OnlineMessages::PCSFileTransferMetadataMessage>(level_name, campaign_id, true);
 }
+
+// Logging takes these integral constants by reference, requiring storage.
+const size_t Online::kScriptChannelMax;
+const size_t Online::kScriptTextMax;
 
 Online::Online() : mode(MultiplayerMode::NoMultiplayer),
                    initial_ts(0),
@@ -284,7 +290,6 @@ void Online::PossessAvatar(PlayerID player_id, ObjectID object_id) {
 ObjectID Online::CreateCharacter() {
     SceneGraph* scenegraph = Engine::Instance()->GetSceneGraph();
 
-    ObjectID id = scenegraph->map_editor->CreateObject(default_hot_join_characte_path);
     std::string team = "";
     vec3 position = vec3(0.0f);
 
@@ -294,12 +299,32 @@ ObjectID Online::CreateCharacter() {
         MovementObject* mymo = static_cast<MovementObject*>(scenegraph->GetObjectFromID(local_avatar_ids[0]));
         team = mymo->GetScriptParams()->GetStringVal("Teams");
         // Overgrowth Online: near the host's character on solid ground (not in the water)
-        position = SafeSpotNear(mymo->position, mymo->GetFacing(), (int)online_session->player_states.size());
+        position = mymo->position;  // a safe fallback, never the world's origin
+        bool placed = false;
+        for (const auto& entry : online_session->player_states) {
+            Object* object = scenegraph->GetObjectFromID(entry.second.object_id);
+            if (!object || object->GetType() != _movement_object) continue;
+            MovementObject* anchor = static_cast<MovementObject*>(object);
+            for (int candidate = 1; candidate <= 8; ++candidate) {
+                vec3 spot;
+                if (!FindSafeSpot(anchor->position, anchor->GetFacing(), candidate, &spot)) continue;
+                bool occupied = false;
+                for (Object* character : scenegraph->movement_objects_) {
+                    vec3 d = static_cast<MovementObject*>(character)->position - spot;
+                    if (std::fabs(d.y()) < 1.5f && d.x()*d.x() + d.z()*d.z() < 1.0f) { occupied = true; break; }
+                }
+                if (!occupied) { position = spot; placed = true; break; }
+            }
+            if (placed) break;
+        }
     } else {
         LOGW << "Unable to find locally controlled character while creating character for new connection, using fallback parameters" << std::endl;
     }
 
-    MovementObject* mo = static_cast<MovementObject*>(scenegraph->GetObjectFromID(id));
+    const ObjectID id = scenegraph->map_editor->CreateObject(default_hot_join_characte_path);
+    Object* created = scenegraph->GetObjectFromID(id);
+    if (!created || created->GetType() != _movement_object) return static_cast<ObjectID>(-1);
+    MovementObject* mo = static_cast<MovementObject*>(created);
     mo->SetTranslation(position);
     mo->is_player = true;
     mo->created_on_the_fly = true;
@@ -331,32 +356,32 @@ float Online::GetNoDataInterpStepOverRide() const {
 
 // Client side sending camera info to host
 void Online::SendPlayerCameraState() {
-    Camera* camera = ActiveCameras::Instance()->GetCamera(0);
-    Send<OnlineMessages::CameraTransformMessage>(camera->GetPos(), camera->GetFlatFacing(), camera->GetFacing(), camera->GetUpVector(), camera->GetXRotation(), camera->GetYRotation());
+    for (const auto& player : GetLocalPlayerStates()) {
+        Camera* camera = ActiveCameras::GetCamera(std::max(0, player.screen - 1));
+        if (camera == nullptr || player.object_id == static_cast<ObjectID>(-1)) continue;
+        Send<OnlineMessages::CameraTransformMessage>(camera->GetPos(), camera->GetFlatFacing(), camera->GetFacing(),
+            camera->GetUpVector(), camera->GetXRotation(), camera->GetYRotation(), player.player_id);
+    }
 }
 
 void Online::SendPlayerInputState() {
-    // Assume player one control. For split screen multiplayer we have to start dealing with multiplayer controllers here.
-    PlayerInput* player_input = Input::Instance()->GetController(0);
-
-    for (const string& binding : Input::Instance()->GetAllAvailableBindings()) {
-        // TODO Can we make it so these bindings don't even show up in available bindings?
-        if (binding == "look_left" || binding == "look_right" || binding == "look_up" || binding == "look_down") {
-            continue;
-        }
-
-        KeyState local_keystate = player_input->key_down[binding];
-        KeyState remote_keystate = client_key_down_map_state[binding];
-
-        // Ownership: our character runs here, so the host only needs what is
-        // held (its scripts may read it), not every frame a key stays down
-        bool changed = std::fabs(local_keystate.depth - remote_keystate.depth) > 0.05f ||
-                       (local_keystate.depth == 0.0f) != (remote_keystate.depth == 0.0f) ||
-                       (local_keystate.count > 0) != (remote_keystate.count > 0) ||
-                       (local_keystate.depth_count > 0) != (remote_keystate.depth_count > 0);
-        if (changed) {
-            Send<OnlineMessages::PlayerInputMessage>(local_keystate.depth, local_keystate.depth_count, local_keystate.count, online_session->binding_id_map_[binding]);
-            client_key_down_map_state[binding] = local_keystate;
+    for (const auto& player : GetLocalPlayerStates()) {
+        const int input_id = Input::Instance()->GetLocalPlayerInputID(player.local_index);
+        PlayerInput* input = Input::Instance()->GetController(input_id);
+        if (input == nullptr || player.object_id == static_cast<ObjectID>(-1)) continue;
+        const bool menu_open = Engine::Instance()->PlayerHasMenu(input_id);
+        auto& previous = client_player_key_states_[player.player_id];
+        for (const string& binding : Input::Instance()->GetAllAvailableBindings()) {
+            if (binding == "look_left" || binding == "look_right" || binding == "look_up" || binding == "look_down") continue;
+            KeyState local;
+            if (!menu_open) local = input->key_down[binding];
+            KeyState remote = previous[binding];
+            if (std::fabs(local.depth - remote.depth) > 0.05f || (local.depth == 0.0f) != (remote.depth == 0.0f) ||
+                (local.count > 0) != (remote.count > 0) || (local.depth_count > 0) != (remote.depth_count > 0)) {
+                Send<OnlineMessages::PlayerInputMessage>(local.depth, local.depth_count, local.count,
+                    online_session->binding_id_map_[binding], player.player_id);
+                previous[binding] = local;
+            }
         }
     }
 }
@@ -385,6 +410,24 @@ void Online::LateUpdate(SceneGraph* scenegraph) {
         }
 
         online_session->client_connection_manager.Update();
+        if (IsHosting() && lobby_start_pending_ && !lobby_waiting_ && !loading &&
+            Engine::Instance()->IsLevelLoaded() && AllClientsReady()) {
+            SessionStarted(true);
+            Engine::Instance()->waiting_for_input_ = false;
+            lobby_start_pending_ = false;
+        }
+        if (lobby_waiting_ || scenegraph == nullptr || scenegraph->level == nullptr) {
+            if (IsHosting()) {
+                HandleConnectionsToBeClosed();
+                SyncHostSessionFlags();
+                if (OnlineClockMs() - last_role_message_ms > 2000.0) {
+                    last_role_message_ms = OnlineClockMs();
+                    OpenToFriends(false);
+                    UpdateFriendPresence(nullptr);
+                }
+            }
+            return;
+        }
 
         if (OnlineClockMs() - last_link_log_ms > 10000.0) {
             last_link_log_ms = OnlineClockMs();
@@ -521,7 +564,7 @@ void Online::SetLevelLoaded() {
         loading = false;
         RemoveAllAvatarIds();
         AddFreeAvatarsIds();
-        ObjectID avatar = GetFreeAvatarID();
+        AssignPeerAvatars(LocalPeerID());
 
         campaign_id = ModLoading::Instance().WhichCampaignLevelBelongsTo(level_name);
         // (the empty level, Data/Levels/nothing.xml, loads as a new level: no path of its own)
@@ -611,6 +654,12 @@ bool Online::IsAwaitingShutdown() const {
 }
 
 void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
+    client_player_key_states_.clear();
+    if (local_lobby_profiles_.empty()) {
+        LocalLobbyProfile profile; profile.name = OnlineUtility::GetPlayerName();
+        local_lobby_profiles_.push_back(profile);
+    }
+    if (multiplayerMode == MultiplayerMode::Client) lobby_waiting_ = true;
     // for(string binding : Input::Instance()->GetAllAvailableBindings()) {
     //     LOGI << binding << " " << (int)Input::Instance()->GetBindID(binding) << endl;
     // }
@@ -635,6 +684,7 @@ void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
     online_session->host_session_flags[OnlineFlags::ALLOWSEDITOR] = false;
 
     mode = multiplayerMode;
+    Input::Instance()->SetUpForXPlayers(static_cast<unsigned>(LocalLobbyNames().size()), true);
 
     Engine* engine = Engine::Instance();
     SceneGraph* graph = engine->GetSceneGraph();
@@ -670,8 +720,9 @@ void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
             AssignBindID(binding);
         }
 
-        online_session->local_player_id = -1;
-        online_session->player_states[online_session->local_player_id] = GenerateHostPlayerState();
+        online_session->local_player_id = 255;
+        next_local_player_id_ = 256;
+        EstablishPeerPlayers(255, LocalLobbyNames());
     }
 
     net.Initialize();
@@ -734,6 +785,9 @@ void Online::QueueStopMultiplayer() {
 }
 
 void Online::StopMultiplayer() {
+    lobby_waiting_ = false;
+    lobby_start_pending_ = false;
+    client_player_key_states_.clear();
     if (IsActive() || mode == MultiplayerMode::AwaitingShutdown) {
         mode = MultiplayerMode::CleanUp;
 
@@ -762,8 +816,9 @@ void Online::StopMultiplayer() {
 
             for (auto it : objects) {
                 if (it->created_on_the_fly) {
+                    const ObjectID removed_id = it->GetID();
                     graph->map_editor->RemoveObject(it, graph, true);
-                    DeRegisterHostClientIDTranslation(it->GetID());
+                    DeRegisterHostClientIDTranslation(removed_id);
                 }
             }
         }
@@ -813,7 +868,7 @@ bool Online::IsLocalAvatar(const ObjectID avatar_id) const {
     // Is this avatar controlled by a playerstate? If yes, is it us?
     for (const auto& it : online_session->player_states) {
         if (it.second.object_id == avatar_id) {
-            return it.first == online_session->local_player_id;
+            return it.second.peer_id == LocalPeerID();
         }
     }
 
@@ -928,7 +983,7 @@ PlayerID Online::GetAvatarOwner(const ObjectID avatar_id) const {
     if (online_session != nullptr) {
         for (const auto& it : online_session->player_states) {
             if (it.second.object_id == avatar_id) {
-                return it.first;
+                return it.second.peer_id;
             }
         }
     }
@@ -1072,6 +1127,12 @@ void Online::StreamCharacters(SceneGraph* sg) {
     }
 
     // 2. Send what each receiver is due: a client sends to the host only
+    struct ViewInterest {
+        vec3 pos;
+        bool has_cam;
+        vec3 cam_pos, cam_dir;
+        CommonObjectID avatar;
+    };
     struct Receiver {
         PeerID peer;
         NetConnectionID conn;
@@ -1081,6 +1142,7 @@ void Online::StreamCharacters(SceneGraph* sg) {
         vec3 cam_pos;
         vec3 cam_dir;
         CommonObjectID avatar;
+        std::vector<ViewInterest> views;
     };
     vector<Receiver> receivers;
     {
@@ -1093,22 +1155,20 @@ void Online::StreamCharacters(SceneGraph* sg) {
     vector<CommonObjectID> players_in_stream;  // (filled once, for the first receiver)
 
     for (Receiver& rc : receivers) {
-        auto ps = online_session->player_states.find(rc.peer);
-        if (IsHosting() && ps != online_session->player_states.end()) {
-            Object* o = sg->GetObjectFromID(ps->second.object_id);
-            if (o != nullptr && o->GetType() == _movement_object) {
-                rc.has_pos = true;
-                rc.pos = static_cast<MovementObject*>(o)->position;
-                rc.avatar = GetOriginalID(ps->second.object_id);
-            }
-
-            // Their view (the camera they send us, 5 Hz)
-            Camera* cam = ps->second.camera_id >= 0 ? ActiveCameras::GetCamera(ps->second.camera_id) : nullptr;
-            if (cam != nullptr) {
-                rc.has_cam = true;
-                rc.cam_pos = cam->GetPos();
-                rc.cam_dir = cam->GetFacing();
-            }
+        if (IsHosting()) for (const auto& entry : online_session->player_states) {
+            const PlayerState& player = entry.second;
+            if (player.peer_id != rc.peer) continue;
+            Object* object = sg->GetObjectFromID(player.object_id);
+            if (object == nullptr || object->GetType() != _movement_object) continue;
+            ViewInterest view;
+            view.pos = static_cast<MovementObject*>(object)->position;
+            view.cam_pos = view.pos;
+            view.cam_dir = vec3(0.0f, 0.0f, 1.0f);
+            view.avatar = GetOriginalID(player.object_id);
+            Camera* camera = player.camera_id >= 0 ? ActiveCameras::GetCamera(player.camera_id) : nullptr;
+            view.has_cam = camera != nullptr;
+            if (camera) { view.cam_pos = camera->GetPos(); view.cam_dir = camera->GetFacing(); }
+            rc.views.push_back(view);
         }
 
         std::vector<uint8_t> bundle;
@@ -1133,14 +1193,18 @@ void Online::StreamCharacters(SceneGraph* sg) {
             if (r.owner == rc.peer || r.bytes.empty()) {
                 continue;  // their own character
             }
-            float dist = rc.has_pos ? distance(rc.pos, r.position) : 10.0f;
-            bool in_view = true;
-            if (rc.has_cam) {
-                vec3 to = r.position - rc.cam_pos;
-                in_view = length(to) < 12.0f || dot(normalize(to), rc.cam_dir) > 0.0f;  // (wide: the camera turns fast)
+            float dist = rc.views.empty() ? 10.0f : 1e30f;
+            double priority = rc.views.empty() ? 1.0 : 0.0;
+            // One network connection watches all of its local cameras. A fight
+            // next to P2 must retain the same stream priority as one next to P1.
+            for (const auto& view : rc.views) {
+                const float view_distance = distance(view.pos, r.position);
+                dist = std::min(dist, view_distance);
+                const vec3 direction = r.position - view.cam_pos;
+                const bool visible = !view.has_cam || length_squared(direction) < 144.0f || dot(normalize(direction), view.cam_dir) > 0.0f;
+                const bool engaged = r.target == view.avatar || r.attacker == view.avatar;
+                priority = std::max(priority, StreamPriority(view_distance, visible, engaged));
             }
-            bool engaged = rc.avatar >= 0 && (r.target == rc.avatar || r.attacker == rc.avatar);
-            double priority = StreamPriority(dist, in_view, engaged);
             // Players, and whoever fights one (a friend's fight is watched):
             // a few of them; full rate within 25 m, smooth however far (the
             // budget below still rules)
@@ -1942,7 +2006,8 @@ void Online::TellPlayer(int player, const std::string& text) {
     if (!IsActive() || text.empty()) {
         return;
     }
-    if (player == OwnApiPlayerID()) {
+    const PeerID recipient = ApiPlayerPeer(player);
+    if (recipient != 0 && recipient == LocalPeerID()) {
         AddLocalChatMessage(text);
         return;
     }
@@ -1952,7 +2017,7 @@ void Online::TellPlayer(int player, const std::string& text) {
     OnlineMessageRef ref = message_handler.Create<OnlineMessages::ChatEntryMessage>(text);
     lock_guard<mutex> guard(online_session->connected_peers_lock);
     for (const Peer& peer : online_session->connected_peers) {
-        if (ApiPlayerID(peer.peer_id) == player) {
+        if (peer.peer_id == recipient) {
             SendTo(peer.conn_id, ref);
         }
     }
@@ -2174,6 +2239,15 @@ int Online::OwnApiPlayerID() const {
     return ApiPlayerID(online_session->local_player_id);
 }
 
+PeerID Online::ApiPlayerPeer(int player) const {
+    if (IsActive() && online_session != nullptr) {
+        const PlayerID id = player == 0 ? 255 : static_cast<PlayerID>(player);
+        const auto found = online_session->player_states.find(id);
+        if (found != online_session->player_states.end()) return found->second.peer_id;
+    }
+    return 0;
+}
+
 std::vector<int> Online::ApiPlayerIDs() const {
     std::vector<int> ids;
     if (IsActive()) {
@@ -2265,8 +2339,9 @@ void Online::RelayScriptMessage(const OnlineMessageRef& ref, PeerID from) {
     if (m->to == OnlineMessages::ScriptMessage::kEveryone) {
         RelayFromPeer(ref, from);
     } else if (m->to > 0) {
+        const PeerID recipient = ApiPlayerPeer(m->to);
         for (const Peer& peer : online_session->connected_peers) {
-            if ((int)peer.peer_id == m->to) {
+            if (peer.peer_id == recipient) {
                 SendTo(peer.conn_id, ref);
             }
         }
@@ -2282,7 +2357,8 @@ void Online::UpdateScriptApi() {
         outgoing.swap(script_api_outgoing);
         lock_guard<mutex> guard(online_session->connected_peers_lock);
         for (const ScriptApiOutgoing& out : outgoing) {
-            if (out.to == me) {
+            const PeerID recipient = ApiPlayerPeer(out.to);
+            if (recipient != 0 && recipient == LocalPeerID()) {
                 QueueScriptDelivery(me, out.channel, out.text);  // (to ourselves: next update, like the rest)
             } else if (IsClient()) {
                 Send<OnlineMessages::ScriptMessage>(out.to, me, out.channel, out.text);  // (the host passes it on)
@@ -2291,7 +2367,7 @@ void Online::UpdateScriptApi() {
             } else {
                 OnlineMessageRef ref = message_handler.Create<OnlineMessages::ScriptMessage>(out.to, me, out.channel, out.text);
                 for (const Peer& peer : online_session->connected_peers) {
-                    if ((int)peer.peer_id == out.to) {
+                    if (peer.peer_id == recipient) {
                         SendTo(peer.conn_id, ref);
                     }
                 }
@@ -2981,16 +3057,17 @@ void Online::UnstickHere(SceneGraph* sg, ItemObject* item) {
 }
 
 vector<ObjectID> Online::GetLocalAvatarIDs() const {
-    vector<ObjectID> local_avatar_ids;
+    vector<ObjectID> result;
     SceneGraph* sg = Engine::Instance()->GetSceneGraph();
-    if (sg != nullptr) {
-        for (const auto& it : sg->GetControllableMovementObjects()) {
-            if (IsLocalAvatar(it->GetID())) {
-                local_avatar_ids.push_back(it->GetID());
-            }
+    if (sg == nullptr) return result;
+    if (online_session != nullptr) {
+        for (const auto& player : GetLocalPlayerStates()) {
+            if (player.object_id != static_cast<ObjectID>(-1) && sg->GetObjectFromID(player.object_id)) result.push_back(player.object_id);
         }
+    } else {
+        for (const auto& character : sg->GetControllableMovementObjects()) if (IsLocalAvatar(character->GetID())) result.push_back(character->GetID());
     }
-    return local_avatar_ids;
+    return result;
 }
 
 PlayerState Online::GenerateHostPlayerState() const {
@@ -3001,6 +3078,8 @@ PlayerState Online::GenerateHostPlayerState() const {
     }
 
     PlayerState host_player_state;
+    host_player_state.player_id = 255;
+    host_player_state.peer_id = 255;
     host_player_state.ping = 0;
     host_player_state.playername = OnlineUtility::GetPlayerName();
     host_player_state.object_id = -1;
@@ -3078,42 +3157,39 @@ void Online::CloseConnectionImmediate(NetConnectionID conn_id, ConnectionClosedR
 
     vector<Peer>::iterator peer = GetPeerIt(conn_id);
     if (peer != online_session->connected_peers.end()) {
-        PlayerID player_id = peer->peer_id;  // TODO We assume peer_id == player_id
-        if (online_session->player_states.find(player_id) != online_session->player_states.end()) {
-            auto& player_state = online_session->player_states[player_id];
-
-            SendRawChatMessage(player_state.playername + " disconnected!");
-
-            // Clean up objects assigned to disconnected player
-            SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+        const PeerID departed = peer->peer_id;
+        std::vector<PlayerID> removed;
+        for (const auto& entry : online_session->player_states) if (entry.second.peer_id == departed) removed.push_back(entry.first);
+        SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+        for (PlayerID id : removed) {
+            const PlayerState state = online_session->player_states[id];
             if (graph != nullptr) {
-                Object* o = graph->GetObjectFromID(player_state.object_id);
-                if (o != nullptr) {
-                    if (o->created_on_the_fly) {
-                        graph->map_editor->RemoveObject(o, graph);
-                    } else {
-                        online_session->free_avatars.push_back(player_state.object_id);
+                Object* object = graph->GetObjectFromID(state.object_id);
+                if (object != nullptr) {
+                    if (object->created_on_the_fly) graph->map_editor->RemoveObject(object, graph);
+                    else {
+                        online_session->free_avatars.push_back(state.object_id);
+                        static_cast<MovementObject*>(object)->remote = false;
+                        static_cast<MovementObject*>(object)->controlled = false;
                     }
-                    ((MovementObject*)o)->remote = false;
                 }
             }
-
-            // Hand back what they held for a throw, choke or drag
-            for (auto ov = owner_overrides.begin(); ov != owner_overrides.end();) {
-                if (ov->second.owner == player_id) {
-                    BroadcastOwnerOverride(ov->first, 0, false, 0.0f, player_id, true);
-                    ov = owner_overrides.erase(ov);
-                } else {
-                    ++ov;
-                }
+            if (PlayerInput* input = Input::Instance()->GetController(state.controller_id)) {
+                input->enabled = false;
+                input->key_down.clear();
             }
-
-            // Remove playerstate
-            online_session->player_states.erase(player_id);
-            Send<OnlineMessages::RemovePlayerState>(player_id);
-
-            // TODO do we need to clean the camera and controller of the player?
+            ActiveCameras::Instance()->FreeVirtualCameraInstance(state.camera_id);
+            online_session->player_inputs.erase(id);
+            online_session->player_states.erase(id);
+            Send<OnlineMessages::RemovePlayerState>(id);
         }
+        for (auto ov = owner_overrides.begin(); ov != owner_overrides.end();) {
+            if (ov->second.owner == departed) {
+                BroadcastOwnerOverride(ov->first, 0, false, 0.0f, departed, true);
+                ov = owner_overrides.erase(ov);
+            } else ++ov;
+        }
+        BroadcastLobby();
 
         online_session->client_connection_manager.RemoveConnection(peer->peer_id);
         online_session->connected_peers.erase(peer);
@@ -3132,6 +3208,8 @@ void Online::CheckPendingMessages() {
         lock_guard<mutex> guard(online_session->incoming_messages_lock);
 
         for (auto& it : online_session->incoming_messages) {
+            const auto category = static_cast<OnlineMessageBase*>(it.message.GetData())->cat;
+            if (lobby_waiting_ && category != OnlineMessageCategory::TRANSIENT) continue;
             // Overgrowth Online: a guest sending what only the host sends: refused
             if (IsHosting() && HostOnlyMessage(message_handler.GetMessageType(it.message))) {
                 if (net_refused++ % 50 == 0) {
@@ -3182,7 +3260,7 @@ void Online::ApplyPlayerInput() {
         unordered_map<uint8_t, int> depth;
 
         for (list<OnlineMessageRef>::iterator i = it.second.begin(); i != it.second.end();) {
-            PlayerInputMessage* piks = static_cast<PlayerInputMessage*>(it.second.front().GetData());
+            PlayerInputMessage* piks = static_cast<PlayerInputMessage*>(i->GetData());
 
             // Get player involved in the input, discard input if missing
             if (online_session->player_states.find(it.first) == online_session->player_states.end()) {
@@ -3343,7 +3421,11 @@ vector<PlayerState> Online::GetPlayerStates() {
         vector<PlayerState> player_states;
         for (const auto& it : online_session->player_states) {
             player_states.push_back(it.second);
+            player_states.back().player_id = it.first;
         }
+        std::sort(player_states.begin(), player_states.end(), [](const PlayerState& a, const PlayerState& b) {
+            return a.peer_id != b.peer_id ? (a.peer_id == 255 || (b.peer_id != 255 && a.peer_id < b.peer_id)) : a.local_index < b.local_index;
+        });
         return player_states;
     }
 
@@ -3691,7 +3773,7 @@ ObjectID Online::HostAvatarID() const {
         return -1;
     }
     // The host's own player state (its local_player_id, -1 as a PlayerID) on every machine
-    auto it = online_session->player_states.find((PlayerID)-1);
+    auto it = online_session->player_states.find((PlayerID)255);
     if (it != online_session->player_states.end() && it->second.object_id >= 0) {
         return it->second.object_id;
     }
@@ -3747,55 +3829,8 @@ void Online::ReceiveAvatarCharacter(CommonObjectID character, const string& path
     }
 }
 
-static bool ParseColor(const string& s, vec3* c) {
-    float r = 0.0f, g = 0.0f, b = 0.0f;
-    if (sscanf(s.c_str(), "%f %f %f", &r, &g, &b) != 3) {
-        return false;
-    }
-    *c = vec3(std::max(0.0f, std::min(1.0f, r)), std::max(0.0f, std::min(1.0f, g)), std::max(0.0f, std::min(1.0f, b)));
-    return true;
-}
-
 void Online::ApplyOwnCharacter(SceneGraph* sg) {
-    // Ours: on a client its player state's (a joined character isn't in
-    // GetLocalAvatarIDs there), on the host the first local one
-    vector<ObjectID> mine = IsHosting() ? GetLocalAvatarIDs() : vector<ObjectID>(1, GetOwnPlayerState().object_id);
-    if (sg == nullptr || !host_started_level || mine.empty() || mine[0] < 0) {
-        return;
-    }
-    Object* o = sg->GetObjectFromID(mine[0]);
-    if (o == nullptr || o->GetType() != _movement_object) {
-        return;
-    }
-    MovementObject* mo = static_cast<MovementObject*>(o);
-    string key = level_name + "|" + to_string((int)mine[0]);
-    if (mo->network_proxy || key == own_character_applied) {
-        return;
-    }
-    own_character_applied = key;
-
-    // The character (stock aschar.as SwitchCharacter: drops weapons, rebuilds, random colours)
-    string path = config["mp_character"].str();
-    if (!path.empty() && path != mo->character_path && FileExists(path, kAnyPath) &&
-        mo->HasFunction("void SwitchCharacter(string)")) {
-        LOGI << "Overgrowth Online: playing as " << path << std::endl;
-        mo->Execute("SwitchCharacter(\"" + path + "\");");
-    }
-
-    // The colours, by what each palette channel is (fur, cloth)
-    vec3 fur, cloth;
-    bool has_fur = ParseColor(config["mp_fur"].str(), &fur);
-    bool has_cloth = ParseColor(config["mp_cloth"].str(), &cloth);
-    if ((has_fur || has_cloth) && mo->HasFunction("void RandomizeColors()")) {
-        string code = "Object@ obj = ReadObjectFromID(this_mo.GetID()); for(int i = 0; i < 4; ++i) { string ch = character_getter.GetChannel(i);";
-        if (has_fur) {
-            code += " if(ch == \"fur\") { obj.SetPaletteColor(i, vec3(" + to_string(fur.x()) + ", " + to_string(fur.y()) + ", " + to_string(fur.z()) + ")); }";
-        }
-        if (has_cloth) {
-            code += " if(ch == \"cloth\") { obj.SetPaletteColor(i, vec3(" + to_string(cloth.x()) + ", " + to_string(cloth.y()) + ", " + to_string(cloth.z()) + ")); }";
-        }
-        mo->Execute(code + " }");
-    }
+    ApplyLobbyAppearances(sg);
 }
 
 // ---- Co-op rules (story campaigns) -------------------------------------------
@@ -3832,7 +3867,7 @@ bool Online::AllowScriptReset() {
         return true;  // the host stands: Retry or a script, on purpose
     }
     for (ObjectID id : PlayerAvatarIDs()) {
-        if (!IsLocalAvatar(id) && AvatarUp(sg, id)) {
+        if ((mine.empty() || id != mine[0]) && AvatarUp(sg, id)) {
             LOGI << "Overgrowth Online: reset held, player character " << id << " is still up" << std::endl;
             return false;
         }
@@ -3980,46 +4015,40 @@ void Online::CoopCheckpoint(ObjectID by) {
 }
 
 void Online::CoopZoneRespawn(SceneGraph* sg) {
-    const double kRespawnMs = 4000.0;  // (seen dying, and watching a teammate, a while first)
-    ObjectID me = IsHosting() ? HostAvatarID() : GetOwnPlayerState().object_id;
-    Object* o = sg != nullptr && me >= 0 && host_started_level && !coop_cutscene && IsLocalAvatar(me) ? sg->GetObjectFromID(me) : nullptr;
-    MovementObject* mo = o != nullptr && o->GetType() == _movement_object ? static_cast<MovementObject*>(o) : nullptr;
-    bool lost = mo != nullptr && mo->NetworkVitalsSupported() && mo->ASHasVar("zone_killed") && mo->ASHasVar("fall_death") &&
-                mo->ASGetIntVar("knocked_out") != 0 &&
-                (mo->ASGetIntVar("zone_killed") != 0 || mo->ASGetBoolVar("fall_death") || mo->position[1] < -90.0f) &&
-                PlayerAvatarIDs().size() >= 2 && CoopCampaign();
-    if (!lost) {
-        coop_lost_since_ms = -1.0;
+    const double kRespawnMs = 4000.0;
+    static std::map<ObjectID, double> lost_since;
+    if (sg == nullptr || !host_started_level || coop_cutscene || PlayerAvatarIDs().size() < 2 || !CoopCampaign()) {
+        lost_since.clear();
         return;
     }
-    double now = OnlineClockMs();
-    if (coop_lost_since_ms < 0.0) {
-        coop_lost_since_ms = now;
-        LOGI << "Overgrowth Online: player character " << me << " died where nobody can reach it (zone " << mo->ASGetIntVar("zone_killed")
-             << ", fall " << mo->ASGetBoolVar("fall_death") << ", y " << mo->position[1] << ")" << std::endl;
-    }
-    if (now - coop_lost_since_ms < kRespawnMs) {
-        return;
-    }
-
-    // Beside the nearest teammate who is up (none: everyone down, the host's reset comes)
-    vector<std::pair<float, ObjectID>> up;
-    for (ObjectID id : PlayerAvatarIDs()) {
-        if (id != me && AvatarUp(sg, id)) {
-            up.push_back({distance_squared(static_cast<MovementObject*>(sg->GetObjectFromID(id))->position, mo->position), id});
+    const double now = OnlineClockMs();
+    for (const auto& player : GetLocalPlayerStates()) {
+        const ObjectID me = player.object_id;
+        Object* object = IsLocalAvatar(me) ? sg->GetObjectFromID(me) : nullptr;
+        auto* mo = object && object->GetType() == _movement_object ? static_cast<MovementObject*>(object) : nullptr;
+        const bool lost = mo && mo->NetworkVitalsSupported() && mo->ASHasVar("zone_killed") && mo->ASHasVar("fall_death") &&
+            mo->ASGetIntVar("knocked_out") != 0 &&
+            (mo->ASGetIntVar("zone_killed") != 0 || mo->ASGetBoolVar("fall_death") || mo->position[1] < -90.0f);
+        if (!lost) { lost_since.erase(me); continue; }
+        auto timer = lost_since.emplace(me, now).first;
+        if (now - timer->second < kRespawnMs) continue;
+        vector<std::pair<float, ObjectID>> anchors;
+        for (ObjectID id : PlayerAvatarIDs()) {
+            if (id != me && AvatarUp(sg, id)) anchors.push_back({distance_squared(static_cast<MovementObject*>(sg->GetObjectFromID(id))->position, mo->position), id});
         }
-    }
-    std::sort(up.begin(), up.end());
-    for (const auto& a : up) {
-        vec3 pos, facing;
-        if (SpotBeside(this, sg, a.second, std::max(1, GuestIndex(me)), &pos, &facing)) {
-            LOGI << "Overgrowth Online: player character " << me << " back up beside " << a.second << std::endl;
-            coop_lost_since_ms = -1.0;
-            ReviveAvatar(mo, pos, facing);
-            return;
+        std::sort(anchors.begin(), anchors.end());
+        bool revived = false;
+        for (const auto& anchor : anchors) {
+            vec3 position, facing;
+            if (SpotBeside(this, sg, anchor.second, std::max(1, GuestIndex(me)), &position, &facing)) {
+                ReviveAvatar(mo, position, facing);
+                lost_since.erase(me);
+                revived = true;
+                break;
+            }
         }
+        if (!revived) timer->second = now - kRespawnMs + 1000.0;
     }
-    coop_lost_since_ms = now - kRespawnMs + 1000.0;  // (no safe ground beside anyone: again in a second)
 }
 
 // Every machine. A dialogue is the host's character's scene: the guests'
@@ -4168,7 +4197,7 @@ bool Online::OwnPlayerCharacter(ObjectID id) const {
     }
     for (const auto& it : online_session->player_states) {
         if (it.second.object_id == id) {
-            return it.first == online_session->local_player_id;
+            return it.second.peer_id == LocalPeerID();
         }
     }
     return false;
@@ -4358,7 +4387,7 @@ bool Online::IsLobbyFull() {
     }
     // Overgrowth Online: connections still joining count too (a flood of
     // half-open ones can't go past the limit; connection ids are 8 bits)
-    return GetPlayerLimit() <= std::max<size_t>(GetPlayerCount(), peers + 1);
+    return peers >= 254;  // transport peer IDs are bytes; local player IDs are independent
 }
 
 void Online::AddFreeAvatarsIds() {
@@ -4546,6 +4575,7 @@ void Online::UpdateFriendPresence(SceneGraph* scenegraph) {
             }
         }
     }
+    if (game.empty() && lobby_waiting_) game = lobby_mode_.empty() ? "Lobby" : "Lobby: " + lobby_mode_;
     if (game.empty() && scenegraph != nullptr) {
         game = scenegraph->level_name_;
     }

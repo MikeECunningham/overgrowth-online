@@ -24,6 +24,7 @@
 
 #include <Compat/fileio.h>
 #include <Logging/loghandler.h>
+#include <cstdint>
 
 /*!
         Potential child of LogHandler and will print messages to file.

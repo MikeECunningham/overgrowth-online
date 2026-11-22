@@ -224,6 +224,11 @@ gamepad[menu_down]:      dpdown
 gamepad[menu_left]:      dpleft
 gamepad[menu_right]:     dpright
 gamepad[menu_return]:    a
+gamepad[menu_cancel]:    b
+gamepad[menu_input]:     y
+gamepad[menu_window]:    x
+gamepad[menu_prev_tab]:  leftshoulder
+gamepad[menu_next_tab]:  rightshoulder
 
 // Used to keep track of which player's gamepad value is currently being edited.
 // Automatically reset at launch

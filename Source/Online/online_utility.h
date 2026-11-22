@@ -37,8 +37,8 @@ class OnlineUtility {
     static std::string GetDefaultPlayerName();
     static std::string GetPlayerName();
     static std::string GetActiveModsString();
-    static std::string GetOvergrowthOnlineVersion();  // the package's (its mod's version; "" without it)
-    static int CompareVersions(const std::string& a, const std::string& b);  // <0, 0, >0 by dotted numbers
+    static std::string GetOvergrowthOnlineVersion();  // canonical VERSION, independent of optional mods
+    static int CompareVersions(const std::string& a, const std::string& b);  // SemVer precedence; build metadata ignored
     static std::string GetActiveModsDigest();  // (short: friends compare it before joining)
 
     // Overgrowth Online, the server browser: a host's mods as its lobby lists them

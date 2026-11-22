@@ -27,6 +27,8 @@
 #include <UserInput/mouse.h>
 #include <UserInput/joystick.h>
 
+#include <array>
+
 #include <Editors/editor_utilities.h>
 #include <Internal/referencecounter.h>
 
@@ -68,7 +70,19 @@ class Input {
 
     PlayerInput* GetController(int id);
     void ProcessControllers(float timestep);
-    void SetUpForXPlayers(unsigned num_players);
+    // Logical local player indices remain stable even when remote inputs occupy
+    // physical slots in the same input table.
+    void SetUpForXPlayers(unsigned num_players, bool preserve_remote = false);
+    int GetLocalPlayerInputID(unsigned local_index) const;
+    int LocalPlayerIndexForInputID(int input_id) const;
+    void BindLocalJoystick(int instance_id, int local_index);
+    void BindLocalKeyboard(int local_index);
+    int LocalKeyboardPlayerIndex() const { return keyboard_local_player_; }
+    void RemoveLocalPlayerInput(unsigned local_index);
+    void RecordKeyboardJoinEvent(const SDL_Event& event);
+    bool KeyboardJoinPressed();
+    void SetKeyboardMenuNavigationShared(bool shared) { keyboard_menu_shared_ = shared; }
+    unsigned GetNumLocalPlayers() const { return num_players_; }
     void SetFromConfig(const Config& config);
     float mouse_sensitivity() { return mouse_sensitivity_; }
     void SetMouseSensitivity(float val) { mouse_sensitivity_ = val; }
@@ -90,6 +104,8 @@ class Input {
     float last_controller_event_time;
     float last_mouse_event_time;
     float last_keyboard_event_time;
+    int LastControllerButtonInstance() const { return last_controller_button_instance_; }
+    float LastControllerButtonTime() const { return last_controller_button_time_; }
 
     bool ignore_mouse_frame;
     GameCursor* cursor;
@@ -134,7 +150,7 @@ class Input {
     std::vector<Mouse::MousePress> GetMouseInputs();
     std::vector<Joystick::JoystickPress> GetJoystickInputs(int player_index);
 
-    // Automated tests (Testing/test_bridge): bindings held for controller 0,
+    // Automated tests (Testing/test_bridge): bindings held for one controller,
     // applied on every step after the real devices. depth >= 0.5 behaves like
     // a key press; steps_left < 0 means until released.
     struct InjectedKey {
@@ -143,11 +159,22 @@ class Input {
     };
     std::map<std::string, InjectedKey> injected_keys_;
     float injected_look_[2] = {0.0f, 0.0f};  // added once, on the next step
+    std::map<std::string, InjectedKey>& InjectedKeysForController(int controller_id);
+    float* InjectedLookForController(int controller_id);
 
    private:
-    void ApplyInjectedInput(PlayerInput& control);
+    void ApplyInjectedInput(PlayerInput& control, int controller_id);
+    std::map<int, std::map<std::string, InjectedKey> > injected_player_keys_;
+    std::map<int, std::array<float, 2> > injected_player_look_;
 
     unsigned num_players_;
+    int keyboard_local_player_ = 0;
+    bool keyboard_join_pressed_ = false;
+    bool keyboard_menu_shared_ = true;
+    int last_controller_button_instance_ = -1;
+    float last_controller_button_time_ = 0.0f;
+    bool preserve_remote_inputs_ = false;
+    std::vector<int> local_player_inputs_ = {0};
     BindMap bindings_;
     std::vector<PlayerInput> player_inputs_;
     bool quit_requested_;
@@ -170,8 +197,10 @@ class Input {
     void HandleMouseButtonDown(int the_button, int clicks);
     void HandleMouseButtonUp(int the_button);
     void ProcessBindings();
+    void AssignLocalJoysticks(bool reset);
     void OpenJoystick(int which);
     void CloseJoystick(int instance_id);
+    bool joystick_assignment_dirty_;
 };
 
 void UIShowCursor(bool show);

@@ -42,6 +42,7 @@
 #include <Game/scriptablecampaign.h>
 
 #include <GUI/gui.h>
+#include <GUI/local_player_menus.h>
 #include <Asset/assetmanager.h>
 #include <Network/asnetwork.h>
 #include <Internal/modloading.h>
@@ -49,6 +50,7 @@
 #include <stack>
 #include <iostream>
 #include <mutex>
+#include <memory>
 
 //-----------------------------------------------------------------------------
 // Class Definition
@@ -124,6 +126,7 @@ std::ostream& operator<<(std::ostream& out, const EngineState& in);
 
 class Engine : public ModLoadingCallback {
    public:
+    ~Engine() override;
     enum DrawingViewport { kViewport,
                            kScreen };
     enum PostEffectsType { kStraight,
@@ -172,6 +175,8 @@ class Engine : public ModLoadingCallback {
     void QueueLevelCacheGeneration(const Path& path);
 
     ForcedSplitScreenMode forced_split_screen_mode;
+    bool debug_local_split_screen_ = false;
+    bool tracked_level_focus_ = false;
 
    public:
     void GenerateLevelCache(ModInstance* mod_instance);
@@ -183,11 +188,18 @@ class Engine : public ModLoadingCallback {
     void ClearLoadedLevel();
     static void StaticScriptableUICallback(void* instance, const std::string& level);
     void ScriptableUICallback(const std::string& level);
+    void ReturnToLobby();
     bool IsLevelLoaded() const { return level_loaded_; }  // test bridge
+    bool ExecuteMenuCode(const std::string& code);
+    bool ExecutePlayerMenuCode(int local_index, const std::string& code);
+    bool PlayerHasMenu(int input_id) const;
+    bool HasPlayerMenus() const;
     static void NewLevel();
 
     void SetForcedSplitScreenMode(ForcedSplitScreenMode mode) { forced_split_screen_mode = mode; }
     bool GetSplitScreen() const;
+    int DebugAddLocalPlayer();
+    int DebugLocalPlayerCount() const;
 
     bool quitting_;
     bool paused;
@@ -283,17 +295,17 @@ class Engine : public ModLoadingCallback {
     float finished_loading_time;
 
     ScriptableUI* scriptable_menu_;
+    std::unique_ptr<LocalPlayerMenus> player_menus_;
 
     Path queued_level_;
     bool level_loaded_;
 
-    // These are just members to avoid mallocs
+    // Reuse these vectors across frames without imposing a player-count ceiling.
    public:
-    static const int kMaxAvatars = 64;
     int num_avatars;
     int num_npc_avatars;
-    int avatar_ids[kMaxAvatars];
-    int npc_avatar_ids[kMaxAvatars];
+    std::vector<int> avatar_ids;
+    std::vector<int> npc_avatar_ids;
 
    private:
     // Countdown value used to delay massively frequent resizing requests.

@@ -22,6 +22,7 @@
 //
 //-----------------------------------------------------------------------------
 #include "font_renderer.h"
+#include "font_bitmap.h"
 
 #include <Graphics/textures.h>
 #include <Graphics/graphics.h>
@@ -211,6 +212,14 @@ void FontRenderer::SetTransform(int face_id, FT_Matrix *matrix, FT_Vector *vecto
 
 FT_GlyphSlot FontRenderer::RenderCharacterBitmap(int face_id, uint32_t character, RCB_Flags flags) {
     return impl_->RenderCharacterBitmap(face_id, character, flags);
+}
+
+FT_GlyphSlot FontRenderer::RenderAtlasCharacterBitmap(int face_id, uint32_t character) {
+    FT_Face face = impl_->faces_.at(face_id).face;
+    if (FontBitmap::RenderAtlasGlyph(face, character)) {
+        FatalError("Error", "Failed to render font atlas glyph");
+    }
+    return face->glyph;
 }
 
 int FontRenderer::GetFontFaceID(const std::string &file_path, int pixel_height) {

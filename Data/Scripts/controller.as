@@ -90,12 +90,26 @@ array<IMElement@> sub_controller_items;
 bool controller_paused = false;
 
 bool GetControllerActive() {
+	if(IsPlayerMenuContext()) {
+		string value = GetInterlevelData("controller_active_player_" + GetPlayerMenuLocalIndex());
+		if(value != "") return value == "true";
+		return GetPlayerMenuLocalIndex() != GetLocalKeyboardPlayerIndex() ||
+		       GetInterlevelData("controller_active") == "true";
+	}
 	return GetInterlevelData("controller_active") == "true";
+}
+
+void SaveControllerActive(bool active) {
+	string key = IsPlayerMenuContext() ? "controller_active_player_" + GetPlayerMenuLocalIndex() : "controller_active";
+	SetInterlevelData(key, active ? "true" : "false");
 }
 
 int controller_player = 0;
 void SetControllerPlayer(int player) {
-	controller_player = player;
+	if(IsPlayerMenuContext()) player = GetPlayerMenuInputID();
+	controller_player = max(0, player);
+	// Menu ownership is separate from the controls profile being edited.
+	SetConfigValueInt("controller_menu_owner", max(0, GetLocalPlayerIndexForInputID(controller_player)));
 }
 
 // Used for dropdown menus. Restricts the selectable controller items to
@@ -107,21 +121,30 @@ void EnableControllerSubmenu() {
 
 void DisableControllerSubmenu() {
 	//Log(info, "Disabling submenu");
+	DeactivateCurrentItem();
+	@current_item = null;
+	current_item_locked = false;
+	current_controller_item_state = kMainController;
+	sub_controller_items.resize(0);
 	if(controller_stored) {
 		//Log(info, "Disabling and restoring " + last_active_controller);
 		SetCurrentControllerItem(last_active_controller);
 	}
 	controller_stored = false;
-	current_controller_item_state = kMainController;
-	sub_controller_items.resize(0);
 }
 
 void ResetController() {
 	//Log(info, "ResetController");
+	DeactivateCurrentItem();
 	@current_item = null;
 	current_item_locked = false;
 	controller_active = false;
 	controller_stored = false;
+	last_active_controller = "";
+	controller_paused = false;
+	input_interval_timer = 0.0f;
+	input_longpress_timer = 0.0f;
+	SetControllerPlayer(controller_player);
 	controller_items.resize(0);
 	sub_controller_items.resize(0);
 	current_controller_item_state = kMainController;
@@ -135,6 +158,9 @@ void ResetController() {
 // Signature is kept for backwards compat
 void AddControllerItem(IMElement@ element, IMMessage@ message, IMMessage@ message_left = null, IMMessage@ message_right = null, IMMessage@ message_up = null, IMMessage@ message_down = null){
 	//Log(info, "Adding controller item");
+	if(element is null) {
+		return;
+	}
 	element.controllerItem.setMessages(message, null, message_left, message_right, message_up, message_down);
 	if(current_controller_item_state == kMainController) {
 		controller_items.insertLast(element);
@@ -153,13 +179,22 @@ void AddControllerItem(IMElement@ element, IMMessage@ message, IMMessage@ messag
 }
 
 void AddControllerItem(ControllerItem @item){
+	if(item is null) return;
 	AddControllerItem(item.element, item.message, item.message_left, item.message_right, item.message_up, item.message_down);
-	item.element.controllerItem.setMessageOnSelect(item.message_on_select);
+	if(item.element !is null) item.element.controllerItem.setMessageOnSelect(item.message_on_select);
 }
 
 // Also stores the currently active controller item if it is removed
 void ClearControllerItems(int start_at = 0){
 	//Log(info, "Clearing controller items starting at " + start_at);
+	start_at = max(0, min(start_at, int(controller_items.size())));
+	if(current_controller_item_state != kMainController) {
+		DeactivateCurrentItem();
+		@current_item = null;
+		current_item_locked = false;
+		sub_controller_items.resize(0);
+		current_controller_item_state = kMainController;
+	}
 	if(current_item !is null && current_controller_item_state == kMainController) {
 		bool store_active = true;
 		for(int i = 0; i < start_at; ++i) {
@@ -178,16 +213,14 @@ void ClearControllerItems(int start_at = 0){
 		controller_stored = false;
 	}
 	if(start_at < int(controller_items.size())) {
-		controller_items.removeRange(start_at, controller_items.size());
-	} else {
-		Log(warning, "Tried clearing controller items starting at index " + start_at + ", but there are only " + controller_items.size() + " controller items available");
+		controller_items.removeRange(start_at, controller_items.size() - start_at);
 	}
 }
 
 void StoreActiveController() {
-	if(controller_active && current_item !is null) {
+	if(current_item !is null) {
 		last_active_controller = current_item.getName();
-		if(last_active_controller.length() > 0) {
+		if(controller_active && last_active_controller.length() > 0) {
 			controller_stored = true;
 			//Log(info, "Storing last active controller \"" + last_active_controller + "\"");
 		} else {
@@ -195,7 +228,9 @@ void StoreActiveController() {
 			//Log(info, "Was going to store active controller, but its name is empty");
 		}
 
+		DeactivateCurrentItem();
 		@current_item = null;
+		current_item_locked = false;
 	}
 }
 
@@ -212,10 +247,10 @@ void SetCurrentControllerItem(uint index){
 		current_item_locked = false;
 		if(current_controller_item_state == kMainController) {
 			//Log(info, "Setting current controller item to index " + index + " in main items");
-			SetItemActive(controller_items[index], false);
+			if(index < controller_items.size()) SetItemActive(controller_items[index], false);
 		} else {
 			//Log(info, "Setting current controller item to index " + index + " in sub items");
-			SetItemActive(sub_controller_items[index], false);
+			if(index < sub_controller_items.size()) SetItemActive(sub_controller_items[index], false);
 		}
 	}
 }
@@ -246,6 +281,12 @@ string GetCurrentControllerItemName(){
 }
 
 void SetItemActive(IMElement@ element, bool trigger_on_select = true){
+	if(element is null) {
+		DeactivateCurrentItem();
+		@current_item = null;
+		current_item_locked = false;
+		return;
+	}
 	@current_item = @element;
 	current_item.setMouseOver(true);
 	if(current_item_locked) {
@@ -265,12 +306,29 @@ void SetItemActive(IMElement@ element, bool trigger_on_select = true){
 
 // Note that this does not set current_item to null
 void DeactivateCurrentItem(){
-	current_item.setMouseOver(false);
 	if(current_item !is null) {
+		current_item.setMouseOver(false);
 		if(!current_item.controllerItem.skip_show_border){
 			current_item.showBorder(false);
 		}
 	}
+}
+
+// A rebuild can remove a selected element while the controller is active.
+// Keep focus only while its parent chain still reaches this GUI's live roots.
+bool ControllerItemAttached(IMElement@ element) {
+	if(element is null) return false;
+	while(element.getParent() !is null) {
+		@element = element.getParent();
+	}
+	for(uint panel = 0; ; ++panel) {
+		IMElement@ main = imGUI.getMain(panel);
+		IMElement@ header = imGUI.getHeader(panel);
+		IMElement@ footer = imGUI.getFooter(panel);
+		if(main is null && header is null && footer is null) break;
+		if(element is main || element is header || element is footer) return true;
+	}
+	return false;
 }
 
 // Draws boxes around controller items. Good for debugging
@@ -290,6 +348,10 @@ void DrawBoxes() {
 // Called when the user has pressed enter on an IMElement without a message,
 // "locking" it. Useful for sliders
 void UpdateCurrentItem() {
+	if(current_item is null) {
+		current_item_locked = false;
+		return;
+	}
 	if(GetInputPressed(controller_player, "menu_return")) {
 		//Log(info, "Return was pressed");
 		current_item_locked = false;
@@ -436,9 +498,19 @@ void UpdateInput() {
 }
 
 void UpdateController() {
+	if(imGUI is null) {
+		return;
+	}
+	if(current_item !is null && !ControllerItemAttached(current_item)) {
+		StoreActiveController();
+	}
+	if(current_item is null) {
+		current_item_locked = false;
+	}
 	if(first_run) {
+		SetControllerPlayer(controller_player);
 		mouse_position = imGUI.guistate.mousePosition;
-		controller_active = GetInterlevelData("controller_active") == "true";
+		controller_active = GetControllerActive();
 		if(controller_active) {
 			GetNextItem(Direction::DOWN);
 		}
@@ -455,7 +527,7 @@ void UpdateController() {
 				DeactivateCurrentItem();
 			}
 			SetGrabMouse(false);
-			SetInterlevelData("controller_active", "false");
+			SaveControllerActive(false);
 			current_item_locked = false;
 			controller_stored = false;
 			@current_item = null;
@@ -477,7 +549,7 @@ void UpdateController() {
 		}
 		mouse_position = imGUI.guistate.mousePosition;
 		controller_active = true;
-		SetInterlevelData("controller_active", "true");
+		SaveControllerActive(true);
 		SetGrabMouse(true);
 
 		if(current_item_locked) {

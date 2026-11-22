@@ -26,12 +26,23 @@
 #include <string>
 
 const char* GetBuildIDString();
-const int GetBuildID();
+int GetBuildID();
 const char* GetPlatform();
 const char* GetArch();
 const char* GetBuildVersion();
 const char* GetBuildTimestamp();
 
+// The release is independent of an optional data mod and the checkout's Git tag.
+const char* GetForkVersion();
+const char* GetSourceRevision();
+const char* GetUpstreamBuildVersion();
+const char* GetAssetCompatibilityVersion();
+int GetOnlineProtocol();
+const std::string& GetNetworkVersion();
+bool IsNetworkVersionCompatible(const std::string& remote_version);
+int CompareSemanticVersions(const std::string& a, const std::string& b);
+
+// Legacy asset compatibility helpers use the fixed upstream asset API version.
 std::string GetShortBuildTag();
 std::string GetVersionMajor();
 std::string GetVersionMinor();

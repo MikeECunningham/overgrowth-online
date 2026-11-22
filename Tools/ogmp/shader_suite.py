@@ -20,6 +20,7 @@ import time
 
 from .instance import ROOT
 from .scenarios import wait_loaded
+from .shader_tools import find_shader_tool
 
 MANIFEST = ROOT + "/Tools/ogmp/shader_manifest.txt"
 OVERHAUL = "D:/OvergrowthAI/mod/overhaul"
@@ -89,11 +90,7 @@ def shader_collect(ctx, parallel=2):
 
 
 def _glslang():
-    sdk = os.environ.get("VULKAN_SDK", "")
-    for exe in (os.path.join(sdk, "Bin", "glslangValidator.exe"), "R:/CoreFXProject/VulkanSDK/Bin/glslangValidator.exe"):
-        if exe and os.path.exists(exe):
-            return exe
-    return None
+    return find_shader_tool("glslangValidator")
 
 
 STAGES = {".vert": "vert", ".frag": "frag", ".geom": "geom", ".tess_eval": "tese", ".tess_ctrl": "tesc"}

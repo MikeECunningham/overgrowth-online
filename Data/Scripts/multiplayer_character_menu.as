@@ -106,9 +106,19 @@ void Save() {
     SetConfigValueString("mp_fur", own_fur ? ColorString(fur_color) : "");
     SetConfigValueString("mp_cloth", own_cloth ? ColorString(cloth_color) : "");
     SaveConfig();
+    if(LobbyActive() && name_buffer != "") {
+        array<LobbyPlayer>@ players = LobbyPlayers();
+        for(uint i = 0; i < players.length(); ++i) {
+            if(players[i].local && players[i].local_index == 0) {
+                LobbySetPlayerName(players[i].id, name_buffer);
+                break;
+            }
+        }
+    }
 }
 
 void Initialize() {
+    SetControllerPlayer(0);
     @imGUI = CreateIMGUI();
     PlaySong("overgrowth_main");
     imGUI.setHeaderHeight(200);

@@ -13,9 +13,15 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 #-----------------------------------------------------------------------------
-CMAKE_MINIMUM_REQUIRED(VERSION 3.5) #Version of cmake in steam-runtime
+CMAKE_MINIMUM_REQUIRED(VERSION 3.14)
+# Some bundled libraries still declare pre-3.5 compatibility. CMake 4 removed
+# those policy versions; keep their existing behavior without extra CLI flags.
+IF(CMAKE_VERSION VERSION_GREATER_EQUAL 4.0 AND NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+    SET(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+ENDIF()
 
-set(CMAKE_CXX_STANDARD 11)
+# The animation cache uses C++14 shared locks (MSVC enables these by default).
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -37,6 +43,13 @@ INCLUDE(ExternalProject)
 
 git_describe(GIT_VERSION --always --tag)
 git_rev_list(GIT_REV_LIST --count HEAD) # Count what revision we're on
+get_git_head_revision(GIT_REFSPEC OVERGROWTH_SOURCE_REVISION)
+IF(NOT OVERGROWTH_SOURCE_REVISION MATCHES "^[0-9a-fA-F]+$")
+    SET(OVERGROWTH_SOURCE_REVISION "unknown")
+ENDIF()
+IF(NOT GIT_REV_LIST MATCHES "^[0-9]+$")
+    SET(GIT_REV_LIST 0)
+ENDIF()
 SET(BUILD_ID "-1" CACHE STRING "Build ID value from automated build system")
 #Option to build with breakpad, removes some compiler warnings, so it's best to go without for normal development.
 OPTION(BREAKPAD "Build with breakpad linked into the binary and with exception handling?" OFF)
@@ -265,6 +278,10 @@ IF(LINUX)
     FIND_PACKAGE(SDL2 REQUIRED)
     FIND_PACKAGE(SDL2NET REQUIRED)
     FIND_PACKAGE(OpenAL REQUIRED)
+    IF(ENABLE_GAMENETWORKINGSOCKETS AND NOT ENABLE_STEAMWORKS)
+        INCLUDE(OvergrowthGameNetworkingSockets)
+        overgrowth_configure_gns()
+    ENDIF()
 ENDIF()
 
 #Build static libraries only for subprojects
@@ -440,6 +457,29 @@ SET(LIBDIR "${CMAKE_SOURCE_DIR}/../Libraries")
 SET(PLIBDIR "${CMAKE_SOURCE_DIR}/../Proprietary/Libraries")
 SET(STEAMWORKS_SDK "${CMAKE_SOURCE_DIR}/../Proprietary/steamworks/sdk" CACHE PATH "The Steamworks SDK (the zip's sdk folder)")
 SET(DATADIR "${CMAKE_SOURCE_DIR}/../Data")
+
+# VERSION is the fork's release identity. Git metadata identifies the source
+# checkout independently and must not replace a release version in the wire API.
+SET(OVERGROWTH_VERSION_FILE "${CMAKE_SOURCE_DIR}/../VERSION")
+FILE(READ "${OVERGROWTH_VERSION_FILE}" OVERGROWTH_FORK_VERSION)
+STRING(STRIP "${OVERGROWTH_FORK_VERSION}" OVERGROWTH_FORK_VERSION)
+IF(NOT OVERGROWTH_FORK_VERSION MATCHES "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$")
+    MESSAGE(FATAL_ERROR "VERSION must contain one semantic release version, for example 0.42.0-alpha.1")
+ENDIF()
+STRING(REGEX REPLACE "\\+.*$" "" OVERGROWTH_VERSION_WITHOUT_BUILD "${OVERGROWTH_FORK_VERSION}")
+IF(OVERGROWTH_VERSION_WITHOUT_BUILD MATCHES "-(.*)$")
+    STRING(REPLACE "." ";" OVERGROWTH_PRERELEASE_IDENTIFIERS "${CMAKE_MATCH_1}")
+    FOREACH(identifier IN LISTS OVERGROWTH_PRERELEASE_IDENTIFIERS)
+        IF(identifier MATCHES "^0[0-9]+$")
+            MESSAGE(FATAL_ERROR "Numeric VERSION prerelease identifiers cannot contain leading zeroes")
+        ENDIF()
+    ENDFOREACH()
+ENDIF()
+SET_PROPERTY(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${OVERGROWTH_VERSION_FILE}")
+FILE(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
+CONFIGURE_FILE("${SRCDIR}/Version/overgrowth_version.h.in"
+               "${CMAKE_BINARY_DIR}/generated/overgrowth_version.h" @ONLY)
+MESSAGE(STATUS "Overgrowth Online release: ${OVERGROWTH_FORK_VERSION} (source ${OVERGROWTH_SOURCE_REVISION})")
 
 FILE(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/Data)
 
@@ -892,6 +932,7 @@ IF(LINUX AND BUILD_OGDA) #Making Ogda linux only for now.
     ENDIF()
 
     ADD_EXECUTABLE(Ogda ${SRCDIR}/Version/git_version.cpp ${OGDA_SRCS} )
+    TARGET_INCLUDE_DIRECTORIES(Ogda PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
     TARGET_LINK_LIBRARIES(Ogda
         OvergrowthCompat
@@ -1171,6 +1212,7 @@ IF(BUILD_OVERGROWTH)
     ENDIF()
 
     ADD_EXECUTABLE(Overgrowth ${SRCDIR}/Version/git_version.cpp ${OVERGROWTH_SRCS} ${WIN_RESOURCE_FILE} )
+    TARGET_INCLUDE_DIRECTORIES(Overgrowth PRIVATE "${CMAKE_BINARY_DIR}/generated")
     SET_TARGET_PROPERTIES(Overgrowth PROPERTIES
         OUTPUT_NAME ${OVERGROWTH_OUTPUT_NAME}
     )
@@ -1371,6 +1413,27 @@ IF(BUILD_OVERGROWTH)
     ENDIF()
 
     IF(LINUX)
+        SET(OVERGROWTH_SHADER_RUNTIME_DIR "${CMAKE_BINARY_DIR}/Dependencies/gpu/runtime" CACHE PATH
+            "Directory containing native libglslang.so and libglslang-default-resource-limits.so")
+        IF(EXISTS "${OVERGROWTH_SHADER_RUNTIME_DIR}/libglslang.so" AND
+           EXISTS "${OVERGROWTH_SHADER_RUNTIME_DIR}/libglslang-default-resource-limits.so")
+            ADD_CUSTOM_COMMAND(TARGET Overgrowth POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${OVERGROWTH_SHADER_RUNTIME_DIR}/libglslang.so"
+                    "${OVERGROWTH_SHADER_RUNTIME_DIR}/libglslang-default-resource-limits.so"
+                    "$<TARGET_FILE_DIR:Overgrowth>"
+                VERBATIM)
+            IF(EXISTS "${OVERGROWTH_SHADER_RUNTIME_DIR}/glslang-copyright.txt")
+                ADD_CUSTOM_COMMAND(TARGET Overgrowth POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${OVERGROWTH_SHADER_RUNTIME_DIR}/glslang-copyright.txt"
+                        "$<TARGET_FILE_DIR:Overgrowth>"
+                    VERBATIM)
+            ENDIF()
+            MESSAGE(STATUS "Vulkan shader runtime: ${OVERGROWTH_SHADER_RUNTIME_DIR}")
+        ELSE()
+            MESSAGE(STATUS "Vulkan shader runtime: system/VULKAN_SDK lookup (see Tools/ogmp/setup_linux_shaders.py)")
+        ENDIF()
         if(BREAKPAD)
             ADD_CUSTOM_COMMAND(TARGET Overgrowth POST_BUILD
                 COMMAND "${CMAKE_BINARY_DIR}/breakpad-prefix/src/breakpad-build/src/tools/linux/dump_syms/dump_syms" "${CMAKE_BINARY_DIR}/${OVERGROWTH_OUTPUT_NAME}${BIN_SUFFIX}" ">" "${CMAKE_BINARY_DIR}/${OVERGROWTH_OUTPUT_NAME}${BIN_SUFFIX}.sym"
@@ -1504,6 +1567,8 @@ IF(BUILD_OVERGROWTH)
             TARGET_LINK_LIBRARIES(Overgrowth
 		    steam_api
 	    )
+	ELSEIF(ENABLE_GAMENETWORKINGSOCKETS)
+            TARGET_LINK_LIBRARIES(Overgrowth Overgrowth::GameNetworkingSockets)
 	ENDIF()
 
         IF(BREAKPAD)

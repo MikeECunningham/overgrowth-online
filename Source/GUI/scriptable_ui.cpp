@@ -25,6 +25,7 @@
 
 #include <GUI/IMUI/imui.h>
 #include <GUI/IMUI/imui_script.h>
+#include <GUI/player_menu_context.h>
 
 #include <Scripting/angelscript/asfuncs.h>
 
@@ -55,7 +56,7 @@ void AttachScriptableUI(ASContext* as_context, ScriptableUI* sui) {
 }
 }  // Anonymous namespace
 
-void ScriptableUI::Initialize(const Path& script_path, const ASData& as_data, bool debug_break) {
+void ScriptableUI::Initialize(const Path& script_path, const ASData& as_data, bool debug_break, bool personal_menu) {
     mod_activation_change_ = false;
     LOG_ASSERT(!as_context && !hud_images);
     // Construct all the components
@@ -97,18 +98,19 @@ void ScriptableUI::Initialize(const Path& script_path, const ASData& as_data, bo
     as_funcs.queue_basic_popup = as_context->RegisterExpectedFunction("void QueueBasicPopup(string title, string body)", false);
 
     // Get screen dimensions so we can detect when things change
-    currentWindowDims[0] = Graphics::Instance()->window_dims[0];
-    currentWindowDims[1] = Graphics::Instance()->window_dims[1];
+    currentWindowDims[0] = PlayerMenuUI::Width();
+    currentWindowDims[1] = PlayerMenuUI::Height();
 
-    PROFILER_ENTER(g_profiler_ctx, "Exporting docs");
-    char path[kPathSize];
-    FormatString(path, kPathSize, "%sasscriptable_ui_docs.h", GetWritePath(CoreGameModID).c_str());
-    as_context->ExportDocs(path);
-    PROFILER_LEAVE(g_profiler_ctx);
+    if (!personal_menu) {
+        PROFILER_ENTER(g_profiler_ctx, "Exporting docs");
+        char path[kPathSize];
+        FormatString(path, kPathSize, "%sasscriptable_ui_docs.h", GetWritePath(CoreGameModID).c_str());
+        as_context->ExportDocs(path);
+        PROFILER_LEAVE(g_profiler_ctx);
+    }
 
     // Load script and run init function
-    as_context->LoadScript(script_path);
-    as_context->CallScriptFunction(as_funcs.initialize);
+    initialized_ = as_context->LoadScript(script_path) && as_context->CallScriptFunction(as_funcs.initialize);
 
     ModLoading::Instance().RegisterCallback(this);
 }
@@ -128,10 +130,13 @@ bool ScriptableUI::CanGoBack() {
 void ScriptableUI::Dispose() {
     ModLoading::Instance().DeRegisterCallback(this);
 
-    as_context->CallScriptFunction(as_funcs.dispose);
+    if (as_context != nullptr && initialized_) as_context->CallScriptFunction(as_funcs.dispose);
 
     delete as_context;
     delete hud_images;
+    as_context = nullptr;
+    hud_images = nullptr;
+    initialized_ = false;
 }
 
 void ScriptableUI::Draw() {
@@ -150,10 +155,10 @@ void ScriptableUI::Update() {
     }
 
     // See if the window size has changed
-    if (currentWindowDims[0] != Graphics::Instance()->window_dims[0] ||
-        currentWindowDims[1] != Graphics::Instance()->window_dims[1]) {
-        currentWindowDims[0] = Graphics::Instance()->window_dims[0];
-        currentWindowDims[1] = Graphics::Instance()->window_dims[1];
+    if (currentWindowDims[0] != PlayerMenuUI::Width() ||
+        currentWindowDims[1] != PlayerMenuUI::Height()) {
+        currentWindowDims[0] = PlayerMenuUI::Width();
+        currentWindowDims[1] = PlayerMenuUI::Height();
         as_context->CallScriptFunction(as_funcs.resize);
     }
 

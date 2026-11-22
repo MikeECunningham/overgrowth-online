@@ -23,6 +23,7 @@
 #include "set_player_state.h"
 
 #include <Online/online.h>
+#include <Main/engine.h>
 #include <Utility/binn_util.h>
 
 namespace OnlineMessages {
@@ -33,6 +34,10 @@ SetPlayerState::SetPlayerState(PlayerID player_id, const PlayerState* player_sta
     ping = player_state->ping;
     camera_id = player_state->camera_id;
     controller_id = player_state->controller_id;
+    peer_id = player_state->peer_id;
+    local_index = player_state->local_index;
+    team = player_state->team;
+    screen = player_state->screen;
 }
 
 binn* SetPlayerState::Serialize(void* object) {
@@ -42,9 +47,13 @@ binn* SetPlayerState::Serialize(void* object) {
     binn_object_set_int32(l, "object_id", t->object_id);
     binn_object_set_std_string(l, "playername", t->playername);
     binn_object_set_uint16(l, "ping", t->ping);
-    binn_object_set_uint8(l, "player_id", t->player_id);
+    binn_object_set_uint32(l, "player_id", t->player_id);
     binn_object_set_int32(l, "camera_id", t->camera_id);
     binn_object_set_int32(l, "controller_id", t->controller_id);
+    binn_object_set_uint8(l, "peer_id", t->peer_id);
+    binn_object_set_uint32(l, "local_index", t->local_index);
+    binn_object_set_int32(l, "team", t->team);
+    binn_object_set_int32(l, "screen", t->screen);
 
     return l;
 }
@@ -55,9 +64,13 @@ void SetPlayerState::Deserialize(void* object, binn* l) {
     binn_object_get_int32(l, "object_id", &t->object_id);
     binn_object_get_std_string(l, "playername", &t->playername);
     binn_object_get_uint16(l, "ping", &t->ping);
-    binn_object_get_uint8(l, "player_id", &t->player_id);
+    binn_object_get_uint32(l, "player_id", &t->player_id);
     binn_object_get_int32(l, "camera_id", &t->camera_id);
     binn_object_get_int32(l, "controller_id", &t->controller_id);
+    binn_object_get_uint8(l, "peer_id", &t->peer_id);
+    binn_object_get_uint32(l, "local_index", &t->local_index);
+    binn_object_get_int32(l, "team", &t->team);
+    binn_object_get_int32(l, "screen", &t->screen);
 }
 
 void SetPlayerState::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {
@@ -75,9 +88,15 @@ void SetPlayerState::Execute(const OnlineMessageRef& ref, void* object, PeerID f
     new_player_state.ping = t->ping;
     new_player_state.camera_id = t->camera_id;
     new_player_state.controller_id = t->controller_id;
+    new_player_state.player_id = t->player_id;
+    new_player_state.peer_id = t->peer_id;
+    new_player_state.local_index = t->local_index;
+    new_player_state.team = t->team;
+    new_player_state.screen = t->screen;
 
     // Set new state
     Online::Instance()->online_session->player_states[t->player_id] = new_player_state;
+    Online::Instance()->ApplyAssignedTeam(object_id);
 }
 
 void* SetPlayerState::Construct(void* mem) {

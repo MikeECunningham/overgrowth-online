@@ -34,7 +34,7 @@ binn* RemovePlayerState::Serialize(void* object) {
     RemovePlayerState* t = static_cast<RemovePlayerState*>(object);
     binn* l = binn_object();
 
-    binn_object_set_uint8(l, "player_id", t->player_id);
+    binn_object_set_uint32(l, "player_id", t->player_id);
 
     return l;
 }
@@ -42,7 +42,7 @@ binn* RemovePlayerState::Serialize(void* object) {
 void RemovePlayerState::Deserialize(void* object, binn* l) {
     RemovePlayerState* t = static_cast<RemovePlayerState*>(object);
 
-    binn_object_get_uint8(l, "player_id", &t->player_id);
+    binn_object_get_uint32(l, "player_id", &t->player_id);
 }
 
 void RemovePlayerState::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {

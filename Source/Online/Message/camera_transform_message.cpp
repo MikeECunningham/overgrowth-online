@@ -27,13 +27,13 @@
 #include <Utility/binn_util.h>
 
 namespace OnlineMessages {
-CameraTransformMessage::CameraTransformMessage(vec3 position, vec3 flat_facing, vec3 facing, vec3 up, float x_rotation, float y_rotation) : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT),
+CameraTransformMessage::CameraTransformMessage(vec3 position, vec3 flat_facing, vec3 facing, vec3 up, float x_rotation, float y_rotation, PlayerID player_id) : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT),
                                                                                                                                             position(position),
                                                                                                                                             flat_facing(flat_facing),
                                                                                                                                             facing(facing),
                                                                                                                                             up(up),
                                                                                                                                             x_rotation(x_rotation),
-                                                                                                                                            y_rotation(y_rotation) {
+                                                                                                                                            y_rotation(y_rotation), player_id(player_id) {
     reliable_delivery = false;
 }
 
@@ -47,6 +47,7 @@ binn* CameraTransformMessage::Serialize(void* object) {
     binn_object_set_vec3(l, "up", t->up);
     binn_object_set_float(l, "x_rotation", t->x_rotation);
     binn_object_set_float(l, "y_rotation", t->y_rotation);
+    binn_object_set_uint32(l, "player_id", t->player_id);
 
     return l;
 }
@@ -60,13 +61,15 @@ void CameraTransformMessage::Deserialize(void* object, binn* l) {
     binn_object_get_vec3(l, "up", &t->up);
     binn_object_get_float(l, "x_rotation", &t->x_rotation);
     binn_object_get_float(l, "y_rotation", &t->y_rotation);
+    binn_object_get_uint32(l, "player_id", &t->player_id);
 }
 
 void CameraTransformMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {
     CameraTransformMessage* t = static_cast<CameraTransformMessage*>(object);
 
-    if (Online::Instance()->online_session->player_states.find(from) != Online::Instance()->online_session->player_states.end()) {
-        int camera_id = Online::Instance()->online_session->player_states[from].camera_id;  // TODO this assumes peer_id == player_id
+    auto found = Online::Instance()->online_session->player_states.find(t->player_id);
+    if (Online::Instance()->IsHosting() && found != Online::Instance()->online_session->player_states.end() && found->second.peer_id == from) {
+        int camera_id = found->second.camera_id;
         Camera* camera = ActiveCameras::Instance()->GetCamera(camera_id);
         if (camera != nullptr) {
             camera->SetPos(t->position);

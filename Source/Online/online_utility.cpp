@@ -24,6 +24,7 @@
 #include <Main/engine.h>
 #include <Internal/config.h>
 #include <Internal/filesystem.h>
+#include <Version/version.h>
 #include <algorithm>
 #include <map>
 #include <set>
@@ -241,37 +242,14 @@ OnlineUtility::ModDifference OnlineUtility::CompareMods(const std::string& list,
     return difference;
 }
 
-// Overgrowth Online: the version of the package, which every package gives
-// its mod (mod.xml); players must have the same
+// The native fork owns its release identity; an optional data mod cannot
+// replace it or turn it into an empty string.
 std::string OnlineUtility::GetOvergrowthOnlineVersion() {
-    for (ModInstance* mod : ModLoading::Instance().GetAllMods()) {
-        if (mod->IsActive() && mod->id.str() == "crxhvrd-overhaul") {
-            return mod->version.str();
-        }
-    }
-    return "";
+    return GetForkVersion();
 }
 
-// "0.34.10" after "0.34.9"; "" (no version) before any
 int OnlineUtility::CompareVersions(const std::string& a, const std::string& b) {
-    size_t i = 0, j = 0;
-    while (i < a.size() || j < b.size()) {
-        long x = 0, y = 0;
-        while (i < a.size() && a[i] != '.') {
-            x = x * 10 + (isdigit((unsigned char)a[i]) ? a[i] - '0' : 0);
-            ++i;
-        }
-        while (j < b.size() && b[j] != '.') {
-            y = y * 10 + (isdigit((unsigned char)b[j]) ? b[j] - '0' : 0);
-            ++j;
-        }
-        if (x != y) {
-            return x < y ? -1 : 1;
-        }
-        ++i;
-        ++j;
-    }
-    return a.empty() == b.empty() ? 0 : (a.empty() ? -1 : 1);
+    return CompareSemanticVersions(a, b);
 }
 
 std::string OnlineUtility::GetActiveModsDigest() {

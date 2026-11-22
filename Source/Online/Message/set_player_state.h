@@ -37,6 +37,10 @@ class SetPlayerState : public OnlineMessageBase {
     uint16_t ping;
     int32_t controller_id;
     int32_t camera_id;
+    PeerID peer_id;
+    uint32_t local_index;
+    int32_t team;
+    int32_t screen;
 
    public:
     SetPlayerState(PlayerID player_id, const PlayerState* player_state);

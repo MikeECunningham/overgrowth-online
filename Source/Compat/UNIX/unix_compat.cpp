@@ -92,7 +92,8 @@ int initWriteDir(char *path, int buf_size) {
         write_dir += env_path;
         write_dir += "/.local/share";
     }
-    write_dir += "/Overgrowth/";
+    // Keep this fork's settings, saves and shader cache separate from stock.
+    write_dir += "/OvergrowthOnline/";
 #endif
 
     FormatString(path, buf_size, "%s", write_dir.c_str());

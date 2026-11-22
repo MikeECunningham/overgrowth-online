@@ -43,7 +43,7 @@ void ScriptMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID pe
             m->to = kDropped;
             return;
         }
-        if (m->to == kEveryone || m->to == 0) {
+        if (m->to == kEveryone || online->ApiPlayerPeer(m->to) == online->LocalPeerID()) {
             online->QueueScriptDelivery(m->from, m->channel, m->text);
         }
     } else {

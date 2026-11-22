@@ -201,8 +201,8 @@ void IMImage::render(vec2 drawOffset, vec2 currentClipPos, vec2 currentClipSize)
         imuiImage.skip_aspect_fitting = skip_aspect_fitting;
 
         if (center) {
-            float diff_x = (float)graphics->window_dims[0] - getSizeX();
-            float diff_y = (float)graphics->window_dims[1] - getSizeY();
+            float diff_x = screenMetrics.getScreenWidth() - getSizeX();
+            float diff_y = screenMetrics.getScreenHeight() - getSizeY();
             GUIRenderPos = vec2(diff_x / 2.0f, diff_y / 2.0f);
         } else {
             GUIRenderPos = drawOffset + drawDisplacement;

@@ -93,7 +93,30 @@ void ClosePopup() {
 }
 
 string landing_screen_override;
+int SettingsOwnerPlayer() {
+    return IsPlayerMenuContext() ? GetPlayerMenuLocalIndex() : GetConfigValueInt("controller_menu_owner");
+}
+
+bool PersonalSettingsOnly() {
+    return SettingsOwnerPlayer() > 0;
+}
+
+bool MenuOwnsKeyboard() {
+    return SettingsOwnerPlayer() == GetLocalKeyboardPlayerIndex();
+}
+
+int SettingsProfilePlayer() {
+    if(IsPlayerMenuContext()) return GetPlayerMenuLocalIndex();
+    return PersonalSettingsOnly() ? SettingsOwnerPlayer() : GetConfigValueInt("menu_player_config");
+}
+
+bool ControllerSettingsAvailable() {
+    if(IsPlayerMenuContext()) return IsControllerConnected() || !MenuOwnsKeyboard();
+    return IsControllerConnected() || GetLocalPlayerCount() > 1 || PersonalSettingsOnly();
+}
+
 void BuildUI(string landing_screen){
+    SetControllerPlayer(controller_player);
     float header_width = 550;
     float header_height = 128;
 
@@ -162,14 +185,16 @@ void BuildUI(string landing_screen){
     mainDiv.append(buttons_holder);
     // Overgrowth Online: Screen (the display, the frame rate, the renderer, anti-aliasing and
     // upscaling) and Graphics (the detail drawn; the old Advanced checkboxes too)
-    AddCategoryButton("Screen", buttons_holder);
-    AddCategoryButton("Graphics", buttons_holder);
-    AddCategoryButton("Ray Tracing", buttons_holder);
-    AddCategoryButton("Audio", buttons_holder);
-    AddCategoryButton("Game", buttons_holder);
-    AddCategoryButton("Controls", buttons_holder);
-    controller_connected = IsControllerConnected();
-    if(controller_connected) {
+    if(!PersonalSettingsOnly()) {
+        AddCategoryButton("Screen", buttons_holder);
+        AddCategoryButton("Graphics", buttons_holder);
+        AddCategoryButton("Ray Tracing", buttons_holder);
+        AddCategoryButton("Audio", buttons_holder);
+        AddCategoryButton("Game", buttons_holder);
+    }
+    if((!IsPlayerMenuContext() && !PersonalSettingsOnly()) || MenuOwnsKeyboard()) AddCategoryButton("Controls", buttons_holder);
+    controller_connected = ControllerSettingsAvailable();
+    if(controller_connected && (!PersonalSettingsOnly() || !MenuOwnsKeyboard())) {
         AddCategoryButton("Gamepad", buttons_holder);
     }
 
@@ -221,17 +246,20 @@ void SetActiveCategory(string name){
 }
 
 void SwitchSettingsScreen(string screen_name){
+    if(PersonalSettingsOnly()) screen_name = MenuOwnsKeyboard() ? "Controls" : "Gamepad";
+    if(IsPlayerMenuContext() && screen_name == "Controls" && !MenuOwnsKeyboard()) screen_name = "Gamepad";
+    if(IsPlayerMenuContext() && screen_name == "Gamepad" && MenuOwnsKeyboard() && !IsControllerConnected()) screen_name = "Controls";
     if(screen_name == "Advanced"){
         screen_name = "Graphics";  // (Overgrowth Online: the old Advanced tab's options are there now)
     }
+    // Release controller focus while the old elements still have live parents.
+    ClearControllerItems(category_elements.size() + 1);
     settings_content.clear();
     gui_elements.resize(0);
 
     if(current_screen != screen_name) {
         show_keybinds_offset = 0;
     }
-
-    ClearControllerItems(category_elements.size() + 1);
 
     RestoreCategoryButtons();
     SetActiveCategory(screen_name);
@@ -572,7 +600,7 @@ void AddInputScreen(){
     AddCheckBox("Invert mouse Y", dual_columns.left, "invert_y_mouse_look", 0.0f);
 
     AddCheckBox("Raw mouse input", dual_columns.right, "use_raw_input", 0.0f);
-    AddCheckBox("Automatic camera", dual_columns.right, "auto_camera", 0.0f);
+    if(!PersonalSettingsOnly()) AddCheckBox("Automatic camera", dual_columns.right, "auto_camera", 0.0f);
 
     settings_content.append(dual_columns.main);
 
@@ -586,12 +614,28 @@ void AddInputScreen(){
 void AddControllerScreen(){
     current_screen = "Gamepad";
 
-    array<int> player_values = { 0, 1, 2, 3 };
-    array<string> player_options = { "1", "2", "3", "4" };
-    AddDropDown("Current player", settings_content, DropdownConfiguration(player_values, player_options, "menu_player_config"));
+    array<int> player_values;
+    array<string> player_options;
+    int player_count = max(1, int(GetLocalPlayerCount()));
+    int current_player = SettingsProfilePlayer();
+    current_player = min(max(0, current_player), player_count - 1);
+    if(!IsPlayerMenuContext()) SetConfigValueInt("menu_player_config", current_player);
+    for(int i = 0; i < player_count; ++i) {
+        player_values.insertLast(i);
+        player_options.insertLast("" + (i + 1));
+    }
+    if(!PersonalSettingsOnly() && !IsPlayerMenuContext()) {
+        AddDropDown("Current player", settings_content, DropdownConfiguration(player_values, player_options, "menu_player_config"));
+    }
 
-    AddSlider("Sensitivity", settings_content, "gamepad_" + GetConfigValueInt("menu_player_config") + "_look_sensitivity", 5.0f, 200.0f, 0.01f, 1.0f, false);
-    AddSlider("Deadzone", settings_content, "gamepad_" + GetConfigValueInt("menu_player_config") + "_deadzone", 0.5f);
+    string profile = "gamepad_" + current_player;
+    DualColumns inversion_columns("gamepad_inversion", 800);
+    AddCheckBox("Invert camera X", inversion_columns.left, profile + "_invert_x_look", 0.0f);
+    AddCheckBox("Invert camera Y", inversion_columns.right, profile + "_invert_y_look", 0.0f);
+    settings_content.append(inversion_columns.main);
+
+    AddSlider("Sensitivity", settings_content, profile + "_look_sensitivity", 5.0f, 200.0f, 0.01f, 1.0f, false);
+    AddSlider("Deadzone", settings_content, profile + "_deadzone", 0.5f);
 
     @key_rebind_container = @IMContainer(0, 0);
     AddControllerBinds(key_rebind_container);
@@ -685,7 +729,7 @@ void AddControllerBinds(IMContainer@ parent) {
 
     IMDivider key_rebind_vertical("vert", DOVertical);
     for(int i = 0; i < kMaxShownKeybinds; ++i) {
-        AddKeyRebind(controller_bind_names[i + show_keybinds_offset], key_rebind_vertical, "gamepad_" + GetConfigValueInt("menu_player_config"), controller_keybinds[i + show_keybinds_offset]);
+        AddKeyRebind(controller_bind_names[i + show_keybinds_offset], key_rebind_vertical, "gamepad_" + SettingsProfilePlayer(), controller_keybinds[i + show_keybinds_offset]);
     }
     key_rebind_horizontal.append(key_rebind_vertical);
 
@@ -783,7 +827,7 @@ void ProcessSettingsMessage(IMMessage@ message){
                 }
             } else if(current_screen == "Gamepad") {
                 for(uint i = 0; i < controller_keybinds.size(); ++i) {
-                    ResetBinding("gamepad_" + GetConfigValueInt("menu_player_config"), controller_keybinds[i]);
+                    ResetBinding("gamepad_" + SettingsProfilePlayer(), controller_keybinds[i]);
                 }
             }
             RefreshAllOptions();
@@ -821,10 +865,10 @@ void ProcessSettingsMessage(IMMessage@ message){
                 SwitchSettingsScreen(current_screen);
             }
         }
-        else if(message.name.findFirst("menu_player") == 0) {
+        else if(message.name.findFirst("menu_player") == 0 && !IsPlayerMenuContext()) {
             int player = parseInt(message.name.substr(11));
-            SetControllerPlayer(player);
             SetConfigValueInt("menu_player_config", player);
+            if(settings_content !is null && current_screen == "Gamepad") SwitchSettingsScreen(current_screen);
         }
         else{
             Log( info, "Unknown processMessage " + message.getString(0) );
@@ -891,9 +935,9 @@ void UpdateSettings(bool auto_exit_rebind = false){
             UpdateControllerRebinding(auto_exit_rebind);
         }
     } else {
-        if(GetInputDown(0, "mousescrollup")){
+        if(MenuOwnsKeyboard() && GetInputDown(controller_player, "mousescrollup")){
             imGUI.receiveMessage(IMMessage( "shift_menu", -1));
-        } else if(GetInputDown(0, "mousescrolldown")){
+        } else if(MenuOwnsKeyboard() && GetInputDown(controller_player, "mousescrolldown")){
             imGUI.receiveMessage(IMMessage( "shift_menu", 1));
         }
         UpdateMovingSlider();
@@ -901,7 +945,7 @@ void UpdateSettings(bool auto_exit_rebind = false){
             gui_elements[i].Update();
         }
     }
-    if(controller_connected != IsControllerConnected()) {
+    if(controller_connected != ControllerSettingsAvailable()) {
         if(current_screen == "Gamepad") {
             landing_screen_override = "Controls";
         } else {
@@ -1038,7 +1082,7 @@ void UpdateKeyRebinding(bool auto_exit_rebind){
             }
         }
     }
-    if(GetInputDown(0, "mousescrollup")){
+    if(GetInputDown(controller_player, "mousescrollup")){
         if(potential_rebind_scroll_dir == SCROLL_UP) {
             ApplyBind();
         }
@@ -1047,7 +1091,7 @@ void UpdateKeyRebinding(bool auto_exit_rebind){
         potential_rebind_scancode = -1;
         potential_rebind_mouse_button = -1;
         potential_rebind_scroll_dir = SCROLL_UP;
-    } else if(GetInputDown(0, "mousescrolldown")){
+    } else if(GetInputDown(controller_player, "mousescrolldown")){
         if(potential_rebind_scroll_dir == SCROLL_DOWN) {
             ApplyBind();
         }
@@ -1056,7 +1100,7 @@ void UpdateKeyRebinding(bool auto_exit_rebind){
         potential_rebind_scancode = -1;
         potential_rebind_mouse_button = -1;
         potential_rebind_scroll_dir = SCROLL_DOWN;
-    } else if(GetInputDown(0, "mousescrollleft")){
+    } else if(GetInputDown(controller_player, "mousescrollleft")){
         if(potential_rebind_scroll_dir == SCROLL_LEFT) {
             ApplyBind();
         }
@@ -1065,7 +1109,7 @@ void UpdateKeyRebinding(bool auto_exit_rebind){
         potential_rebind_scancode = -1;
         potential_rebind_mouse_button = -1;
         potential_rebind_scroll_dir = SCROLL_LEFT;
-    } else if(GetInputDown(0, "mousescrollright")){
+    } else if(GetInputDown(controller_player, "mousescrollright")){
         if(potential_rebind_scroll_dir == SCROLL_RIGHT) {
             ApplyBind();
         }

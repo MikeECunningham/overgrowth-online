@@ -34,7 +34,7 @@ binn* PCSAssignPlayerID::Serialize(void* object) {
     PCSAssignPlayerID* t = static_cast<PCSAssignPlayerID*>(object);
     binn* l = binn_object();
 
-    binn_object_set_uint8(l, "player_id", t->player_id);
+    binn_object_set_uint32(l, "player_id", t->player_id);
 
     return l;
 }
@@ -42,7 +42,7 @@ binn* PCSAssignPlayerID::Serialize(void* object) {
 void PCSAssignPlayerID::Deserialize(void* object, binn* l) {
     PCSAssignPlayerID* t = static_cast<PCSAssignPlayerID*>(object);
 
-    binn_object_get_uint8(l, "player_id", &t->player_id);
+    binn_object_get_uint32(l, "player_id", &t->player_id);
 }
 
 void PCSAssignPlayerID::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {

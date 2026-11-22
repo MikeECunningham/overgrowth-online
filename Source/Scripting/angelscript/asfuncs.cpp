@@ -36,6 +36,7 @@
 
 #include <Scripting/angelscript/asfuncs.h>
 #include <Scripting/angelscript/ascontext.h>
+#include <Scripting/angelscript/lobby_bindings.h>
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
 
 #include <UserInput/keyTranslator.h>
@@ -78,11 +79,13 @@
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
 
 #include <Main/scenegraph.h>
+#include <Game/level.h>
 #include <Main/engine.h>
 
 #include <GUI/dimgui/settings_screen.h>
 #include <GUI/IMUI/im_image.h>
 #include <GUI/gui.h>
+#include <GUI/player_menu_context.h>
 
 #include <Utility/strings.h>
 #include <Utility/assert.h>
@@ -99,6 +102,7 @@
 
 #include <angelscript.h>
 #include <imgui.h>
+#include <GUI/dimgui/imgui_impl_sdl_gl3.h>
 
 #include <cmath>
 #include <iostream>
@@ -184,12 +188,24 @@ static void PlayerStateDefaultConstructor(PlayerState* self) {
     new (self) PlayerState();
 }
 
+static void PlayerStateCopyConstructor(const PlayerState& other, PlayerState* self) { new (self) PlayerState(other); }
+static void PlayerStateDestructor(PlayerState* self) { self->~PlayerState(); }
+static PlayerState& PlayerStateAssign(const PlayerState& other, PlayerState* self) { return *self = other; }
+static int PlayerStatePing(const PlayerState* self) { return self->ping; }
+
 void AttachASNetwork(ASContext* context) {
-    context->RegisterObjectType("PlayerState", sizeof(PlayerState), asOBJ_VALUE | asOBJ_POD);
+    context->RegisterObjectType("PlayerState", sizeof(PlayerState), asOBJ_VALUE | asGetTypeTraits<PlayerState>());
     context->RegisterObjectProperty("PlayerState", "string playername", asOFFSET(PlayerState, playername));
     context->RegisterObjectProperty("PlayerState", "int avatar_id", asOFFSET(PlayerState, object_id));
-    context->RegisterObjectProperty("PlayerState", "int ping", asOFFSET(PlayerState, ping));
+    context->RegisterObjectProperty("PlayerState", "int team", asOFFSET(PlayerState, team));
+    context->RegisterObjectProperty("PlayerState", "uint id", asOFFSET(PlayerState, player_id));
+    context->RegisterObjectProperty("PlayerState", "uint local_index", asOFFSET(PlayerState, local_index));
+    context->RegisterObjectProperty("PlayerState", "int screen", asOFFSET(PlayerState, screen));
+    context->RegisterObjectMethod("PlayerState", "int get_ping() const", asFUNCTION(PlayerStatePing), asCALL_CDECL_OBJLAST);
     context->RegisterObjectBehaviour("PlayerState", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(PlayerStateDefaultConstructor), asCALL_CDECL_OBJLAST);
+    context->RegisterObjectBehaviour("PlayerState", asBEHAVE_CONSTRUCT, "void f(const PlayerState &in)", asFUNCTION(PlayerStateCopyConstructor), asCALL_CDECL_OBJLAST);
+    context->RegisterObjectBehaviour("PlayerState", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(PlayerStateDestructor), asCALL_CDECL_OBJLAST);
+    context->RegisterObjectMethod("PlayerState", "PlayerState &opAssign(const PlayerState &in)", asFUNCTION(PlayerStateAssign), asCALL_CDECL_OBJLAST);
 
     context->RegisterGlobalFunction("array<PlayerState>@ GetPlayerStates()", asFUNCTION(AS_GetPlayerStates), asCALL_CDECL);
 
@@ -214,10 +230,18 @@ void PrintString(std::string& str) {
     // LogSystem::LogData( LogSystem::info,"us","Print()",0) << " " << str;
 }
 
+static bool AS_PlayerMenuHasFocus(int controller_id) {
+    Engine* engine = Engine::Instance();
+    if (engine->PlayerHasMenu(controller_id)) return true;
+    SceneGraph* scene = engine->GetSceneGraph();
+    return scene != nullptr && scene->level != nullptr && scene->level->HasScriptFocus() &&
+           (engine->current_menu_player < 0 || engine->current_menu_player == controller_id);
+}
+
 float AS_GetMoveXAxis(int controller_id) {
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
-    if (controller == NULL) {
+    if (controller == NULL || AS_PlayerMenuHasFocus(controller_id)) {
         return 0.0f;
     }
 
@@ -229,7 +253,7 @@ float AS_GetMoveXAxis(int controller_id) {
 float AS_GetMoveYAxis(int controller_id) {
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
-    if (controller == NULL) {
+    if (controller == NULL || AS_PlayerMenuHasFocus(controller_id)) {
         return 0.0f;
     }
 
@@ -239,9 +263,11 @@ float AS_GetMoveYAxis(int controller_id) {
 }
 
 static bool AS_GetInputDownFiltered(int controller_id, const std::string& which_key, uint32_t filter) {
+    if (const auto* menu = PlayerMenuUI::Current()) if (menu->input_id != controller_id) return false;
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
-    if (controller == NULL) {
+    if (controller == NULL || (filter == KIMF_PLAYING && which_key != "quit" &&
+        which_key.compare(0, 5, "menu_") != 0 && AS_PlayerMenuHasFocus(controller_id))) {
         return false;
     }
 
@@ -287,9 +313,11 @@ static bool AS_GetInputDown(int controller_id, const std::string& which_key) {
 }
 
 static bool AS_GetInputPressedFiltered(int controller_id, const std::string& which_key, uint32_t filter) {
+    if (const auto* menu = PlayerMenuUI::Current()) if (menu->input_id != controller_id) return false;
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
-    if (controller == NULL) {
+    if (controller == NULL || (filter == KIMF_PLAYING && which_key != "quit" &&
+        which_key.compare(0, 5, "menu_") != 0 && AS_PlayerMenuHasFocus(controller_id))) {
         return false;
     }
 
@@ -325,6 +353,7 @@ static bool AS_GetInputPressed(int controller_id, const std::string& which_key) 
 }
 
 void AS_ActivateKeyboardEvents() {
+    if (!PlayerMenuUI::AllowsKeyboard()) return;
     ASContext* ctx = GetActiveASContext();
 
     if (ctx) {
@@ -333,6 +362,7 @@ void AS_ActivateKeyboardEvents() {
 }
 
 void AS_DeactivateKeyboardEvents() {
+    if (!PlayerMenuUI::AllowsKeyboard()) return;
     ASContext* ctx = GetActiveASContext();
 
     if (ctx) {
@@ -349,10 +379,12 @@ void AS_SetClipboard(const std::string& text) {
 }
 
 void AS_StartTextInput() {
+    if (!PlayerMenuUI::AllowsKeyboard()) return;
     Input::Instance()->StartTextInput();
 }
 
 void AS_StopTextInput() {
+    if (!PlayerMenuUI::AllowsKeyboard()) return;
     Input::Instance()->StopTextInput();
 }
 
@@ -381,13 +413,14 @@ static uint32_t AS_GetInputMode() {
 }
 
 static bool AS_IsKeyDown(int which_key) {
+    if (!PlayerMenuUI::AllowsKeyboard()) return false;
     return Input::Instance()->getKeyboard().isScancodeDown((SDL_Scancode)which_key, KIMF_PLAYING);
 }
 
 float AS_GetLookXAxis(int controller_id) {
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
-    if (controller == NULL) {
+    if (controller == NULL || AS_PlayerMenuHasFocus(controller_id)) {
         return 0.0f;
     }
 
@@ -399,7 +432,7 @@ float AS_GetLookXAxis(int controller_id) {
 float AS_GetLookYAxis(int controller_id) {
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
-    if (controller == NULL) {
+    if (controller == NULL || AS_PlayerMenuHasFocus(controller_id)) {
         return 0.0f;
     }
 
@@ -409,6 +442,7 @@ float AS_GetLookYAxis(int controller_id) {
 }
 
 void AS_SetGrabMouse(bool grab) {
+    if (!PlayerMenuUI::AllowsMouse()) return;
     return Input::Instance()->SetGrabMouse(grab);
 }
 
@@ -438,7 +472,8 @@ static CScriptArray* AS_GetRawKeyboardInputs() {
     asITypeInfo* arrayType = engine->GetTypeInfoById(engine->GetTypeIdByDecl("array<KeyboardPress>"));
     CScriptArray* array = CScriptArray::Create(arrayType, (asUINT)0);
 
-    std::vector<Keyboard::KeyboardPress> vals = Input::Instance()->GetKeyboardInputs();
+    const std::vector<Keyboard::KeyboardPress> vals = PlayerMenuUI::AllowsKeyboard() ?
+        Input::Instance()->GetKeyboardInputs() : std::vector<Keyboard::KeyboardPress>();
 
     array->Reserve(vals.size());
 
@@ -455,7 +490,8 @@ static CScriptArray* AS_GetRawMouseInputs() {
     asITypeInfo* arrayType = engine->GetTypeInfoById(engine->GetTypeIdByDecl("array<MousePress>"));
     CScriptArray* array = CScriptArray::Create(arrayType, (asUINT)0);
 
-    std::vector<Mouse::MousePress> vals = Input::Instance()->GetMouseInputs();
+    const std::vector<Mouse::MousePress> vals = PlayerMenuUI::AllowsMouse() ?
+        Input::Instance()->GetMouseInputs() : std::vector<Mouse::MousePress>();
 
     array->Reserve(vals.size());
 
@@ -472,7 +508,10 @@ static CScriptArray* AS_GetRawJoystickInputs(int which) {
     asITypeInfo* arrayType = engine->GetTypeInfoById(engine->GetTypeIdByDecl("array<ControllerPress>"));
     CScriptArray* array = CScriptArray::Create(arrayType, (asUINT)0);
 
-    std::vector<Joystick::JoystickPress> vals = Input::Instance()->GetJoystickInputs(which);
+    const int logical = Input::Instance()->LocalPlayerIndexForInputID(which);
+    const auto* menu = PlayerMenuUI::Current();
+    const std::vector<Joystick::JoystickPress> vals = logical >= 0 && (!menu || menu->input_id == which) ?
+        Input::Instance()->GetJoystickInputs(logical) : std::vector<Joystick::JoystickPress>();
 
     array->Reserve(vals.size());
 
@@ -484,6 +523,12 @@ static CScriptArray* AS_GetRawJoystickInputs(int which) {
 }
 
 static bool AS_IsControllerConnected() {
+    if (const auto* menu = PlayerMenuUI::Current()) {
+        for (const auto& entry : Input::Instance()->GetOpenJoysticks()) {
+            if (entry.second.GetConst().player_input == menu->input_id) return true;
+        }
+        return false;
+    }
     return Input::Instance()->IsControllerConnected();
 }
 
@@ -1675,11 +1720,11 @@ static bool GetSplitscreen() {
 }
 
 static int GetScreenWidth() {
-    return Graphics::Instance()->window_dims[0];
+    return PlayerMenuUI::Width();
 }
 
 static int GetScreenHeight() {
-    return Graphics::Instance()->window_dims[1];
+    return PlayerMenuUI::Height();
 }
 
 static int GetBloodLevel() {
@@ -4344,6 +4389,14 @@ bool AS_ImGui_IsPopupOpen(const std::string& str_id) {
     return ImGui::IsPopupOpen(str_id.c_str());
 }
 
+bool AS_ImGui_IsAnyPopupOpen() {
+    return ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+}
+
+bool AS_ImGui_IsItemFocused() { return ImGui::IsItemFocused(); }
+void AS_ImGui_PushMenuFont(bool heading) { ImGui::PushFont(ImGui_ImplSdlGL3_MenuFont(heading)); }
+void AS_ImGui_PopFont() { ImGui::PopFont(); }
+
 void AS_ImGui_CloseCurrentPopup() {
     ImGui::CloseCurrentPopup();
 }
@@ -4920,6 +4973,7 @@ void AttachIMGUI(ASContext* context) {
     context->RegisterGlobalFunction("void ImGui_SetScrollHere(float center_y_ratio = 0.5f)", asFUNCTION(AS_ImGui_SetScrollHere), asCALL_CDECL);
     context->RegisterGlobalFunction("void ImGui_SetScrollFromPosY(float pos_y, float center_y_ratio = 0.5f)", asFUNCTION(AS_ImGui_SetScrollFromPosY), asCALL_CDECL);
     context->RegisterGlobalFunction("void ImGui_SetKeyboardFocusHere(int offset = 0)", asFUNCTION(AS_ImGui_SetKeyboardFocusHere), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ImGui_SetItemDefaultFocus()", asFUNCTION(ImGui::SetItemDefaultFocus), asCALL_CDECL);
 
     // Parameters stacks (shared)
     context->RegisterGlobalFunction("void ImGui_PushStyleColor(int idx, const vec4 &in col)", asFUNCTION(AS_ImGui_PushStyleColor), asCALL_CDECL, "void ImGui_PushStyleColor(ImGuiCol idx, const vec4 &in col)");
@@ -5118,6 +5172,10 @@ void AttachIMGUI(ASContext* context) {
     context->RegisterGlobalFunction("bool ImGui_BeginPopupContextVoid(const string &in popup_id, int mouse_button = 1)", asFUNCTION(AS_ImGui_BeginPopupContextVoid2), asCALL_CDECL);
     context->RegisterGlobalFunction("void ImGui_EndPopup()", asFUNCTION(AS_ImGui_EndPopup), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ImGui_IsPopupOpen(const string &in str_id)", asFUNCTION(AS_ImGui_IsPopupOpen), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool ImGui_IsAnyPopupOpen()", asFUNCTION(AS_ImGui_IsAnyPopupOpen), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool ImGui_IsItemFocused()", asFUNCTION(AS_ImGui_IsItemFocused), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ImGui_PushMenuFont(bool heading = false)", asFUNCTION(AS_ImGui_PushMenuFont), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ImGui_PopFont()", asFUNCTION(AS_ImGui_PopFont), asCALL_CDECL);
     context->RegisterGlobalFunction("void ImGui_CloseCurrentPopup()", asFUNCTION(AS_ImGui_CloseCurrentPopup), asCALL_CDECL);
 
     // Utilities
@@ -5324,6 +5382,7 @@ void AttachIMGUI(ASContext* context) {
     context->RegisterEnumValue("ImGuiCol_", "ImGuiCol_PlotHistogram", ImGuiCol_PlotHistogram);
     context->RegisterEnumValue("ImGuiCol_", "ImGuiCol_PlotHistogramHovered", ImGuiCol_PlotHistogramHovered);
     context->RegisterEnumValue("ImGuiCol_", "ImGuiCol_TextSelectedBg", ImGuiCol_TextSelectedBg);
+    context->RegisterEnumValue("ImGuiCol_", "ImGuiCol_NavHighlight", ImGuiCol_NavHighlight);
     context->RegisterEnumValue("ImGuiCol_", "ImGuiCol_ModalWindowDarkening", ImGuiCol_ModalWindowDimBg);
     context->RegisterEnumValue("ImGuiCol_", "ImGuiCol_COUNT", ImGuiCol_COUNT);
 
@@ -5750,7 +5809,28 @@ static void ASSetSplitScreenMode(ForcedSplitScreenMode mode) {
     Engine::Instance()->SetForcedSplitScreenMode(mode);
 }
 
+static int ASDebugAddLocalPlayer() {
+    return Engine::Instance()->DebugAddLocalPlayer();
+}
+
+static int ASDebugLocalPlayerCount() {
+    return Engine::Instance()->DebugLocalPlayerCount();
+}
+
+static int AS_LocalKeyboardPlayerIndex() { return Input::Instance()->LocalKeyboardPlayerIndex(); }
+static bool AS_IsPlayerMenuContext() { return PlayerMenuUI::Current() != nullptr; }
+static int AS_PlayerMenuInputID() { const auto* menu = PlayerMenuUI::Current(); return menu ? menu->input_id : 0; }
+static int AS_PlayerMenuLocalIndex() { const auto* menu = PlayerMenuUI::Current(); return menu ? menu->local_index : 0; }
+static bool AS_PlayerMenuWorldPaused() { return Engine::Instance()->paused; }
+
 void AttachEngine(ASContext* context) {
+    AttachLobby(context);
+    context->RegisterGlobalFunction("int GetLocalKeyboardPlayerIndex()", asFUNCTION(AS_LocalKeyboardPlayerIndex), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool IsPlayerMenuContext()", asFUNCTION(AS_IsPlayerMenuContext), asCALL_CDECL);
+    context->RegisterGlobalFunction("int GetPlayerMenuInputID()", asFUNCTION(AS_PlayerMenuInputID), asCALL_CDECL);
+    context->RegisterGlobalFunction("int GetPlayerMenuLocalIndex()", asFUNCTION(AS_PlayerMenuLocalIndex), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool GetPlayerMenuWorldPaused()", asFUNCTION(AS_PlayerMenuWorldPaused), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool PlayerMenuHasFocus(int controller_id)", asFUNCTION(AS_PlayerMenuHasFocus), asCALL_CDECL);
     context->RegisterEnum("EngineState");
     context->RegisterEnumValue("EngineState", "kEngineNoState", kEngineNoState);
     context->RegisterEnumValue("EngineState", "kEngineLevelState", kEngineLevelState);
@@ -5796,6 +5876,8 @@ void AttachEngine(ASContext* context) {
     context->RegisterGlobalFunction("void assert(bool val)", asFUNCTION(ASAssert), asCALL_GENERIC);
 
     context->RegisterGlobalFunction("void SetSplitScreenMode(SplitScreenMode mode)", asFUNCTION(ASSetSplitScreenMode), asCALL_CDECL);
+    context->RegisterGlobalFunction("int DebugAddLocalPlayer()", asFUNCTION(ASDebugAddLocalPlayer), asCALL_CDECL);
+    context->RegisterGlobalFunction("int DebugLocalPlayerCount()", asFUNCTION(ASDebugLocalPlayerCount), asCALL_CDECL);
 }
 
 bool AS_Online_IsActive() {

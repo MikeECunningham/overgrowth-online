@@ -23,6 +23,7 @@
 //
 //-----------------------------------------------------------------------------
 #include "im_support.h"
+#include <GUI/player_menu_context.h>
 
 const float UNDEFINEDSIZE = -1.0;
 const int UNDEFINEDSIZEI = -1;
@@ -47,11 +48,11 @@ ScreenMetrics::ScreenMetrics() : mainSize(2560, 1440),
 }
 
 float ScreenMetrics::getScreenWidth() {
-    return (float)Graphics::Instance()->window_dims[0];
+    return static_cast<float>(PlayerMenuUI::Width());
 }
 
 float ScreenMetrics::getScreenHeight() {
-    return (float)Graphics::Instance()->window_dims[1];
+    return static_cast<float>(PlayerMenuUI::Height());
 }
 
 /*******************************************************************************************/

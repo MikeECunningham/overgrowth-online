@@ -9,8 +9,10 @@
 //                 The arena's rules without its AI: a match takes one of the
 //                 level's battle setups (spots, weapons, items, intro); a
 //                 weapon match is a fight to the death (one point), the others
-//                 are two points; the last one standing takes the round;
-//                 everyone for themselves. The crowd and the arena music.
+//                 are two points; the last team standing takes the round.
+//                 Battle templates supply teams, positions and equipment.
+//                 The host may instead force its manual lobby teams.
+//                 The crowd and the arena music.
 //
 //                 Bots (the host's AI fighters, config "oo_arena_bots": fill the
 //                 match up to that many fighters, 0 none; 2 if never set): a
@@ -105,9 +107,18 @@ bool weapons_match = false;
 string intro = "";
 int round_number = 0;
 int round_winner = -1;
+array<int> round_winners;  // all members of the winning team, including fallen allies
 
 array<vec3> spots;           // where players stand at a round start, in order
 array<string> spot_weapons;  // what each spot's player holds ("" nothing)
+array<int> spot_teams;       // template team for each position (0: extra marker)
+array<int> template_weights; // original team sizes, scaled to this roster
+array<int> fighter_teams;    // effective match teams; manual lobby choices stay intact
+array<int> fighter_spots;    // each fighter's matching template position/gear
+bool template_ffa = false;
+string battle_name = "";
+string last_battle_name = "";
+int setup_points = 0;
 array<string> item_paths;    // the setup's weapons on the ground
 array<vec3> item_spots;
 vec3 arena_center;
@@ -165,7 +176,7 @@ void Init(string str) {
         Online_AnnounceObject(id, level.GetPath("char_player"));  // made while loading: guests get it now, before its team
         ScriptParams@ params = obj.GetScriptParams();
         params.AddIntCheckbox("No Save", true);
-        params.SetString("Teams", "player" + id);
+        params.SetString("Teams", DesiredTeamForAvatar(id));
     }
     SetPhase(kWaiting);
 }
@@ -312,7 +323,7 @@ void HostUpdate() {
     DropGonePlayers();
 
     if(phase == kWaiting) {
-        if(Players().length() + WantedBots() >= 2) {
+        if((LobbyGetForceTeams() ? TeamCount(Players()) : int(Players().length())) + WantedBots() >= 2) {
             if(shown_text != "") {
                 Show("");
             }
@@ -321,12 +332,14 @@ void HostUpdate() {
             }
         } else {
             phase_time = the_time;
-            if(shown_text != "Waiting for another player") {
-                Show("Waiting for another player");
+            string waiting = Players().length() + WantedBots() >= 2 ?
+                "Waiting for another team" : "Waiting for another player";
+            if(shown_text != waiting) {
+                Show(waiting);
             }
         }
-    } else if(roster.length() < 2) {
-        // Someone left and one is alone: wait for the next
+    } else if(TeamCount(roster) < 2) {
+        // A team has nobody left in the match: wait for an opponent.
         roster.resize(0);
         points.resize(0);
         SendScore();
@@ -371,11 +384,18 @@ void HostUpdate() {
                 up.insertLast(roster[k]);
             }
         }
-        if(up.length() <= 1) {
-            round_winner = up.length() == 1 ? up[0] : -1;
+        if(TeamCount(up) <= 1) {
+            round_winner = up.length() > 0 ? up[0] : -1;
+            round_winners.resize(0);
             if(round_winner != -1) {
-                ++points[roster.find(round_winner)];
-                Show(PlayerName(round_winner) + " wins the round!");
+                string team = DesiredTeamForAvatar(round_winner);
+                for(uint k = 0; k < roster.length(); ++k) {
+                    if(DesiredTeamForAvatar(roster[k]) == team) {
+                        ++points[k];
+                        round_winners.insertLast(roster[k]);
+                    }
+                }
+                Show(RoundWinnerName() + " wins the round!");
             } else {
                 Show("Nobody wins the round!");
             }
@@ -386,9 +406,15 @@ void HostUpdate() {
         }
     } else if(phase == kRoundOver) {
         if(t > 3.0f) {
-            int at = roster.find(round_winner);
-            if(at >= 0 && points[at] >= max_points) {
-                Show(PlayerName(round_winner) + " wins the match!");
+            bool match_won = false;
+            for(uint k = 0; k < round_winners.length(); ++k) {
+                int at = roster.find(round_winners[k]);
+                if(at >= 0 && points[at] >= max_points) {
+                    match_won = true;
+                }
+            }
+            if(match_won) {
+                Show(RoundWinnerName() + " wins the match!");
                 SetPhase(kMatchOver);
             } else {
                 StartRound();
@@ -418,11 +444,14 @@ void NewMatch() {
 
 void StartRound() {
     ++round_number;
+    round_winner = -1;
+    round_winners.resize(0);
 
     // Bots: as many as wanted now (a joined player takes one's place)
+    int previous_size = int(roster.length());
     SyncBots();
 
-    // Everyone here plays (late joiners from the next round on), each for themselves
+    // Everyone here plays (late joiners from the next round on), on their lobby teams.
     array<int> players = Players();
     for(uint k = 0; k < bots.length(); ++k) {
         players.insertLast(bots[k]);
@@ -432,6 +461,14 @@ void StartRound() {
             roster.insertLast(players[k]);
             points.insertLast(0);
         }
+    }
+    if(round_number > 1 && previous_size != int(roster.length())) {
+        round_number = 1;
+        for(uint k = 0; k < points.length(); ++k) points[k] = 0;
+        SetUpMatch();
+    }
+    if(round_number == 1 || fighter_teams.length() != roster.length()) {
+        ConfigureMatchTeams();
     }
 
     // Every weapon from before goes, in hands and on the ground (this round's
@@ -455,7 +492,7 @@ void StartRound() {
     arm_pending = true;  // (ArmPlayers, after the old weapons are gone everywhere)
 
     SendScore();
-    Show(round_number == 1 ? intro : "Round " + round_number);
+    Show(round_number == 1 ? intro + " " + MatchDescription() : "Round " + round_number);
     SetPhase(kIntro);
 }
 
@@ -479,7 +516,8 @@ void ArmPlayers() {
     for(uint k = 0; k < roster.length(); ++k) {
         int id = roster[k];
         bool random = random_round && k < rnd_hand.length();
-        string weapon = random ? rnd_hand[k] : (spot_weapons.length() > 0 ? spot_weapons[k % spot_weapons.length()] : "");
+        int setup = k < fighter_spots.length() ? fighter_spots[k] : int(k);
+        string weapon = random ? rnd_hand[k] : (spot_weapons.length() > 0 ? spot_weapons[setup % int(spot_weapons.length())] : "");
         if(!MovementObjectExists(id) || ReadCharacterID(id).GetIntVar("species") == 1 || (random && rnd_wolf[k])) {
             continue;  // (aschar.as _wolf: no hands)
         }
@@ -616,8 +654,8 @@ array<int> Players() {
     return ids;
 }
 
-// Players who left drop out; one who just joined fights for themselves
-// (the engine gave them the host's team)
+// Players who left drop out; keep every avatar on its lobby team, including
+// newly possessed characters and characters replaced by the randomizer.
 void DropGonePlayers() {
     array<int> players = Players();
     for(int k = int(bots.length()) - 1; k >= 0; --k) {
@@ -629,6 +667,8 @@ void DropGonePlayers() {
         if(players.find(roster[k]) < 0 && bots.find(roster[k]) < 0) {
             roster.removeAt(k);
             points.removeAt(k);
+            if(k < int(fighter_teams.length())) fighter_teams.removeAt(k);
+            if(k < int(fighter_spots.length())) fighter_spots.removeAt(k);
             score_dirty = true;
         }
     }
@@ -640,10 +680,48 @@ void DropGonePlayers() {
 void OwnTeam(int id) {
     Object@ obj = ReadObjectFromID(id);
     ScriptParams@ params = obj.GetScriptParams();
-    if(params.GetString("Teams") != "player" + id) {
-        params.SetString("Teams", "player" + id);
+    string team = DesiredTeamForAvatar(id);
+    if(params.GetString("Teams") != team) {
+        params.SetString("Teams", team);
         obj.UpdateScriptParams();
     }
+}
+
+string DesiredTeamForAvatar(int id) {
+    int assigned = LobbyGetAssignedTeam(id);
+    if(assigned > 0) return "arena_team_" + assigned;
+    if(bots.find(id) >= 0) return "bot" + id;
+    array<PlayerState>@ states = GetPlayerStates();
+    for(uint k = 0; k < states.length(); ++k) {
+        if(states[k].avatar_id == id) {
+            if(!LobbyGetForceTeams()) return "player" + id;
+            if(states[k].team > 1) return "lobby_team_" + states[k].team;
+            // Native Team1 preserves the map's friendly faction until the
+            // match publishes its arena teams. Avoid fighting that assignment.
+            ScriptParams@ params = ReadObjectFromID(id).GetScriptParams();
+            return params.HasParam("Teams") ? params.GetString("Teams") : "lobby_team_1";
+        }
+    }
+    return "player" + id;  // first spawn, before the engine possesses it
+}
+
+int TeamCount(const array<int> &in fighters) {
+    array<string> teams;
+    for(uint k = 0; k < fighters.length(); ++k) {
+        string team = DesiredTeamForAvatar(fighters[k]);
+        if(teams.find(team) < 0) {
+            teams.insertLast(team);
+        }
+    }
+    return int(teams.length());
+}
+
+string RoundWinnerName() {
+    if(round_winners.length() > 1) {
+        int team = LobbyGetAssignedTeam(round_winner);
+        if(team > 0) return "Team " + team;
+    }
+    return PlayerName(round_winner);
 }
 
 bool Up(int id) {
@@ -683,7 +761,7 @@ void HealOwn() {
 
 // How many fighters the host wants the match filled up to (0: no bots)
 int ArenaFighters() {
-    return ConfigHasKey("oo_arena_bots") ? min(8, GetConfigValueInt("oo_arena_bots")) : 2;
+    return ConfigHasKey("oo_arena_bots") ? max(0, GetConfigValueInt("oo_arena_bots")) : 2;
 }
 
 int WantedBots() {
@@ -701,6 +779,8 @@ void SyncBots() {
         if(at >= 0) {
             roster.removeAt(at);
             points.removeAt(at);
+            if(at < int(fighter_teams.length())) fighter_teams.removeAt(at);
+            if(at < int(fighter_spots.length())) fighter_spots.removeAt(at);
         }
         if(ObjectExists(id)) {
             QueueDeleteObjectID(id);
@@ -814,6 +894,8 @@ void SetUpMatch() {
     FindMarkers();
     spots.resize(0);
     spot_weapons.resize(0);
+    spot_teams.resize(0); template_weights.resize(0);
+    template_ffa = false; setup_points = 0; battle_name = "Courtyard";
     item_paths.resize(0);
     item_spots.resize(0);
     weapons_match = false;
@@ -825,6 +907,10 @@ void SetUpMatch() {
         // matches everyone gets the same weapon (arena_level.as)
         intro = "Welcome to the arena!";
         int game_type = rand() % 3;
+        int fighters = int(Players().length()) + WantedBots();
+        template_ffa = rand() % 3 == 0;
+        int teams = min(max(2, fighters), rand() % 2 == 0 ? 2 : 3);
+        for(int t = 0; t < teams; ++t) template_weights.insertLast(1);
         for(uint i = 0; i < marker_ids.length(); ++i) {
             if(marker_types[i] == game_type) {
                 used.insertLast(i);
@@ -835,6 +921,8 @@ void SetUpMatch() {
             weapons_match = true;
         }
     }
+
+    string fallback_weapon = spot_teams.length() == 0 && spot_weapons.length() > 0 ? spot_weapons[0] : "";
 
     // The rest of the markers for more players (not on top of a used one)
     for(uint i = 0; i < marker_ids.length(); ++i) {
@@ -849,6 +937,8 @@ void SetUpMatch() {
         }
     }
 
+    while(spot_teams.length() < used.length()) spot_teams.insertLast(0);
+    while(spot_weapons.length() < used.length()) spot_weapons.insertLast(fallback_weapon);
     arena_center = vec3(0.0f);
     for(uint k = 0; k < used.length(); ++k) {
         spots.insertLast(MarkerPos(used[k]));
@@ -857,76 +947,149 @@ void SetUpMatch() {
     if(spots.length() > 0) {
         arena_center /= float(spots.length());
     }
-    max_points = weapons_match ? 1 : 2;
+    max_points = setup_points > 0 ? setup_points : weapons_match ? 1 : 2;
 }
 
 bool SetUpFromBattle(array<int> &inout used) {
+    array<JSONValue> choices;
     array<int> @ids = GetObjectIDs();
     for(uint i = 0; i < ids.length(); ++i) {
         ScriptParams@ params = ReadObjectFromID(ids[i]).GetScriptParams();
-        if(!params.HasParam("Name") || params.GetString("Name") != "arena_battle" || !params.HasParam("Battles")) {
-            continue;
-        }
-        JSON battles_json = params.GetJSON("Battles");
-        JSONValue battles = battles_json.getRoot()["data"]["battles"];
-        if(battles.size() == 0) {
-            return false;
-        }
-        JSONValue battle = battles[int(uint(rand()) % battles.size())];
-        JSONValue teams = battle["teams"];
-
-        // Its fighters' spots, a team's first, the next team's first, ...
-        int most = 0;
-        for(uint t = 0; t < teams.size(); ++t) {
-            most = max(most, int(teams[t]["members"].size()));
-        }
-        for(int m = 0; m < most; ++m) {
-            for(uint t = 0; t < teams.size(); ++t) {
-                JSONValue members = teams[t]["members"];
-                if(m >= int(members.size())) {
-                    continue;
-                }
-                JSONValue member = members[m];
-                int at = marker_names.find(member["location"].asString());
-                if(at < 0 || used.find(at) >= 0) {
-                    continue;
-                }
-                used.insertLast(at);
-                string weapon = member.isMember("weapon") ? WeaponPath(member["weapon"].asString()) : "";
-                spot_weapons.insertLast(weapon);
-                if(weapon != "") {
-                    weapons_match = true;
-                }
-            }
-        }
-        bool armed = false;
-        for(uint k = 0; k < spot_weapons.length(); ++k) {
-            armed = armed || spot_weapons[k] != "";
-        }
-        if(!armed) {
-            spot_weapons.resize(0);
-        }
-
-        // Its weapons on the ground
-        JSONValue items = battle["items"];
-        for(uint k = 0; k < items.size(); ++k) {
-            JSONValue item = items[k];
-            int at = marker_names.find(item["location"].asString());
-            string weapon = WeaponPath(item.isMember("type") ? item["type"].asString() : "any");
-            if(at >= 0 && weapon != "") {
-                item_paths.insertLast(weapon);
-                item_spots.insertLast(MarkerPos(at));
-                weapons_match = true;
-            }
-        }
-
-        JSONValue attributes = battle["attributes"];
-        if(attributes.isMember("intro") && attributes["intro"].asString() != "") {
-            intro = attributes["intro"].asString();
-        }
-        return true;
+        if(!params.HasParam("Name") || params.GetString("Name") != "arena_battle" || !params.HasParam("Battles")) continue;
+        JSON source = params.GetJSON("Battles");
+        JSONValue battles = source.getRoot()["data"]["battles"];
+        for(uint j = 0; j < battles.size(); ++j) if(battles[j]["teams"].size() >= 2) choices.insertLast(battles[j]);
     }
-    return false;
+    if(choices.length() == 0) return false;
+    array<int> eligible;
+    for(uint i = 0; i < choices.length(); ++i)
+        if(choices.length() == 1 || choices[i]["name"].asString() != last_battle_name) eligible.insertLast(i);
+    if(eligible.length() == 0) eligible.insertLast(0);
+    JSONValue battle = choices[eligible[rand() % int(eligible.length())]];
+    battle_name = battle["name"].asString();
+    last_battle_name = battle_name;
+    JSONValue teams = battle["teams"];
+    template_ffa = true;
+    for(uint t = 0; t < teams.size(); ++t) {
+        int members = int(teams[t]["members"].size());
+        template_weights.insertLast(max(1, members));
+        template_ffa = template_ffa && members <= 1;
+    }
+    // Interleave the authored teams while retaining each position's team and
+    // equipment. Larger rosters reuse safe neighbouring positions on that side.
+    int most = 0;
+    for(uint t = 0; t < teams.size(); ++t) most = max(most, int(teams[t]["members"].size()));
+    for(int m = 0; m < most; ++m) {
+        for(uint t = 0; t < teams.size(); ++t) {
+            JSONValue members = teams[t]["members"];
+            if(m >= int(members.size())) continue;
+            JSONValue member = members[m];
+            int at = marker_names.find(member["location"].asString());
+            if(at < 0 || used.find(at) >= 0) continue;
+            used.insertLast(at);
+            spot_teams.insertLast(int(t + 1));
+            string weapon = member.isMember("weapon") ? WeaponPath(member["weapon"].asString()) : "";
+            spot_weapons.insertLast(weapon);
+            weapons_match = weapons_match || weapon != "";
+        }
+    }
+    JSONValue items = battle["items"];
+    for(uint k = 0; k < items.size(); ++k) {
+        JSONValue item = items[k];
+        int at = marker_names.find(item["location"].asString());
+        string weapon = WeaponPath(item.isMember("type") ? item["type"].asString() : "any");
+        if(at >= 0 && weapon != "") {
+            item_paths.insertLast(weapon); item_spots.insertLast(MarkerPos(at)); weapons_match = true;
+        }
+    }
+    JSONValue attributes = battle["attributes"];
+    if(attributes.isMember("intro") && attributes["intro"].asString() != "") intro = attributes["intro"].asString();
+    if(attributes.isMember("rounds")) setup_points = min(10, max(1, atoi(attributes["rounds"].asString())));
+    return true;
+}
+
+// The mode owns effective teams; the lobby remains a saved manual plan. Teams
+// stay fixed through a match, then a new authored setup reshuffles the roster.
+void ConfigureMatchTeams() {
+    int n = int(roster.length());
+    fighter_teams.resize(n);
+    fighter_spots.resize(n);
+    if(n == 0) return;
+    array<int> order;
+    for(int k = 0; k < n; ++k) order.insertLast(k);
+    for(int k = n - 1; k > 0; --k) {
+        int other = rand() % (k + 1), saved = order[k]; order[k] = order[other]; order[other] = saved;
+    }
+    if(LobbyGetForceTeams()) {
+        int highest = 0;
+        array<PlayerState>@ states = GetPlayerStates();
+        for(uint k = 0; k < states.length(); ++k) highest = max(highest, states[k].team);
+        int next_bot = highest + 1;
+        for(int k = 0; k < n; ++k) {
+            fighter_teams[k] = 0;
+            for(uint j = 0; j < states.length(); ++j)
+                if(states[j].avatar_id == roster[k]) fighter_teams[k] = states[j].team;
+            if(fighter_teams[k] == 0) fighter_teams[k] = next_bot++;
+        }
+    } else if(template_ffa) {
+        for(int k = 0; k < n; ++k) fighter_teams[order[k]] = k + 1;
+    } else {
+        int count = min(n, max(2, int(template_weights.length())));
+        array<int> quota(count, 1);
+        // Weighted apportionment preserves asymmetric authored battles while
+        // ensuring every team has a fighter, even with fewer people than slots.
+        for(int placed = count; placed < n; ++placed) {
+            int best = rand() % count;
+            float value = float(quota[best] + 1) / float(max(1, template_weights[best % int(template_weights.length())]));
+            for(int t = 0; t < count; ++t) {
+                float candidate = float(quota[t] + 1) / float(max(1, template_weights[t % int(template_weights.length())]));
+                if(candidate < value) { best = t; value = candidate; }
+            }
+            ++quota[best];
+        }
+        int at = 0;
+        for(int t = 0; t < count; ++t)
+            for(int member = 0; member < quota[t]; ++member) fighter_teams[order[at++]] = t + 1;
+    }
+    array<int> distinct;
+    for(int k = 0; k < n; ++k) if(distinct.find(fighter_teams[k]) < 0) distinct.insertLast(fighter_teams[k]);
+    array<int> occupied(distinct.length(), 0);
+    for(int k = 0; k < n; ++k) {
+        int rank = distinct.find(fighter_teams[k]);
+        array<int> candidates;
+        if(!template_ffa && distinct.length() <= template_weights.length()) {
+            int template_team = (LobbyGetForceTeams() ? rank : fighter_teams[k] - 1) % max(1, int(template_weights.length())) + 1;
+            for(uint slot = 0; slot < spot_teams.length(); ++slot)
+                if(spot_teams[slot] == template_team) candidates.insertLast(int(slot));
+        }
+        bool authored = candidates.length() > 0;
+        if(!authored) for(uint slot = 0; slot < spots.length(); ++slot) candidates.insertLast(int(slot));
+        int ordinal = occupied[rank]++;
+        if(candidates.length() > 0) {
+            int offset = authored ? ordinal : rank + ordinal * int(distinct.length());
+            // Encodes overflow separately so SpotFor can find a clear neighbour.
+            fighter_spots[k] = candidates[offset % int(candidates.length())] +
+                (offset / int(candidates.length())) * int(spots.length());
+        } else fighter_spots[k] = 0;
+    }
+    LobbyAssignModeTeams(roster, fighter_teams);
+    string report = "ohl arena teams " + battle_name;
+    for(int k = 0; k < n; ++k) report += " #" + roster[k] + " " + fighter_teams[k];
+    level.SendMessage(report);
+}
+
+string MatchDescription() {
+    if(fighter_teams.length() == 0) return "";
+    array<int> labels, counts;
+    for(uint k = 0; k < fighter_teams.length(); ++k) {
+        int at = labels.find(fighter_teams[k]);
+        if(at < 0) { labels.insertLast(fighter_teams[k]); counts.insertLast(1); }
+        else ++counts[at];
+    }
+    if(labels.length() == fighter_teams.length()) return "Free-for-all: " + fighter_teams.length() + " fighters.";
+    string format = "Teams: ";
+    for(uint k = 0; k < counts.length(); ++k) format += (k > 0 ? " vs " : "") + counts[k];
+    return format + ".";
 }
 
 // Player k's spot, facing the middle; more players than spots: beside them
@@ -936,11 +1099,12 @@ void SpotFor(uint k, vec3 &out pos, vec3 &out facing) {
         facing = vec3(0.0f, 0.0f, 1.0f);
         return;
     }
-    vec3 base = spots[k % spots.length()];
+    uint slot = k < fighter_spots.length() ? uint(fighter_spots[k]) : k;
+    vec3 base = spots[slot % spots.length()];
     vec3 to_middle = arena_center - base;
     to_middle.y = 0.0f;
     facing = length(to_middle) > 0.1f ? normalize(to_middle) : vec3(0.0f, 0.0f, 1.0f);
-    pos = k < spots.length() ? base : Online_SafeSpotNear(base, facing, int(k / spots.length()));
+    pos = slot < spots.length() ? base : Online_SafeSpotNear(base, facing, int(slot / spots.length()));
 }
 
 // ---- shown ----------------------------------------------------------------
@@ -1019,7 +1183,8 @@ void DrawScoreboard() {
     for(uint k = 0; k < score_ids.length() && k < 8; ++k) {
         ++line;
         text.SetPenPosition(vec2(0, 40 + line * 40));
-        text.AddText(PlayerName(score_ids[k]) + (score_ids[k] == own_id ? " (you)" : "") + ":  " + score_points[k], style, UINT32MAX);
+        int team = LobbyGetAssignedTeam(score_ids[k]);
+        text.AddText((team > 0 ? "T" + team + " " : "") + PlayerName(score_ids[k]) + (score_ids[k] == own_id ? " (you)" : "") + ":  " + score_points[k], style, UINT32MAX);
     }
     text.UploadTextCanvasToTexture();
 }
@@ -1040,7 +1205,7 @@ void DrawText(int id, const string &in str, int size) {
     text.SetPenPosition(vec2(0, 256));
     text.SetPenColor(255, 255, 255, 255);
     text.SetPenRotation(0.0f);
-    text.AddText(str, style, UINT32MAX);
+    text.AddTextMultiline(str, style, UINT32MAX);
     text.UploadTextCanvasToTexture();
 }
 

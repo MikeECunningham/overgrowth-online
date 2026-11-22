@@ -427,7 +427,9 @@ class Checkbox : GUIElement{
         ToggleElement();
         if(config_name.length() != 0) {
             SetConfigValueBool(config_name, option_state);
-            ReloadStaticValues();
+            // Gamepad inversion is read by Input on each step. Reapplying all
+            // graphics settings here needlessly rebuilds grass and render data.
+            if(config_name.findFirst("gamepad_") != 0) ReloadStaticValues();
             RefreshAllOptions();
         }
     }
@@ -2453,7 +2455,10 @@ bool TryQueueNextPopup() {
 
         // Create and attach the dequeued popup
         IMContainer@ popup_container = popup_data.CreatePopup();
-        imGUI.getMain().getContents().setPauseBehaviors(true);
+        IMElement@ contents = imGUI.getMain().getContents();
+        if(contents !is null) {
+            contents.setPauseBehaviors(true);
+        }
         imGUI.getMain().addFloatingElement(popup_container, "ingame_popup", vec2(UNDEFINEDSIZE, UNDEFINEDSIZE));
         return true;
     }
@@ -2461,7 +2466,10 @@ bool TryQueueNextPopup() {
 }
 
 void RemovePopup() {
-    imGUI.getMain().getContents().setPauseBehaviors(false);
+    IMElement@ contents = imGUI.getMain().getContents();
+    if(contents !is null) {
+        contents.setPauseBehaviors(false);
+    }
     if(!TryQueueNextPopup()) {
         imGUI.getMain().removeElement("ingame_popup");
     }
@@ -2838,20 +2846,20 @@ class Search {
     }
     void Update(){
         if(active){
-            if(GetInputPressed(0, "menu_left")){
+            if(GetInputPressed(controller_player, "menu_left")){
                 if((cursor_offset) < int(query.length())){
                     cursor_offset++;
                     SetCurrentSearchQuery();
                 }
             }
-            else if(GetInputPressed(0, "menu_right")){
+            else if(GetInputPressed(controller_player, "menu_right")){
                 if(cursor_offset > 0){
                     cursor_offset--;
                     SetCurrentSearchQuery();
                 }
             }
             if(long_press_timer > long_press_threshold){
-                if(GetInputDown(0, "backspace")){
+                if(GetInputDown(controller_player, "backspace")){
                     long_press_input_timer += time_step;
                     if(long_press_input_timer > long_press_interval){
                         long_press_input_timer = 0.0f;
@@ -2867,7 +2875,7 @@ class Search {
                             return;
                         }
                     }
-                }else if(GetInputDown(0, "delete")){
+                }else if(GetInputDown(controller_player, "delete")){
                     long_press_input_timer += time_step;
                     if(long_press_input_timer > long_press_interval){
                         long_press_input_timer = 0.0f;
@@ -2879,7 +2887,7 @@ class Search {
                         }
                         return;
                     }
-                }else if(GetInputDown(0, "menu_left")){
+                }else if(GetInputDown(controller_player, "menu_left")){
                     long_press_input_timer += time_step;
                     if(long_press_input_timer > long_press_interval){
                         long_press_input_timer = 0.0f;
@@ -2889,7 +2897,7 @@ class Search {
                         }
                     }
                     return;
-                }else if(GetInputDown(0, "menu_right")){
+                }else if(GetInputDown(controller_player, "menu_right")){
                     long_press_input_timer += time_step;
                     if(long_press_input_timer > long_press_interval){
                         long_press_input_timer = 0.0f;
@@ -2902,11 +2910,11 @@ class Search {
                 }else{
                     long_press_input_timer = 0.0f;
                 }
-                if(!GetInputDown(0, "delete") && !GetInputDown(0, "backspace") && !GetInputDown(0, "menu_left") && !GetInputDown(0, "menu_right")){
+                if(!GetInputDown(controller_player, "delete") && !GetInputDown(controller_player, "backspace") && !GetInputDown(controller_player, "menu_left") && !GetInputDown(controller_player, "menu_right")){
                     long_press_timer = 0.0f;
                 }
             }else{
-                if(GetInputDown(0, "delete") || GetInputDown(0, "backspace") || GetInputDown(0, "menu_left") || GetInputDown(0, "menu_right")){
+                if(GetInputDown(controller_player, "delete") || GetInputDown(controller_player, "backspace") || GetInputDown(controller_player, "menu_left") || GetInputDown(controller_player, "menu_right")){
                     long_press_timer += time_step;
                 }else{
                     long_press_timer = 0.0f;
@@ -3117,9 +3125,9 @@ class TextBox {
     void Update() {
         if(active) {
             // Get immediate arrow key inputs based on key configurations
-            if(GetInputPressed(0, "menu_left")) {
+            if(GetInputPressed(controller_player, "menu_left")) {
                 InputArrowLeft();
-            } else if(GetInputPressed(0, "menu_right")) {
+            } else if(GetInputPressed(controller_player, "menu_right")) {
                 InputArrowRight();
             }
 
@@ -3210,7 +3218,7 @@ class TextBox {
         long_press_cooldown -= time_step;
 
         // Reset cooldown if no button was held
-        if(!(GetInputDown(0, "delete") || GetInputDown(0, "backspace") || GetInputDown(0, "menu_left") || GetInputDown(0, "menu_right"))){
+        if(!(GetInputDown(controller_player, "delete") || GetInputDown(controller_player, "backspace") || GetInputDown(controller_player, "menu_left") || GetInputDown(controller_player, "menu_right"))){
             long_press_cooldown = long_press_threshold;
         }
 
@@ -3220,13 +3228,13 @@ class TextBox {
             long_press_interval = long_press_interval;
             
             // Perform action
-            if(GetInputDown(0, "backspace")) {
+            if(GetInputDown(controller_player, "backspace")) {
                 InputBackspace();
-            } else if(GetInputDown(0, "delete")) {
+            } else if(GetInputDown(controller_player, "delete")) {
                 InputDelete();
-            } else if(GetInputDown(0, "menu_left")) {
+            } else if(GetInputDown(controller_player, "menu_left")) {
                 InputArrowLeft();
-            } else if(GetInputDown(0, "menu_right")) {
+            } else if(GetInputDown(controller_player, "menu_right")) {
                 InputArrowRight();
             }
         }
@@ -3361,9 +3369,9 @@ void AddNoResults(IMDivider@ parent, bool fadein){
 }
 
 void UpdateKeyboardMouse(){
-    if(GetInputDown(0, "mousescrollup")){
+    if(GetInputDown(controller_player, "mousescrollup")){
         imGUI.receiveMessage(IMMessage( "shift_menu", -1));
-    } else if(GetInputDown(0, "mousescrolldown")){
+    } else if(GetInputDown(controller_player, "mousescrolldown")){
         imGUI.receiveMessage(IMMessage( "shift_menu", 1));
     }
 }
@@ -3520,7 +3528,7 @@ class TextboxNumeric : GUIElement {
     void Update(){
         if(element_open){
             if(long_press_timer > long_press_threshold){
-                if(GetInputDown(0, "backspace")){
+                if(GetInputDown(controller_player, "backspace")){
                     long_press_input_timer += time_step;
                     if(long_press_input_timer > long_press_interval){
                         long_press_input_timer = 0.0f;
@@ -3530,11 +3538,11 @@ class TextboxNumeric : GUIElement {
                 }else{
                     long_press_input_timer = 0.0f;
                 }
-                if(!GetInputDown(0, "backspace")){
+                if(!GetInputDown(controller_player, "backspace")){
                     long_press_timer = 0.0f;
                 }
             }else{
-                if(GetInputDown(0, "backspace")){
+                if(GetInputDown(controller_player, "backspace")){
                     long_press_timer += time_step;
                 }else{
                     long_press_timer = 0.0f;

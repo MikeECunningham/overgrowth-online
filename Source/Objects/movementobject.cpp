@@ -1252,7 +1252,7 @@ bool MovementObject::UpdateBeforePose(float timestep) {
     // became the active camera, one without a camera object, and the proxy
     // branch below never sets 0 back -> null camera object, crash on a join
     if (controlled && !network_proxy && (Engine::Instance()->GetSplitScreen() || controller_id == 0)) {
-        ActiveCameras::Set(controller_id);
+        ActiveCameras::Set(camera_id);
         ActiveCameras::Get()->IncrementProgress();
     }
 

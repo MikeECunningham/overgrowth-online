@@ -36,6 +36,7 @@
 #include <Wrappers/glm.h>
 #include <Internal/profiler.h>
 #include <Main/engine.h>
+#include <GUI/player_menu_context.h>
 
 class HUDImageZCompare {
    public:
@@ -68,6 +69,12 @@ void HUDImages::Draw() {
     Graphics *graphics = Graphics::Instance();
     Shaders *shaders = Shaders::Instance();
     Textures *textures = Textures::Instance();
+    const auto* menu = PlayerMenuUI::Current();
+    const bool previous_scissor = graphics->ScissorTestEnabled();
+    if (menu) {
+        graphics->SetScissorRect(menu->x, menu->y, menu->width, menu->height);
+        graphics->setScissorTest(true);
+    }
 
     {
         PROFILER_ZONE(g_profiler_ctx, "HUDImages sort");
@@ -82,7 +89,7 @@ void HUDImages::Draw() {
     int color_id = shaders->returnShaderVariable("color", shader_id);
     graphics->setGLState(hud_gl_state.gl_state);
     glm::mat4 proj_mat;
-    proj_mat = ReverseZ(glm::ortho(0.0f, (float)graphics->window_dims[0], 0.0f, (float)graphics->window_dims[1]));
+    proj_mat = ReverseZ(glm::ortho(0.0f, static_cast<float>(PlayerMenuUI::Width()), 0.0f, static_cast<float>(PlayerMenuUI::Height())));
     Shaders::Instance()->SetUniformMat4(mvp_mat_id, (GLfloat *)&proj_mat);  // (Overgrowth Online 3.4: through Shaders, a default-block member on the Vulkan build)
     // Overgrowth Online (GL 4.6 stage 2.4): tex coord then position, interleaved
     static VertexLayout layout;
@@ -178,6 +185,7 @@ void HUDImages::Draw() {
     graphics->ResetVertexAttribArrays();
 
     hud_images.clear();
+    if (menu) graphics->setScissorTest(previous_scissor);
 }
 
 HUDImages::HUDImages() {}

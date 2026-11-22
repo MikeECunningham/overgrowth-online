@@ -29,6 +29,7 @@
 #include <Graphics/vboenums.h>
 
 #include <opengl.h>
+#include <cstddef>
 
 #ifndef V_MIBIBYTE
 #define V_MIBIBYTE 1024 * 1024
@@ -50,7 +51,7 @@ struct Allocation {
     GLuint offset;
     void* ptr;
 };
-Allocation Allocate(size_t size, size_t alignment);
+Allocation Allocate(std::size_t size, std::size_t alignment);
 void EndFrame();  // after the swap: fences this frame's writes
 uint64_t Frame();  // the current frame (frames ended so far)
 // Overgrowth Online (GL 4.6 stage 4a): an RGBA32F buffer texture over the whole

@@ -79,7 +79,7 @@ struct PlayerInput {
     typedef std::map<std::string, KeyState> KeyDownMap;
 
     // Set depending on if there is a purpose of polling for a local character,
-    // Usually set to false for controller 2-4 if split-screen is disabled.
+    // Additional local slots are disabled when they have no player.
     bool enabled;
 
     // Disable local processing of input for this PlayerInput, and instead expect input to

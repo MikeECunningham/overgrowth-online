@@ -84,6 +84,7 @@
 #include <Online/Message/combat_messages.h>
 #include <Online/Message/script_message.h>
 #include <Online/Message/edit_messages.h>
+#include <Online/Message/lobby_control.h>
 #include <Online/edit_sync.h>
 #include <set>
 
@@ -207,7 +208,8 @@ typedef OnlineMessageHandlerTemplate<
     BuildStateMessage,
     BuilderPresence,
     BuildRequest,
-    LevelFileChunk>
+    LevelFileChunk,
+    LobbyControl>
     OnlineMessageHandler;
 
 extern OnlineMessageHandler message_handler;
@@ -360,6 +362,7 @@ class Online {
     ZSTD_DCtx* zstdDContext;
 
     map<string, KeyState> client_key_down_map_state;
+    std::map<PlayerID, std::map<std::string, KeyState>> client_player_key_states_;
 
    public:
     static Online* Instance() {
@@ -543,12 +546,13 @@ class Online {
     void ReceiveSnapshots(PeerID from, const uint8_t* data, size_t size);
 
     // ---- The script API for mods (Online_* in asfuncs.cpp; Docs/Markdown/Overgrowth Online
-    // Script API.md). Players by the API's ids: the host 0, guests 1.. (inside, the host's
-    // PlayerID is 255 and a guest's peer is its player)
+    // Script API.md). The host's primary player is 0, guest primaries are 1..254,
+    // and additional local players are 256+. Messages run on the recipient's machine.
     static const int kScriptApiVersion = 1;
     static const size_t kScriptChannelMax = 64;
     static const size_t kScriptTextMax = 16384;
-    int ApiPlayerID(PlayerID id) const { return id == (PlayerID)-1 ? 0 : (int)id; }
+    int ApiPlayerID(PlayerID id) const { return id == 255 ? 0 : (int)id; }
+    PeerID ApiPlayerPeer(int player) const;  // zero when no such logical player exists
     int OwnApiPlayerID() const;
     std::vector<int> ApiPlayerIDs() const;
     std::string ApiPlayerName(int player) const;
@@ -819,11 +823,60 @@ class Online {
     void ApplyPlayerInput();
 
     PlayerState GetOwnPlayerState();
+    std::vector<PlayerState> GetLocalPlayerStates() const;
+    PeerID LocalPeerID() const;
+    unsigned LocalLobbyPlayerCount() const;
+    bool BeginLobby();
+    bool LobbyWaiting() const { return lobby_waiting_; }
+    PlayerID AddLocalLobbyPlayer(const std::string& name);
+    bool RenameLobbyPlayer(PlayerID id, const std::string& name);
+    bool SetLobbyTeam(PlayerID id, int team);
+    bool SetLobbyScreen(PlayerID id, int screen);
+    bool CanRemoveLobbyPlayer(PlayerID id) const;
+    bool RemoveLobbyPlayer(PlayerID id);
+    bool EndLobbyGame();
+    void ApplyLobbyAppearances(SceneGraph* scenegraph);
+    static vec3 LobbyTeamColor(int team);
+    bool SetLobbySelection(const std::string& mode, const std::string& campaign, const std::string& map, bool build);
+    bool SetLobbyAllowAllPause(bool allow);
+    bool SetLobbyForceTeams(bool force);
+    bool LobbyForceTeams() const { return lobby_force_teams_; }
+    bool UsesLobbyTeams() const;
+    int AssignedModeTeam(ObjectID avatar) const;
+    bool AssignModeTeams(const std::vector<std::pair<ObjectID, int>>& assignments);
+    void ApplyAssignedTeam(ObjectID avatar);
+    bool RequestPause(unsigned local_index, bool paused);
+    bool LobbyAllowAllPause() const { return lobby_allow_all_pause_; }
+    const std::string& LobbyMode() const { return lobby_mode_; }
+    const std::string& LobbyCampaign() const { return lobby_campaign_; }
+    const std::string& LobbyMap() const { return lobby_map_; }
+    bool LobbyBuild() const { return lobby_build_; }
+    bool StartLobbyGame(const std::string& level = "", const std::string& campaign = "", bool build = false);
+    void ReceiveLobbyControl(PeerID from, const std::string& payload);
+    void BroadcastLobby();
+    void EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& names, const std::vector<int>& screens = {});
+    void AssignPeerAvatars(PeerID peer);
+    std::vector<std::string> LocalLobbyNames() const;
+    std::vector<int> LocalLobbyScreens() const;
 
     // Host and Client use, used to convert a PlayerInput binding name to a shared integer representation.
     uint8_t GetBindID(string bind_name);
 
    private:
+    struct LocalLobbyProfile { std::string name; int screen = 1; };
+    std::vector<LocalLobbyProfile> local_lobby_profiles_;
+    bool lobby_waiting_ = false;
+    bool lobby_start_pending_ = false;
+    bool lobby_allow_all_pause_ = false;
+    bool lobby_force_teams_ = false;
+    std::unordered_map<CommonObjectID, int> mode_teams_;
+    bool lobby_build_ = false;
+    std::string lobby_mode_, lobby_campaign_, lobby_map_;
+    PlayerID next_local_player_id_ = 256;
+    std::string LobbyPayload() const;
+    void SubmitLobbyRequest(const std::string& payload);
+    void PrepareReturnToLobby();
+    void RemoveLocalLobbyProfile(unsigned index);
     // Explicitally disable copy constructors and assignment to prevent misuse.
     Online(const Online&) = delete;
     Online& operator=(const Online&) = delete;

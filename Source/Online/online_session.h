@@ -54,7 +54,7 @@ class OnlineMessageBase;
 /// Once leaving multiplayer this object will be deallocated.
 class OnlineSession {
    public:
-    PlayerID local_player_id = 0;  // TODO this will have to become an array to support multiple people per connection
+    PlayerID local_player_id = 0;  // primary local player, retained for P1 script APIs
 
     queue<AngelScriptUpdate> peer_queued_level_updates;
     queue<AngelScriptUpdate> peer_queued_sync_updates;

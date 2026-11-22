@@ -23,10 +23,12 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <sys/stat.h>
 #endif
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <vector>
@@ -136,12 +138,38 @@ bool Load() {
         }
     }
 #else
-    lib = Open(std::string(), "libglslang.so");
-    limits = lib ? Open(std::string(), "libglslang-default-resource-limits.so") : NULL;
-    g.from = "the library path";
+    std::vector<std::string> dirs;
+    char* base = SDL_GetBasePath();
+    if (base) {
+        dirs.push_back(base);
+        SDL_free(base);
+    }
+    const char* sdk = std::getenv("VULKAN_SDK");
+    if (sdk && *sdk) {
+        dirs.push_back(std::string(sdk) + "/lib");
+        dirs.push_back(std::string(sdk) + "/lib64");
+    }
+    dirs.push_back(std::string());  // The normal dynamic loader search path.
+    for (const std::string& dir : dirs) {
+        lib = Open(dir, "libglslang.so");
+        limits = lib ? Open(dir, "libglslang-default-resource-limits.so") : NULL;
+        if (lib && limits) {
+            g.from = dir.empty() ? "the library path" : dir;
+            break;
+        }
+        if (lib) {
+            dlclose(lib);
+            lib = NULL;
+        }
+    }
 #endif
     if (!lib || !limits) {
-        LOGE << "Vulkan: no glslang (glslang.dll and glslang-default-resource-limits.dll beside the game): programs missing from "
+#ifdef _WIN32
+        const char* libraries = "glslang.dll and glslang-default-resource-limits.dll";
+#else
+        const char* libraries = "libglslang.so and libglslang-default-resource-limits.so";
+#endif
+        LOGE << "Vulkan: no glslang (" << libraries << " beside the game or on the library path): programs missing from "
                 "the SPIR-V build can't be made"
              << std::endl;
         return false;
@@ -575,6 +603,17 @@ std::string ShippedDir() {
                 dir = std::string(UTF8fromUTF16(folder).c_str()) + "/";
                 LOGI << "Vulkan: shipped shaders in " << dir << std::endl;
             }
+        }
+    }
+#else
+    char* base = SDL_GetBasePath();
+    if (base) {
+        const std::string folder = std::string(base) + "Data/VulkanShaders";
+        SDL_free(base);
+        struct stat attributes;
+        if (stat(folder.c_str(), &attributes) == 0 && S_ISDIR(attributes.st_mode)) {
+            dir = folder + "/";
+            LOGI << "Vulkan: shipped shaders in " << dir << std::endl;
         }
     }
 #endif

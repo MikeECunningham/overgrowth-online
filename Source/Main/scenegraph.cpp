@@ -80,6 +80,7 @@ extern Timer game_timer;
 #include <UserInput/input.h>
 #include <Sound/sound.h>
 #include <Game/level.h>
+#include <Online/online.h>
 #include <Utility/assert.h>
 #include <GUI/gui.h>
 
@@ -1632,6 +1633,46 @@ vec3 SceneGraph::GetColorAtPoint(const vec3& pos) {
 void SceneGraph::UpdatePhysicsTransforms() {
     for (auto& visible_static_meshe : visible_static_meshes_) {
         visible_static_meshe->UpdatePhysicsTransform();
+    }
+}
+
+void SceneGraph::GetPlayerCharacterIDs(std::vector<int>& avatar_ids) {
+    avatar_ids.clear();
+    for (Object* object : movement_objects_) {
+        auto* movement_object = static_cast<MovementObject*>(object);
+        if (movement_object->is_player) {
+            avatar_ids.push_back(movement_object->GetID());
+        }
+    }
+
+    // An actor inserted or reordered by a script must not steal another local
+    // player's controller or screen. Initial equal IDs retain their level order.
+    auto controller_order = [this](int lhs, int rhs) {
+        auto* left = static_cast<MovementObject*>(GetObjectFromID(lhs));
+        auto* right = static_cast<MovementObject*>(GetObjectFromID(rhs));
+        return left->controller_id < right->controller_id;
+    };
+    if (!Online::Instance()->IsActive() &&
+        !std::is_sorted(avatar_ids.begin(), avatar_ids.end(), controller_order)) {
+        std::stable_sort(avatar_ids.begin(), avatar_ids.end(), controller_order);
+    }
+}
+
+void SceneGraph::GetNPCCharacterIDs(std::vector<int>& avatar_ids) {
+    avatar_ids.clear();
+    for (Object* object : movement_objects_) {
+        auto* movement_object = static_cast<MovementObject*>(object);
+        if (!movement_object->is_player) {
+            avatar_ids.push_back(movement_object->GetID());
+        }
+    }
+}
+
+void SceneGraph::GetCharacterIDs(std::vector<int>& avatar_ids) {
+    avatar_ids.clear();
+    for (Object* object : movement_objects_) {
+        auto* movement_object = static_cast<MovementObject*>(object);
+        avatar_ids.push_back(movement_object->GetID());
     }
 }
 

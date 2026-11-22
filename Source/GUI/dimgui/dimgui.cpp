@@ -1882,7 +1882,8 @@ void DrawImGuiCameraPreview(Engine* engine, SceneGraph* scenegraph_, Graphics* g
                 graphics->startDraw(vec2(top_left[0], top_left[1]),
                                     vec2(bottom_right[0], bottom_right[1]),
                                     Graphics::kWindow);
-                ActiveCameras::Set(2);
+                const int previous_camera_id = ActiveCameras::GetID();
+                ActiveCameras::SetPreview();
                 ActiveCameras::Get()->SetFlags(Camera::kPreviewCamera);
 
                 // Apply camera object settings to camera
@@ -1931,6 +1932,7 @@ void DrawImGuiCameraPreview(Engine* engine, SceneGraph* scenegraph_, Graphics* g
                 ((PlaceholderObject*)cam_object)->SetVisible(true);
                 cam_object->editor_visible = true;
                 graphics->SetMediaMode(media_mode);
+                ActiveCameras::Set(previous_camera_id);
                 PopGPUProfileRange();
             }
         }
@@ -4160,13 +4162,12 @@ Mark Stockton\nMikko Tarmia\nDavid Lyhed Danielsson");
 
         if (ImGui::TreeNode("Player Characters")) {
             if (scenegraph != nullptr) {
-                int num_avatars;
-                int avatar_ids[256];
+                std::vector<int> avatar_ids;
 
-                scenegraph->GetPlayerCharacterIDs(&num_avatars, avatar_ids, 256);
+                scenegraph->GetPlayerCharacterIDs(avatar_ids);
 
-                for (int i = 0; i < num_avatars; i++) {
-                    MovementObject* avatar = static_cast<MovementObject*>(scenegraph->GetObjectFromID(engine->avatar_ids[i]));
+                for (int avatar_id : avatar_ids) {
+                    MovementObject* avatar = static_cast<MovementObject*>(scenegraph->GetObjectFromID(avatar_id));
 
                     ImGui::Text("ID %d", avatar->GetID());
                     ImGui::Text("Name %s", avatar->GetName().c_str());
@@ -4181,13 +4182,12 @@ Mark Stockton\nMikko Tarmia\nDavid Lyhed Danielsson");
 
         if (ImGui::TreeNode("NPC Characters")) {
             if (scenegraph != nullptr) {
-                int num_avatars;
-                int avatar_ids[256];
+                std::vector<int> avatar_ids;
 
-                scenegraph->GetNPCCharacterIDs(&num_avatars, avatar_ids, 256);
+                scenegraph->GetNPCCharacterIDs(avatar_ids);
 
-                for (int i = 0; i < num_avatars; i++) {
-                    MovementObject* avatar = static_cast<MovementObject*>(scenegraph->GetObjectFromID(engine->avatar_ids[i]));
+                for (int avatar_id : avatar_ids) {
+                    MovementObject* avatar = static_cast<MovementObject*>(scenegraph->GetObjectFromID(avatar_id));
 
                     ImGui::Text("ID %d", avatar->GetID());
                     ImGui::Text("Name %s", avatar->GetName().c_str());
@@ -4201,12 +4201,11 @@ Mark Stockton\nMikko Tarmia\nDavid Lyhed Danielsson");
 
         if (ImGui::TreeNode("Character Graphs")) {
             if (scenegraph != nullptr) {
-                int num_avatars;
-                int avatar_ids[256];
+                std::vector<int> avatar_ids;
 
-                scenegraph->GetCharacterIDs(&num_avatars, avatar_ids, 256);
+                scenegraph->GetCharacterIDs(avatar_ids);
 
-                for (int i = 0; i < num_avatars; i++) {
+                for (size_t i = 0; i < avatar_ids.size(); i++) {
                     float pending_bones = 0.0f;
 
                     std::stringstream ss;

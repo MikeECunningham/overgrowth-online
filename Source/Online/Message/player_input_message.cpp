@@ -27,11 +27,11 @@
 #include <Utility/binn_util.h>
 
 namespace OnlineMessages {
-PlayerInputMessage::PlayerInputMessage(float depth, uint16_t depth_count, uint16_t count, uint8_t id) : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT),
+PlayerInputMessage::PlayerInputMessage(float depth, uint16_t depth_count, uint16_t count, uint8_t id, PlayerID player_id) : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT),
                                                                                                         depth(depth),
                                                                                                         depth_count(depth_count),
                                                                                                         count(count),
-                                                                                                        id(id) {
+                                                                                                        id(id), player_id(player_id) {
 }
 
 binn* PlayerInputMessage::Serialize(void* object) {
@@ -42,6 +42,7 @@ binn* PlayerInputMessage::Serialize(void* object) {
     binn_object_set_uint16(l, "depth_count", t->depth_count);
     binn_object_set_uint16(l, "count", t->count);
     binn_object_set_uint8(l, "id", t->id);
+    binn_object_set_uint32(l, "player_id", t->player_id);
 
     return l;
 }
@@ -53,6 +54,7 @@ void PlayerInputMessage::Deserialize(void* object, binn* l) {
     binn_object_get_uint16(l, "depth_count", &t->depth_count);
     binn_object_get_uint16(l, "count", &t->count);
     binn_object_get_uint8(l, "id", &t->id);
+    binn_object_get_uint32(l, "player_id", &t->player_id);
 }
 
 void PlayerInputMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {
@@ -63,8 +65,10 @@ void PlayerInputMessage::Execute(const OnlineMessageRef& ref, void* object, Peer
         return;
     }
 
-    // TODO We'll need to replace PeerID with a player ID in order to support multiple inputs
-    Online::Instance()->online_session->player_inputs[from].push_back(ref);
+    Online* online = Online::Instance();
+    auto found = online->online_session->player_states.find(t->player_id);
+    if (!online->IsHosting() || found == online->online_session->player_states.end() || found->second.peer_id != from) return;
+    online->online_session->player_inputs[t->player_id].push_back(ref);
 }
 
 void* PlayerInputMessage::Construct(void* mem) {

@@ -47,6 +47,7 @@ void PCSLoadingCompletedMessage::Deserialize(void* object, binn* l) {
 
 void PCSLoadingCompletedMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {
     PCSLoadingCompletedMessage* t = static_cast<PCSLoadingCompletedMessage*>(object);
+    if (Online::Instance()->LobbyWaiting()) return;
 
     if (Online::Instance()->IsHosting()) {
         if (Online::Instance()->level_name == t->level_name) {

@@ -32,6 +32,7 @@
 
 #include <vector>
 #include <list>
+#include <algorithm>
 #include <emmintrin.h>
 
 class CameraObject;
@@ -359,10 +360,22 @@ class ActiveCameras {
 
     std::list<Camera> cameras;
     std::vector<Camera*> camera_ptrs;
+    Camera preview_camera;
     Camera* active;
     int active_id;
 
     void mSet(int which) {
+        if (which == kPreviewCameraId) {
+            active = &preview_camera;
+            active_id = which;
+            return;
+        }
+        // A virtual ID must never resize the local-camera list to its tagged
+        // value. Virtual cameras are looked up through GetCamera instead.
+        if (which < 0 || which >= kVirtualCameraBase) {
+            LOG_ASSERT(false);
+            return;
+        }
         if (which >= (int)cameras.size()) {
             cameras.resize(which + 1);
             camera_ptrs.resize(cameras.size());
@@ -377,6 +390,11 @@ class ActiveCameras {
     }
 
    public:
+    // Keep remote character cameras out of the local render-camera namespace.
+    // The original base of 255 collided as soon as that many locals existed.
+    static constexpr int kVirtualCameraBase = 1 << 30;
+    static constexpr int kPreviewCameraId = -2;
+
     std::vector<Camera>& GetVirtualCameras() {
         return virtual_cameras;
     }
@@ -391,13 +409,17 @@ class ActiveCameras {
             virtual_camera_index = (int)virtual_cameras.size() - 1;
         }
 
-        return virtual_camera_index + 255;
+        return virtual_camera_index + kVirtualCameraBase;
     }
 
     void FreeVirtualCameraInstance(int index) {
-        int virtual_camera_index = index - 255;
+        if (index < kVirtualCameraBase) {
+            return;
+        }
+        int virtual_camera_index = index - kVirtualCameraBase;
 
-        if (virtual_camera_index >= 0) {
+        if (virtual_camera_index < static_cast<int>(virtual_cameras.size()) &&
+            std::find(free_virtual_cameras.begin(), free_virtual_cameras.end(), virtual_camera_index) == free_virtual_cameras.end()) {
             free_virtual_cameras.push_back(virtual_camera_index);
         }
     }
@@ -412,22 +434,24 @@ class ActiveCameras {
     }
 
     static Camera* GetCamera(int camera_id) {
-        if (camera_id >= 255) {
-            int virtual_camera_index = camera_id - 255;
+        if (camera_id == kPreviewCameraId) {
+            return &Instance()->preview_camera;
+        }
+        if (camera_id >= kVirtualCameraBase) {
+            int virtual_camera_index = camera_id - kVirtualCameraBase;
 
-            if (virtual_camera_index >= 0 && virtual_camera_index < Instance()->virtual_cameras.size()) {
+            if (virtual_camera_index < static_cast<int>(Instance()->virtual_cameras.size())) {
                 return &Instance()->virtual_cameras[virtual_camera_index];
             } else {
                 return nullptr;
             }
         } else {
 #ifdef DEBUG
-            if (NumCameras() <= camera_id) {
+            if (camera_id >= 0 && NumCameras() <= camera_id) {
                 LOGW << "Trying to get camera with id " << camera_id << ", but only " << NumCameras() << " are available" << std::endl;
-                return Instance()->camera_ptrs[camera_id];
             }
 #endif
-            if (camera_id >= 0 && camera_id < Instance()->camera_ptrs.size()) {
+            if (camera_id >= 0 && camera_id < static_cast<int>(Instance()->camera_ptrs.size())) {
                 return Instance()->camera_ptrs[camera_id];
             } else {
                 return nullptr;
@@ -461,10 +485,24 @@ class ActiveCameras {
         Instance()->mSet(which);
     }
 
+    static void SetPreview() {
+        Set(kPreviewCameraId);
+    }
+
+    void ResetLocalCameras() {
+        cameras.clear();
+        camera_ptrs.clear();
+        preview_camera = Camera();
+        // Online virtual cameras belong to the session, which can span levels.
+        mSet(0);
+    }
+
     void Dispose() {
         virtual_cameras.clear();
+        free_virtual_cameras.clear();
         cameras.clear();
         camera_ptrs.clear();
         active = NULL;
+        active_id = 0;
     }
 };

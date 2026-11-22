@@ -43,36 +43,23 @@ void StateVersionCheck::OnEnter() {
 
 BaseState<PendingConnection>* StateVersionCheck::OnUpdate() {
     if (actor->received_version) {
-        // Does the client have the same version as us?
-        bool same_build = actor->build_id == GetBuildID();
-
-        // Is there an editor build doing the version check? Allow it, but send a warning.
-        if (!same_build && (actor->build_id == -1 || GetBuildID() == -1)) {
-            Online::Instance()->SendRawChatMessage("[Warning] Client with another version connected, but was granted access since the host or client is running a Development version");
-            same_build = true;
-        }
-
-        if (same_build) {
-            // Overgrowth Online: every build of ours has the same build id; the
-            // package version decides (an older client sends none)
-            const std::string ours = OnlineUtility::GetOvergrowthOnlineVersion();
-            if (actor->oo_version == ours) {
-                return new StateHandshake();
+        // Release + wire protocol decide compatibility. A CI build number is
+        // diagnostic metadata and cannot override an incompatible identity.
+        const std::string& ours = GetNetworkVersion();
+        if (IsNetworkVersionCompatible(actor->oo_version)) {
+            if (actor->build_id != GetBuildID()) {
+                LOGI << "Matching Overgrowth Online " << ours << " with different build IDs: client "
+                     << actor->build_id << ", host " << GetBuildID() << std::endl;
             }
-
-            const std::string theirs = actor->oo_version.empty() ? "an older version" : actor->oo_version;
-            Online::Instance()->AddLocalChatMessage("A player with Overgrowth Online " + theirs + " tried to join; you have " +
-                                                    (ours.empty() ? std::string("no version") : ours) + ". Everyone needs the same version.");
-            LOGI << "Overgrowth Online version mismatch: client " << theirs << ", host " << ours << std::endl;
-            bool client_older = OnlineUtility::CompareVersions(actor->oo_version, ours) < 0;
-            Online::Instance()->CloseConnection(actor->net_connection_id, client_older ? ConnectionClosedReason::CLIENT_OUTDATED
-                                                                                       : ConnectionClosedReason::SERVER_OUTDATED);
-            return nullptr;
+            return new StateHandshake();
         }
-
-        // Failed version check, close connection
-        ConnectionClosedReason reason = (actor->build_id < GetBuildID()) ? ConnectionClosedReason::CLIENT_OUTDATED : ConnectionClosedReason::SERVER_OUTDATED;
-        Online::Instance()->CloseConnection(actor->net_connection_id, reason);
+        const std::string theirs = actor->oo_version.empty() ? "an older version" : actor->oo_version;
+        Online::Instance()->AddLocalChatMessage("A player with Overgrowth Online " + theirs + " tried to join; you have " +
+                                               ours + ". Everyone needs the same version and network protocol.");
+        LOGI << "Overgrowth Online version mismatch: client " << theirs << ", host " << ours << std::endl;
+        const bool client_older = OnlineUtility::CompareVersions(actor->oo_version, ours) < 0;
+        Online::Instance()->CloseConnection(actor->net_connection_id, client_older ? ConnectionClosedReason::CLIENT_OUTDATED
+                                                                                 : ConnectionClosedReason::SERVER_OUTDATED);
         return nullptr;
     }
     return this;
@@ -100,9 +87,18 @@ BaseState<PendingConnection>* StateHandshake::OnUpdate() {
             return new StateSuspended();
         }
 
-        return new StateSync();
+        Peer* peer = Online::Instance()->GetPeerFromConnection(actor->net_connection_id);
+        if (peer == nullptr) return nullptr;
+        actor->player_id = peer->peer_id;
+        Online::Instance()->SendTo<OnlineMessages::PCSAssignPlayerID>(actor->net_connection_id, actor->player_id);
+        Online::Instance()->EstablishPeerPlayers(peer->peer_id, actor->local_names.empty() ? std::vector<std::string>{actor->player_name} : actor->local_names, actor->local_screens);
+        return Online::Instance()->LobbyWaiting() ? static_cast<BaseState<PendingConnection>*>(new StateLobbyWaiting()) : new StateSync();
     }
     return this;
+}
+
+BaseState<PendingConnection>* StateLobbyWaiting::OnUpdate() {
+    return Online::Instance()->LobbyWaiting() || Online::Instance()->level_name.empty() ? this : static_cast<BaseState<PendingConnection>*>(new StateSync());
 }
 
 // ---------------- StateSync ----------------
@@ -137,29 +133,13 @@ BaseState<PendingConnection>* StateWaiting::OnUpdate() {
 // ---------------- StateEstablished ----------------
 
 void StateEstablished::OnEnter() {
-    actor->player_id = Online::Instance()->GetPeerFromConnection(actor->net_connection_id)->peer_id;  // TODO We assume that peer_id == player_id here
-    Online::Instance()->SendTo<OnlineMessages::PCSAssignPlayerID>(actor->net_connection_id, actor->player_id);
-
-    // Create player state for the new player
-    PlayerState player_state;
-    player_state.playername = actor->player_name;
-    player_state.object_id = -1;  // no character yet (ownership looks avatars up by id)
-    Online::Instance()->online_session->player_states[actor->player_id] = player_state;
-    Online::Instance()->Send<OnlineMessages::SetPlayerState>(actor->player_id, &player_state);
-
-    Online::Instance()->Send<OnlineMessages::PCSLoadingCompletedMessage>();
-
-    // Create new controllers, assign them via player_id
-    Online::Instance()->AssignNewControllerForPlayer(actor->player_id);
-
-    // "Reserve" character for peer
-    ObjectID free_id = Online::Instance()->GetFreeAvatarID();
-    if (free_id == -1) {
-        free_id = Online::Instance()->CreateCharacter();
-    }
-
-    // Posess avatar
-    Online::Instance()->PossessAvatar(actor->player_id, free_id);
+    Online* online = Online::Instance();
+    Peer* peer = online->GetPeerFromConnection(actor->net_connection_id);
+    if (peer == nullptr) return;
+    actor->player_id = peer->peer_id;
+    online->AssignPeerAvatars(peer->peer_id);
+    online->Send<OnlineMessages::PCSLoadingCompletedMessage>();
+    online->BroadcastLobby();
 
     // Display Join Message
     Online::Instance()->SendRawChatMessage(actor->player_name + " just joined!");

@@ -51,6 +51,8 @@
 #include <Graphics/shaders.h>
 #include <Graphics/textures.h>
 #include <Graphics/vboringcontainer.h>
+#include <UserInput/input.h>
+#include <Internal/filesystem.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -62,6 +64,12 @@ static double g_Time = 0.0f;
 static bool g_MousePressed[3] = {false, false, false};
 static float g_MouseWheel = 0.0f;
 static TextureRef g_FontTexture;
+static ImFont* g_MenuBodyFont = nullptr;
+static ImFont* g_MenuHeadingFont = nullptr;
+
+ImFont* ImGui_ImplSdlGL3_MenuFont(bool heading) {
+    return heading ? g_MenuHeadingFont : g_MenuBodyFont;
+}
 
 // This is the main rendering function that you have to implement and provide to ImGui (via setting up 'RenderDrawListsFn' in the ImGuiIO structure)
 // If text or lines are blurry when integrating ImGui in your engine:
@@ -256,6 +264,18 @@ void ImGui_ImplSdlGL3_InvalidateDeviceObjects() {
 
 bool ImGui_ImplSdlGL3_Init(SDL_Window* window) {
     ImGuiIO& io = ImGui::GetIO();
+    // Retain the editor's default font; game menus opt into their own faces.
+    io.FontDefault = io.Fonts->AddFontDefault();
+    g_MenuBodyFont = g_MenuHeadingFont = io.FontDefault;
+    const Path body = FindFilePath("Data/Fonts/OpenSans-Regular.ttf", kAnyPath, false);
+    const Path heading = FindFilePath("Data/Fonts/edosz.ttf", kAnyPath, false);
+    if (body.isValid()) {
+        if (ImFont* font = io.Fonts->AddFontFromFileTTF(body.GetFullPath(), 16.0f)) g_MenuBodyFont = font;
+    }
+    if (heading.isValid()) {
+        if (ImFont* font = io.Fonts->AddFontFromFileTTF(heading.GetFullPath(), 22.0f)) g_MenuHeadingFont = font;
+    }
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     io.KeyMap[ImGuiKey_Tab] = KeyRemap(SDLK_TAB);  // Keyboard mapping. ImGui will use those indices to peek into the io.KeyDown[] array.
     io.KeyMap[ImGuiKey_LeftArrow] = KeyRemap(SDLK_LEFT);
     io.KeyMap[ImGuiKey_RightArrow] = KeyRemap(SDLK_RIGHT);
@@ -300,6 +320,39 @@ void ImGui_ImplSdlGL3_Shutdown() {
     ImGui_ImplSdlGL3_InvalidateDeviceObjects();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
+}
+
+static float MenuInputDepth(const PlayerInput& input, const char* binding) {
+    const auto key = input.key_down.find(binding);
+    if (key == input.key_down.end() || key->second.count <= 0) return 0.0f;
+    const float value = key->second.depth;
+    return value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
+}
+
+static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
+    for (int i = 0; i < ImGuiNavInput_COUNT; ++i) io.NavInputs[i] = 0.0f;
+    io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+    // Use the local P1 slot, not whichever SDL pad was connected first. A pad
+    // that joined as P2 must not navigate the hosting options for everyone.
+    const PlayerInput* input = Input::Instance()->GetController(0);
+    if (ignore_input || input == nullptr || !input->enabled || input->remote_controlled) return;
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    io.NavInputs[ImGuiNavInput_Activate] = MenuInputDepth(*input, "menu_return");
+    io.NavInputs[ImGuiNavInput_Cancel] = MenuInputDepth(*input, "menu_cancel");
+    io.NavInputs[ImGuiNavInput_Input] = MenuInputDepth(*input, "menu_input");
+    io.NavInputs[ImGuiNavInput_Menu] = MenuInputDepth(*input, "menu_window");
+    io.NavInputs[ImGuiNavInput_DpadLeft] = MenuInputDepth(*input, "menu_left");
+    io.NavInputs[ImGuiNavInput_DpadRight] = MenuInputDepth(*input, "menu_right");
+    io.NavInputs[ImGuiNavInput_DpadUp] = MenuInputDepth(*input, "menu_up");
+    io.NavInputs[ImGuiNavInput_DpadDown] = MenuInputDepth(*input, "menu_down");
+    io.NavInputs[ImGuiNavInput_LStickLeft] = MenuInputDepth(*input, "left");
+    io.NavInputs[ImGuiNavInput_LStickRight] = MenuInputDepth(*input, "right");
+    io.NavInputs[ImGuiNavInput_LStickUp] = MenuInputDepth(*input, "up");
+    io.NavInputs[ImGuiNavInput_LStickDown] = MenuInputDepth(*input, "down");
+    io.NavInputs[ImGuiNavInput_FocusPrev] = MenuInputDepth(*input, "menu_prev_tab");
+    io.NavInputs[ImGuiNavInput_FocusNext] = MenuInputDepth(*input, "menu_next_tab");
+    io.NavInputs[ImGuiNavInput_TweakSlow] = MenuInputDepth(*input, "menu_prev_tab");
+    io.NavInputs[ImGuiNavInput_TweakFast] = MenuInputDepth(*input, "menu_next_tab");
 }
 
 void ImGui_ImplSdlGL3_NewFrame(SDL_Window* window, bool ignore_mouse) {
@@ -359,5 +412,6 @@ void ImGui_ImplSdlGL3_NewFrame(SDL_Window* window, bool ignore_mouse) {
     // SDL_ShowCursor(io.MouseDrawCursor ? 0 : 1);
 
     // Start the frame
+    UpdateMenuNavigation(io, ignore_mouse);
     ImGui::NewFrame();
 }

@@ -44,6 +44,7 @@ class FontRenderer {
     int GetFontInfo(int font_face_id, FontInfo font_info);
     void SetTransform(int face_id, FT_Matrix* matrix, FT_Vector* vector);
     FT_GlyphSlot RenderCharacterBitmap(int face_id, uint32_t character, RCB_Flags flags);
+    FT_GlyphSlot RenderAtlasCharacterBitmap(int face_id, uint32_t character);
 
     static FontRenderer* Instance(FontRenderer* ptr = NULL) {
         static FontRenderer* font_renderer = NULL;

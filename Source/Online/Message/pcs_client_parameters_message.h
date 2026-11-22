@@ -29,6 +29,8 @@ class PCSClientParametersMessage : public OnlineMessageBase {
    public:
     std::string player_name;
     std::string enabled_mods_string;
+    std::vector<std::string> local_names;
+    std::vector<int> local_screens;
 
    public:
     PCSClientParametersMessage(const std::string& player_name, const std::string& enabled_mods_string);

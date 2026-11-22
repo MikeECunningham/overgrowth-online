@@ -36,6 +36,7 @@
 #include <GUI/gui.h>
 #include <GUI/widgetframework.h>
 #include <GUI/scriptable_ui.h>
+#include <GUI/local_player_menus.h>
 #include <GUI/dimgui/dimgui.h>
 #include <GUI/dimgui/modmenu.h>
 #include <GUI/dimgui/imgui_impl_sdl_gl3.h>
@@ -50,6 +51,7 @@
 #include <Graphics/retargetfile.h>
 #include <Graphics/sky.h>
 #include <Graphics/camera.h>
+#include <Graphics/local_viewport.h>
 #include <Graphics/shaders.h>
 #include <Graphics/font_renderer.h>
 #include <Graphics/simplify.hpp>
@@ -125,6 +127,7 @@
 #include <Utility/strings.h>
 
 #include <Online/online.h>
+#include <Scripting/angelscript/lobby_bindings.h>
 #include <Online/online_utility.h>
 
 #include <UserInput/keyTranslator.h>
@@ -144,6 +147,7 @@
 #include <SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 extern char imgui_ini_path[kPathSize];
@@ -552,8 +556,10 @@ std::ostream& operator<<(std::ostream& out, const EngineState& in) {
 }
 
 Engine* Engine::instance_ = NULL;
+Engine::~Engine() = default;
 
 void Engine::Dispose() {
+    player_menus_.reset();
     ModLoading::Instance().DeRegisterCallback(this);
     ModLoading::Instance().Dispose();
 
@@ -737,6 +743,7 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
                     PROFILER_ZONE(g_profiler_ctx, "ImGui_ImplSdlGL3_ProcessEvent");
                     ProcessEventImGui(&event);
                 }
+                input->RecordKeyboardJoinEvent(event);
                 // Redirect input events to the controller
                 switch (event.type) {
                     case SDL_WINDOWEVENT:
@@ -780,6 +787,8 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
         }
         input->ignore_mouse_frame = false;
 
+        UpdateLocalLobbyInput();
+        input->SetKeyboardMenuNavigationShared(!level_loaded_ || waiting_for_input_);
         Input::Instance()->ProcessControllers(timestep);
         PlayerInput* controller = Input::Instance()->GetController(0);
         static const std::string kSlow = "slow";
@@ -932,7 +941,28 @@ void Engine::HandleRabbotToggleControls() {
     if (!rabbot_mode && keyboard.wasScancodePressed(SDL_SCANCODE_8, KIMF_PLAYING | KIMF_LEVEL_EDITOR_GENERAL)) {
         scenegraph_->map_editor->SendInRabbot();
     }
-    int menu_player = Input::Instance()->PlayerOpenedMenu();
+    // Each local input owns an independent menu context. Process every Start
+    // press in the same tick, including simultaneous presses on different pads.
+    bool personal_menus = (current_engine_state_.type == kEngineLevelState ||
+                           current_engine_state_.type == kEngineEditorLevelState) && rabbot_mode;
+    if (personal_menus) {
+        if (!player_menus_) player_menus_.reset(new LocalPlayerMenus(*this));
+        Input* input = Input::Instance();
+        for (unsigned local = 0; local < input->GetNumLocalPlayers(); ++local) {
+            const int actual = input->GetLocalPlayerInputID(local);
+            PlayerInput* controller = input->GetController(actual);
+            if (controller == nullptr || !controller->enabled || controller->remote_controlled) continue;
+            const auto pressed = controller->key_down.find("quit");
+            if (pressed != controller->key_down.end() && pressed->second.count == 1) {
+                if (!player_menus_->Toggle(actual)) personal_menus = false;
+                Graphics::Instance()->SetMediaMode(false);
+            }
+        }
+        player_menus_->Update();
+    } else if (player_menus_ && player_menus_->AnyOpen()) {
+        player_menus_->Clear();
+    }
+    int menu_player = personal_menus ? -1 : Input::Instance()->PlayerOpenedMenu();
     if (menu_player != -1 && (current_menu_player == -1 || current_menu_player == menu_player)) {
         if (rabbot_mode) {
             if (current_engine_state_.type == kEngineEditorLevelState) {
@@ -1752,6 +1782,7 @@ const char* stress_levels[] = {
 
 // Update the simulation
 void Engine::Update() {
+    UpdateLocalLobbyInput();
     game_timer.UpdateWallTime();
 
     PROFILER_ZONE(g_profiler_ctx, "Update");
@@ -1928,7 +1959,11 @@ void Engine::Update() {
                 switch (final_state_pop.type) {
                     case kEngineLevelState:
                     case kEngineEditorLevelState:
-                        Input::Instance()->SetUpForXPlayers(0);
+                        if (Online::Instance()->IsActive() && Online::Instance()->LobbyWaiting()) {
+                            Input::Instance()->SetUpForXPlayers(Online::Instance()->LocalLobbyPlayerCount(), true);
+                        } else {
+                            Input::Instance()->SetUpForXPlayers(0);
+                        }
                         current_menu_player = -1;
                         break;
                     case kEngineScriptableUIState:
@@ -2294,6 +2329,17 @@ void Engine::Update() {
 
     asset_manager.Update();
     as_network.Update();
+
+    // Multiplayer menus do not pause the world, so CommitPause need not run
+    // when they close. Release their input owner on the actual focus transition.
+    const bool has_owned_ui = scenegraph_ != nullptr && scenegraph_->level != nullptr && scenegraph_->level->HasScriptFocus();
+    if (has_owned_ui) {
+        tracked_level_focus_ = true;
+    } else if (tracked_level_focus_) {
+        current_menu_player = -1;
+        tracked_level_focus_ = false;
+    }
+    if (player_menus_) player_menus_->ResolveCursor();
 
     UpdateImGui();
     if (Online::Instance() != nullptr) {
@@ -3351,50 +3397,22 @@ void Engine::DrawLoadScreen(bool loading_in_progress) {
 
 void Engine::SetViewportForCamera(int which_cam, int num_screens, Graphics::ScreenType screen_type) {
     Graphics* graphics = Graphics::Instance();
-    switch (which_cam) {
-        case 0:  // Draw the first screen, which might take up the whole viewport, or just half
-            if (num_screens == 1) {
-                active_screen_start = vec2(0.0f, 0.0f);
-                active_screen_end = vec2(1.0f, 1.0f);
-            } else if (num_screens == 2) {
-                active_screen_start = vec2(0.0f, 0.0f);
-                active_screen_end = vec2(1.0f, 0.5f);
-            } else if (num_screens == 3 || num_screens == 4) {
-                active_screen_start = vec2(0.0f, 0.0f);
-                active_screen_end = vec2(0.5f, 0.5f);
-            }
-            break;
-        case 1:  // The second screen always just takes half the viewport
-            if (num_screens == 2) {
-                active_screen_start = vec2(0.0f, 0.5f);
-                active_screen_end = vec2(1.0f, 1.0f);
-            } else if (num_screens == 3 || num_screens == 4) {
-                active_screen_start = vec2(0.5f, 0.0f);
-                active_screen_end = vec2(1.0f, 0.5f);
-            }
-            break;
-        case 2:
-            active_screen_start = vec2(0.0f, 0.5f);
-            active_screen_end = vec2(0.5f, 1.0f);
-            break;
-        case 3:
-            active_screen_start = vec2(0.5f, 0.5f);
-            active_screen_end = vec2(1.0f, 1.0f);
-            break;
-    }
-
+    const LocalViewports::Rect rect = LocalViewports::ForPlayer(which_cam, num_screens);
+    active_screen_start = vec2(rect.left, rect.bottom);
+    active_screen_end = vec2(rect.right, rect.top);
     graphics->startDraw(active_screen_start, active_screen_end, screen_type);
 }
 
 void Engine::DrawCubeMap(TextureRef cube_map, const vec3& pos, SceneGraph::SceneDrawType scene_draw_type) {
     Graphics* graphics = Graphics::Instance();
+    const int previous_camera_id = ActiveCameras::GetID();
+    ActiveCameras::SetPreview();
     CHECK_GL_ERROR();
     // TODO: Why do we have to render the first one twice? Some state is messed up
     for (int temp_i = -1; temp_i < 6; ++temp_i) {
         PROFILER_GPU_ZONE(g_profiler_ctx, "Draw cubemap face")
         int i = max(0, temp_i);
         graphics->startDraw(vec2(0.0f, 0.0f), vec2(128.0f, 128.0f), Graphics::kTexture);
-        ActiveCameras::Set(1);
         CHECK_GL_ERROR();
         ActiveCameras::Get()->SetFlags(Camera::kPreviewCamera);
         // Apply camera object settings to camera
@@ -3436,6 +3454,7 @@ void Engine::DrawCubeMap(TextureRef cube_map, const vec3& pos, SceneGraph::Scene
 
         camera->flexible_fov = true;
     }
+    ActiveCameras::Set(previous_camera_id);
     CHECK_GL_ERROR();
 }
 
@@ -4265,7 +4284,130 @@ void Engine::NewLevel() {
 }
 
 bool Engine::GetSplitScreen() const {
-    return forced_split_screen_mode == kForcedModeSplit || (forced_split_screen_mode == kForcedModeNone && Graphics::Instance()->config_.split_screen());
+    return (Online::Instance()->IsActive() && Online::Instance()->LocalLobbyPlayerCount() > 1) ||
+           (debug_local_split_screen_ && !Online::Instance()->IsActive()) ||
+           forced_split_screen_mode == kForcedModeSplit ||
+           (forced_split_screen_mode == kForcedModeNone && Graphics::Instance()->config_.split_screen());
+}
+
+int Engine::DebugLocalPlayerCount() const {
+    if (!level_loaded_ || scenegraph_ == nullptr || Online::Instance()->IsActive()) {
+        return 0;
+    }
+    std::vector<int> players;
+    scenegraph_->GetPlayerCharacterIDs(players);
+    return static_cast<int>(players.size());
+}
+
+int Engine::DebugAddLocalPlayer() {
+    if (!level_loaded_ || scenegraph_ == nullptr || scenegraph_->level == nullptr ||
+        scenegraph_->map_editor->state_ != MapEditor::kInGame || Online::Instance()->IsActive()) {
+        return -1;
+    }
+
+    std::vector<int> players;
+    scenegraph_->GetPlayerCharacterIDs(players);
+    if (players.empty()) {
+        return -1;
+    }
+
+    // Reuse the fork's ground/hazard checks. Try around existing players so a
+    // growing group can spread out, instead of reusing eight overlapping spots.
+    MovementObject* anchor = nullptr;
+    vec3 spawn;
+    for (int id : players) {
+        MovementObject* candidate_anchor = static_cast<MovementObject*>(scenegraph_->GetObjectFromID(id));
+        if (candidate_anchor == nullptr || candidate_anchor->network_proxy) {
+            continue;
+        }
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            if (!Online::Instance()->FindSafeSpot(candidate_anchor->position, candidate_anchor->GetFacing(),
+                                                  1 + (static_cast<int>(players.size()) + attempt) % 8, &spawn)) {
+                continue;
+            }
+            bool occupied = false;
+            for (auto* character : scenegraph_->movement_objects_) {
+                vec3 offset = static_cast<MovementObject*>(character)->position - spawn;
+                if (std::fabs(offset.y()) < 1.5f && offset.x() * offset.x() + offset.z() * offset.z() < 1.0f) {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (!occupied) {
+                anchor = candidate_anchor;
+                break;
+            }
+        }
+        if (anchor != nullptr) {
+            break;
+        }
+    }
+    if (anchor == nullptr) {
+        LOGW << "No safe unoccupied spot for a debug local player" << std::endl;
+        return -1;
+    }
+
+    EntityDescriptionList descriptions;
+    std::string file_type;
+    Path source;
+    ActorsEditor_LoadEntitiesFromFile(anchor->obj_file, descriptions, &file_type, &source);
+    for (auto& desc : descriptions) {
+        if (GetTypeFromDesc(desc) != _movement_object) {
+            continue;
+        }
+        // Set the initial position before the character's physics/script init.
+        desc.fields.erase(std::remove_if(desc.fields.begin(), desc.fields.end(), [](const EntityDescriptionField& field) {
+                              return field.type == EDF_TRANSLATION || field.type == EDF_IS_PLAYER;
+                          }), desc.fields.end());
+        desc.AddVec3(EDF_TRANSLATION, spawn);
+        desc.AddBool(EDF_IS_PLAYER, true);
+        Object* object = MapEditor::AddEntityFromDesc(scenegraph_, desc, false);
+        if (object == nullptr) {
+            return -1;
+        }
+        MovementObject* player = static_cast<MovementObject*>(object);
+        player->exclude_from_save = true;
+        player->exclude_from_undo = true;
+        player->created_on_the_fly = true;
+        player->permission_flags = 0;
+        player->is_player = true;
+        player->controller_id = static_cast<int>(players.size());
+        player->camera_id = player->controller_id;
+        player->SetName("Local player " + std::to_string(players.size() + 1) + " (debug)");
+        player->SetRotation(anchor->GetRotation());
+        player->SetScale(anchor->GetScale());
+        ScriptParams* team = anchor->GetScriptParams();
+        if (team->HasParam("Teams")) {
+            player->GetScriptParams()->ASSetString("Teams", team->GetStringVal("Teams"));
+        }
+        if (anchor->GetPalette() != nullptr) {
+            player->ApplyPalette(*anchor->GetPalette());
+        }
+        // This is a level-scoped debug override; graphics preferences stay intact.
+        debug_local_split_screen_ = true;
+        Input::Instance()->SetUpForXPlayers(static_cast<int>(players.size()) + 1);
+        // A player added from the pause menu hasn't run its chase-camera script
+        // yet. Seed its view near the spawn, so it never renders from the origin.
+        const int previous_camera = ActiveCameras::GetID();
+        Camera* anchor_camera = ActiveCameras::GetCamera(anchor->camera_id);
+        if (anchor_camera == nullptr) {
+            anchor_camera = ActiveCameras::GetCamera(0);
+        }
+        ActiveCameras::Set(player->camera_id);
+        Camera* new_camera = ActiveCameras::Get();
+        if (anchor_camera != nullptr) {
+            *new_camera = *anchor_camera;
+            new_camera->m_camera_object = nullptr;
+            new_camera->UnlockView();
+            new_camera->SetPos(anchor_camera->GetPos() + spawn - anchor->position);
+            new_camera->FixDiscontinuity();
+            new_camera->SetVelocity(vec3(0.0f));
+        }
+        ActiveCameras::Set(previous_camera);
+        LOGI << "Added debug local player " << players.size() + 1 << ": " << player->GetID() << std::endl;
+        return player->GetID();
+    }
+    return -1;
 }
 
 static const int kCollisionNormalVersion = 2;
@@ -4522,11 +4664,14 @@ void Engine::Draw() {
 
         // Get number of screens that we need
         const GraphicsConfig& graphics_config = graphics->config_;
-        scenegraph_->GetPlayerCharacterIDs(&num_avatars, avatar_ids, kMaxAvatars);
-        unsigned num_screens = clamp(num_avatars, 1, 4);
-        // (Overgrowth Online: one player per machine online; the other players'
-        // characters are not screens here)
-        if (!Engine::Instance()->GetSplitScreen() || scenegraph_->map_editor->state_ != MapEditor::kInGame || Online::Instance()->IsActive()) {
+        scenegraph_->GetPlayerCharacterIDs(avatar_ids);
+        num_avatars = static_cast<int>(avatar_ids.size());
+        unsigned num_screens = static_cast<unsigned>(std::max(num_avatars, 1));
+        // Screens belong to this client; remote player units do not add views.
+        if (Online::Instance()->IsActive()) {
+            num_screens = std::max(1u, Online::Instance()->LocalLobbyPlayerCount());
+        }
+        if (!Engine::Instance()->GetSplitScreen() || scenegraph_->map_editor->state_ != MapEditor::kInGame) {
             num_screens = 1;
         }
         bool old_simple_water = g_simple_water;
@@ -4843,6 +4988,12 @@ void Engine::Draw() {
             PROFILER_GPU_ZONE(g_profiler_ctx, "Draw screen");
             PushGPUProfileRange("Draw Screen");
             SetViewportForCamera(i, num_screens, Graphics::kRender);
+            if (graphics->viewport_dim[2] <= 0 || graphics->viewport_dim[3] <= 0) {
+                // More cells than drawable pixels: keep the player, but do not
+                // feed an empty viewport into projection or render passes.
+                PopGPUProfileRange();
+                continue;
+            }
             ActiveCameras::Set(i);
             ActiveCameras::Get()->SetAutoCamera(config["auto_camera"].toNumber<bool>());
             if (level_loaded_) {  // Draw the in-game scene if level is loaded
@@ -4853,6 +5004,7 @@ void Engine::Draw() {
         }
         CHECK_GL_ERROR();
         // Draw GUI layer
+        ActiveCameras::Set(0);
         {
             PROFILER_GPU_ZONE(g_profiler_ctx, "Draw GUI screen");
             PushGPUProfileRange("Draw GUI Screen");
@@ -4861,6 +5013,7 @@ void Engine::Draw() {
             CHECK_GL_ERROR();
             if (!view_override_ || view_override_gui_) {  // (the test bridge's fixed view: no dialogue boxes)
                 scenegraph_->level->Draw();
+                if (player_menus_) player_menus_->Draw();
                 CHECK_GL_ERROR();
             }
             if (!graphics->media_mode()) {
@@ -5643,6 +5796,13 @@ void Engine::LoadLevelData(const Path& level_path) {
 }
 
 void Engine::ClearLoadedLevel() {
+    if (player_menus_) player_menus_->Clear();
+    tracked_level_focus_ = false;
+    current_menu_player = -1;
+    debug_local_split_screen_ = false;
+    avatar_ids.clear();
+    npc_avatar_ids.clear();
+    num_avatars = num_npc_avatars = 0;
     // We want music in menues now, levels have to clear their own sounds.
     sound.ClearTransient();
     sound.UpdateGameTimestep(game_timer.timestep);
@@ -5658,7 +5818,7 @@ void Engine::ClearLoadedLevel() {
 
     asset_manager.Update();
     asset_manager.DumpLoadWarningData("asset_manager_warnings.xml");
-    ActiveCameras::Get()->SetCameraObject(NULL);
+    ActiveCameras::Instance()->ResetLocalCameras();
     level_loaded_ = false;
     DebugDraw::Instance()->Dispose();
 
@@ -5946,11 +6106,9 @@ void Engine::AddLevelPathToRecentLevels(const Path& level_path) {
 }
 
 void Engine::GetAvatarIds(std::vector<ObjectID>& avatars) {
-    scenegraph_->GetPlayerCharacterIDs(&num_avatars, avatar_ids, kMaxAvatars);
-    avatars.clear();
-    for (int i = 0; i < num_avatars; ++i) {
-        avatars.push_back(avatar_ids[i]);
-    }
+    scenegraph_->GetPlayerCharacterIDs(avatar_ids);
+    num_avatars = static_cast<int>(avatar_ids.size());
+    avatars.assign(avatar_ids.begin(), avatar_ids.end());
 }
 
 void Engine::QueueLevelToLoad(const Path& level) {
@@ -6351,6 +6509,50 @@ void Engine::GetShaderNames(std::map<std::string, int>& preload_shaders) {
     }
 }
 
+bool Engine::ExecuteMenuCode(const std::string& code) {
+    if (scriptable_menu_ == nullptr || scriptable_menu_->as_context == nullptr) return false;
+    scriptable_menu_->as_context->Execute(code);
+    return true;
+}
+
+bool Engine::ExecutePlayerMenuCode(int local_index, const std::string& code) {
+    return local_index >= 0 && player_menus_ && player_menus_->Execute(static_cast<unsigned>(local_index), code);
+}
+
+bool Engine::PlayerHasMenu(int input_id) const {
+    return player_menus_ && player_menus_->IsOpen(input_id);
+}
+
+bool Engine::HasPlayerMenus() const {
+    return player_menus_ && player_menus_->AnyOpen();
+}
+
+void Engine::ReturnToLobby() {
+    if (!Online::Instance()->IsActive()) return;
+    // Queue destruction after the current script/message returns. Reuse the
+    // main-menu history anchor so successive matches do not grow the stack.
+    queued_level_ = Path();
+    queued_engine_state_.clear();
+    EngineStateAction pop;
+    pop.type = kEngineStateActionPopUntilID;
+    pop.allow_game_exit = false;
+    pop.state.id = "main_menu";
+    queued_engine_state_.push_back(pop);
+    QueueState(EngineState("multiplayer_lobby", kEngineScriptableUIState,
+        FindFilePath("Data/Scripts/multiplayer_lobby.as", kAnyPath)));
+    // Ending a match discards its transient world, just as loading the next
+    // match does. No guest should become stuck at a local save prompt.
+    check_save_level_changes_dialog_is_showing = false;
+    check_save_level_changes_dialog_is_finished = true;
+    check_save_level_changes_last_result = true;
+    waiting_for_input_ = false;
+    user_paused = menu_paused = slow_motion = false;
+    current_menu_player = -1;
+    config.GetRef("controller_menu_owner") = 0;
+    Input::Instance()->SetGrabMouse(false);
+    CommitPause();
+}
+
 void Engine::ScriptableUICallback(const std::string& level) {
     LOGW << "Got a callback to switch to: " << level << std::endl;
 
@@ -6369,7 +6571,9 @@ void Engine::ScriptableUICallback(const std::string& level) {
     game_timer.target_time_scale = config["global_time_scale_mult"].toNumber<float>();
     current_global_scale_mult = config["global_time_scale_mult"].toNumber<float>();
 
-    if (hasEnding(level, ".as")) {
+    if (level == "return_to_lobby") {
+        ReturnToLobby();
+    } else if (hasEnding(level, ".as")) {
         std::string short_path = script_dir_path + level;
         const std::string& long_path = level;
 
@@ -6606,7 +6810,7 @@ Path Engine::GetLatestLevelPath() {
 void Engine::CommitPause() {
     bool was_paused = paused;
     if (!Online::Instance()->IsActive()) {
-        paused = user_paused || menu_paused;
+        paused = user_paused || menu_paused || (player_menus_ && player_menus_->PausesWorld());
     } else {
         paused = Online::Instance()->TimeFrozen();  // (Overgrowth Online: the host froze time for everyone)
     }
@@ -6615,8 +6819,12 @@ void Engine::CommitPause() {
     if (was_paused != paused) {
         game_timer.time_scale = paused ? current_global_scale_mult : 0.1f;
     }
-    if (!paused) {
-        Engine::Instance()->current_menu_player = -1;
+    const bool has_level_focus = scenegraph_ != nullptr && scenegraph_->level != nullptr && scenegraph_->level->HasScriptFocus();
+    if (has_level_focus) {
+        tracked_level_focus_ = true;
+    } else if (tracked_level_focus_) {
+        current_menu_player = -1;
+        tracked_level_focus_ = false;
     }
 }
 

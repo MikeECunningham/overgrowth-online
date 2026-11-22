@@ -28,6 +28,7 @@
 #include <Editors/map_editor.h>
 #include <Objects/reflectioncaptureobject.h>
 #include <Scripting/scriptparams.h>
+#include <Scripting/angelscript/ascontext.h>
 #include <Internal/config.h>
 #include <Internal/crashreport.h>
 #include <UserInput/input.h>
@@ -296,6 +297,13 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         out["my_avatar"] = loaded ? MyAvatar(engine) : -1;
         out["gl_problems"] = GLDebugProblemCount();  // GL debug output: errors, undefined, deprecated ("gl_debug")
         out["renderer"] = UseVulkan() ? "vulkan" : "gl";
+        out["local_players"] = online->IsActive() ? static_cast<int>(online->LocalLobbyPlayerCount()) : engine->DebugLocalPlayerCount();
+        out["local_inputs"] = Input::Instance()->GetNumLocalPlayers();
+        out["open_menu_players"] = Json::Value(Json::arrayValue);
+        for (unsigned i = 0; i < Input::Instance()->GetNumLocalPlayers(); ++i) {
+            if (engine->PlayerHasMenu(Input::Instance()->GetLocalPlayerInputID(i))) out["open_menu_players"].append(i);
+        }
+        out["split_screen"] = engine->GetSplitScreen();
         if (UseVulkan()) {
             out["vk_problems"] = VkBackend::ValidationProblems();  // validation layer warnings and errors ("vk_validation")
             out["vk_frames"] = (Json::UInt64)VkBackend::FramesPresented();
@@ -309,6 +317,12 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         o["active"] = online->IsActive();
         o["hosting"] = online->IsHosting();
         o["client"] = online->IsClient();
+        o["lobby_waiting"] = online->LobbyWaiting();
+        o["lobby_mode"] = online->LobbyMode();
+        o["lobby_campaign"] = online->LobbyCampaign();
+        o["lobby_map"] = online->LobbyMap();
+        o["lobby_build"] = online->LobbyBuild();
+        o["allow_all_pause"] = online->LobbyAllowAllPause();
         o["bytes_out"] = (Json::UInt64)online->net_bytes_out.load();
         o["bytes_in"] = (Json::UInt64)online->net_bytes_in.load();
         o["msgs_out"] = (Json::UInt64)online->net_msgs_out.load();
@@ -361,6 +375,11 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
 
             for (const PlayerState& player : online->GetPlayerStates()) {
                 Json::Value p;
+                p["id"] = player.player_id;
+                p["peer_id"] = player.peer_id;
+                p["local_index"] = player.local_index;
+                p["team"] = player.team;
+                p["screen"] = player.screen;
                 p["name"] = player.playername;
                 p["avatar_id"] = player.object_id;
                 o["players"].append(p);
@@ -448,6 +467,18 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             }
         }
     } else if (cmd == "exec") {
+        if (req["target"].isString() && req["target"].asString() == "player_menu") {
+            if (!engine->ExecutePlayerMenuCode(req.get("local_player", 0).asInt(), req.get("code", "").asString())) {
+                throw std::runtime_error("no such open local player menu");
+            }
+            return;
+        }
+        if (req["target"].isString() && req["target"].asString() == "menu") {
+            if (!engine->ExecuteMenuCode(req.get("code", "").asString())) {
+                throw std::runtime_error("no scriptable menu");
+            }
+            return;
+        }
         if (!loaded) {
             throw std::runtime_error("no level loaded");
         }
@@ -456,7 +487,17 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         const Json::Value& target = req["target"];
 
         if (target.isString() && target.asString() == "level") {
-            sg->level->Execute(code);
+            const std::string name = req.get("context", "").asString();
+            if (name.empty()) sg->level->Execute(code);
+            else {
+                bool found = false;
+                for (auto& hook : sg->level->as_contexts_) if (hook.context_name == name) {
+                    hook.ctx->Execute(code);
+                    found = true;
+                    break;
+                }
+                if (!found) throw std::runtime_error("no such level script context");
+            }
         } else if (target.isInt()) {
             MovementObject* mo = FindCharacter(sg, target.asInt());
 
@@ -469,19 +510,26 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             throw std::runtime_error("target must be \"level\" or a character id");
         }
     } else if (cmd == "input") {
-        // Keys for the local player (controller 0), applied every 120 Hz step
+        // Keys for one local player (default controller 0), applied every 120 Hz step
         // after the real devices (Input::ApplyInjectedInput)
         Input* input = Input::Instance();
+        const int controller = req.get("controller", 0).asInt();
+        PlayerInput* target_input = input->GetController(controller);
+        if (controller < 0 || input->LocalPlayerIndexForInputID(controller) < 0 ||
+            target_input == nullptr || !target_input->enabled || target_input->remote_controlled) {
+            throw std::runtime_error("no such enabled local controller");
+        }
+        auto& injected_keys = input->InjectedKeysForController(controller);
 
         if (req.get("release_all", false).asBool()) {
-            input->injected_keys_.clear();
+            injected_keys.clear();
         }
 
         const Json::Value& release = req["release"];
 
         if (release.isArray()) {
             for (const Json::Value& name : release) {
-                input->injected_keys_.erase(name.asString());
+                injected_keys.erase(name.asString());
             }
         }
 
@@ -493,18 +541,20 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 Input::InjectedKey key;
                 key.depth = hold[name].asFloat();
                 key.steps_left = steps;
-                input->injected_keys_[name] = key;
+                injected_keys[name] = key;
             }
         }
 
         const Json::Value& look = req["look"];
 
         if (look.isArray() && look.size() == 2) {
-            input->injected_look_[0] += look[0].asFloat();
-            input->injected_look_[1] += look[1].asFloat();
+            float* injected_look = input->InjectedLookForController(controller);
+            injected_look[0] += look[0].asFloat();
+            injected_look[1] += look[1].asFloat();
         }
 
-        out["held"] = (int)input->injected_keys_.size();
+        out["controller"] = controller;
+        out["held"] = (int)injected_keys.size();
     } else if (cmd == "load_level") {
         if (req.get("discard", false).asBool()) {
             // (the "save changes?" check answered No: the level is left as it is)

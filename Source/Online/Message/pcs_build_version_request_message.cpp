@@ -24,7 +24,6 @@
 
 #include <Online/Message/pcs_build_version_message.h>
 #include <Online/online.h>
-#include <Online/online_utility.h>
 
 #include <Version/version.h>
 
@@ -44,7 +43,7 @@ void PCSBuildVersionRequestMessage::Execute(const OnlineMessageRef& ref, void* o
     if (peer == nullptr) {
         return;  // (gone meanwhile)
     }
-    Online::Instance()->SendTo<OnlineMessages::PCSBuildVersionMessage>(peer->conn_id, GetBuildID(), OnlineUtility::GetOvergrowthOnlineVersion());
+    Online::Instance()->SendTo<OnlineMessages::PCSBuildVersionMessage>(peer->conn_id, GetBuildID(), GetNetworkVersion());
 }
 
 void* PCSBuildVersionRequestMessage::Construct(void* mem) {

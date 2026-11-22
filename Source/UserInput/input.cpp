@@ -39,17 +39,27 @@
 
 #include <SDL.h>
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 #include <cctype>
 
 extern Timer ui_timer;
 
+static void CompleteGamepadBindings(const std::string& type, BindMap& bind_map);
+
 Input::JoystickStruct::JoystickStruct()
     : joystick(1.0f) {
 }
 
 namespace {
+bool IsPlayerGamepadCategory(const std::string& category) {
+    if (category.size() <= 8 || category.compare(0, 8, "gamepad_") != 0) {
+        return false;
+    }
+    return std::all_of(category.begin() + 8, category.end(), [](unsigned char c) { return std::isdigit(c); });
+}
+
 void StringFromBind(std::string* str, const SDL_GameControllerButtonBind& bind) {
     std::ostringstream oss;
     switch (bind.bindType) {
@@ -92,7 +102,8 @@ Input::Input() : ignore_mouse_frame(false),
                  last_keyboard_event_time(0.0f),
                  joystick_sequence_id(0),
                  allow_controller_input_(true),
-                 use_controller_input_(false) {
+                 use_controller_input_(false),
+                 joystick_assignment_dirty_(true) {
     player_inputs_.resize(4);
 
     // Default to only having one active player input.
@@ -112,17 +123,28 @@ void Input::SetInvertYMouseLook(bool val) {
 
 void Input::UpdateGamepadLookSensitivity() {
     for (auto& open_joystick : open_joysticks_) {
+        const int profile = LocalPlayerIndexForInputID(open_joystick.second->player_input);
+        if (profile < 0) {
+            continue;
+        }
         char buffer[64];
-        sprintf(buffer, "gamepad_%i_look_sensitivity", open_joystick.second->player_input);
-        open_joystick.second->joystick.look_sensitivity_ = config[buffer].toNumber<float>();
+        sprintf(buffer, "gamepad_%i_look_sensitivity", profile);
+        float sensitivity = config[buffer].toNumber<float>();
+        if (sensitivity <= 0.0f) sensitivity = config["gamepad_look_sensitivity"].toNumber<float>();
+        open_joystick.second->joystick.look_sensitivity_ = sensitivity > 0.0f ? sensitivity : 1.25f;
     }
 }
 
 void Input::UpdateGamepadDeadzone() {
     for (auto& open_joystick : open_joysticks_) {
+        const int profile = LocalPlayerIndexForInputID(open_joystick.second->player_input);
+        if (profile < 0) {
+            continue;
+        }
         char buffer[64];
-        sprintf(buffer, "gamepad_%i_deadzone", open_joystick.second->player_input);
-        open_joystick.second->joystick.deadzone = config[buffer].toNumber<float>();
+        sprintf(buffer, "gamepad_%i_deadzone", profile);
+        const std::string key = config[buffer].raw().empty() ? "gamepad_deadzone" : buffer;
+        open_joystick.second->joystick.deadzone = config[key].raw().empty() ? 0.075f : config[key].toNumber<float>();
     }
 }
 
@@ -184,7 +206,8 @@ void Input::OpenJoystick(int index) {
     js->gamepad_bind = gamepad_binding;
     // char buffer[64];
     // sprintf(buffer, "gamepad%d_deadzone", id);
-    js->player_input = 0;
+    js->player_input = -1;  // Assigned to a local slot by SetUpForXPlayers.
+    joystick_assignment_dirty_ = true;
     js->joystick.deadzone = config["gamepad_0_deadzone"].toNumber<float>();
 
     /*SDL_Haptic* haptic = SDL_HapticOpenFromJoystick(joystick);
@@ -205,6 +228,7 @@ void Input::CloseJoystick(int instance_id) {
         SDL_Joystick* joystick = (SDL_Joystick*)js->sdl_joystick;
         SDL_JoystickClose(joystick);
         open_joysticks_.erase(iter);
+        joystick_assignment_dirty_ = true;
     }
 }
 
@@ -290,11 +314,18 @@ bool UICursorVisible() {
 }
 
 void Input::SetGrabMouse(bool grab) {
-    if (grab_mouse_ == grab) return;
+    if (grab_mouse_ == grab) {
+        // Loading/cutscenes may hide the software cursor while the pointer is
+        // already free. A pause menu still needs to restore its visibility.
+        if (!grab && cursor != nullptr) {
+            cursor->SetVisible(true);
+        }
+        return;
+    }
     if (grab && in_focus_) {
         grab_mouse_ = true;
         Graphics::Instance()->SetWindowGrab(true);
-        cursor->SetVisible(false);
+        if (cursor != nullptr) cursor->SetVisible(false);
         if (use_raw_input) {
             // If we further wish to do this "correctly" we can use this hint: https://wiki.libsdl.org/SDL_HINT_MOUSE_RELATIVE_MODE_WARP
             SDL_SetRelativeMouseMode(SDL_TRUE);
@@ -304,13 +335,14 @@ void Input::SetGrabMouse(bool grab) {
     } else {
         grab_mouse_ = false;
         Graphics::Instance()->SetWindowGrab(false);
-        cursor->SetVisible(true);
+        if (cursor != nullptr) cursor->SetVisible(true);
         SDL_SetRelativeMouseMode(SDL_FALSE);
     }
 }
 
 void Input::HandleEvent(const SDL_Event& event) {
     PROFILER_ZONE(g_profiler_ctx, "Input::HandleEvent");
+    RecordKeyboardJoinEvent(event);
     // Redirect input events to the controller
     switch (event.type) {
         case SDL_WINDOWEVENT:
@@ -468,6 +500,10 @@ void Input::HandleEvent(const SDL_Event& event) {
             SDL_JoyButtonEvent* button = (SDL_JoyButtonEvent*)&event.jbutton;
             JoystickMap::iterator iter = open_joysticks_.find(button->which);
             if (iter != open_joysticks_.end()) {
+                if (in_focus_ && event.type == SDL_JOYBUTTONDOWN) {
+                    last_controller_button_instance_ = button->which;
+                    last_controller_button_time_ = static_cast<float>(event.common.timestamp);
+                }
                 // TODO: Replace for-loop with constant-time lookup?
                 const std::vector<SDL_GameControllerButtonBind>& gamepad_bind = iter->second->gamepad_bind;
                 for (size_t i = 0; i < gamepad_bind.size(); ++i) {
@@ -540,14 +576,14 @@ void Input::HandleEvent(const SDL_Event& event) {
             LOGI << "Added device:" << event.jdevice.which << std::endl;
             OpenJoystick(event.jdevice.which);
             PrintControllers(open_joysticks_);
-            SetUpForXPlayers(num_players_);
+            SetUpForXPlayers(num_players_, preserve_remote_inputs_);
             ProcessBindings();
             break;
         case SDL_JOYDEVICEREMOVED:
             LOGI << "Removed device:" << event.jdevice.which << std::endl;
             CloseJoystick(event.jdevice.which);
             PrintControllers(open_joysticks_);
-            SetUpForXPlayers(num_players_);
+            SetUpForXPlayers(num_players_, preserve_remote_inputs_);
             break;
     }
 }
@@ -563,37 +599,56 @@ void PlayerInputKeyDown(KeyState* keyState) {
 }
 }  // namespace
 
-void Input::ApplyInjectedInput(PlayerInput& control) {
-    for (auto it = injected_keys_.begin(); it != injected_keys_.end();) {
-        KeyState& ks = control.key_down[it->first];
+std::map<std::string, Input::InjectedKey>& Input::InjectedKeysForController(int controller_id) {
+    return controller_id == 0 ? injected_keys_ : injected_player_keys_[controller_id];
+}
 
-        if (it->second.depth >= KeyState::kDepthThreshold) {
-            PlayerInputKeyDown(&ks);  // the keyboard's own semantics
-            ks.depth = it->second.depth;
-        } else if (it->second.depth > 0.0f) {
-            if (ks.count <= 0) {  // analog, like the joystick path
-                ks.count *= -1;
-                ++ks.count;
+float* Input::InjectedLookForController(int controller_id) {
+    return controller_id == 0 ? injected_look_ : injected_player_look_[controller_id].data();
+}
+
+void Input::ApplyInjectedInput(PlayerInput& control, int controller_id) {
+    auto keys_it = injected_player_keys_.find(controller_id);
+    auto* keys = controller_id == 0 ? &injected_keys_ :
+                 keys_it != injected_player_keys_.end() ? &keys_it->second : NULL;
+    if (keys) {
+        for (auto it = keys->begin(); it != keys->end();) {
+            KeyState& ks = control.key_down[it->first];
+
+            if (it->second.depth >= KeyState::kDepthThreshold) {
+                PlayerInputKeyDown(&ks);  // the keyboard's own semantics
+                ks.depth = it->second.depth;
+            } else if (it->second.depth > 0.0f) {
+                if (ks.count <= 0) {  // analog, like the joystick path
+                    ks.count *= -1;
+                    ++ks.count;
+                }
+                ks.depth = it->second.depth;
             }
-            ks.depth = it->second.depth;
-        }
 
-        if (it->second.steps_left > 0 && --it->second.steps_left == 0) {
-            it = injected_keys_.erase(it);
-        } else {
-            ++it;
+            if (it->second.steps_left > 0 && --it->second.steps_left == 0) {
+                it = keys->erase(it);
+            } else {
+                ++it;
+            }
         }
     }
 
-    if (injected_look_[0] != 0.0f || injected_look_[1] != 0.0f) {
-        control.key_down["look_right"].depth += injected_look_[0];
-        control.key_down["look_down"].depth += injected_look_[1];
-        injected_look_[0] = 0.0f;
-        injected_look_[1] = 0.0f;
+    auto look_it = injected_player_look_.find(controller_id);
+    float* look = controller_id == 0 ? injected_look_ :
+                  look_it != injected_player_look_.end() ? look_it->second.data() : NULL;
+    if (look && (look[0] != 0.0f || look[1] != 0.0f)) {
+        control.key_down["look_right"].depth += look[0];
+        control.key_down["look_down"].depth += look[1];
+        look[0] = 0.0f;
+        look[1] = 0.0f;
     }
 }
 
 void Input::ProcessController(int controller_id, float timestep) {
+    if (controller_id < 0 || static_cast<size_t>(controller_id) >= player_inputs_.size()) {
+        return;
+    }
     PlayerInput& control = player_inputs_[controller_id];
 
     // Early out if we're remote controlled via network.
@@ -639,7 +694,11 @@ void Input::ProcessController(int controller_id, float timestep) {
         }
     }
     // Joystick input
-    if (allow_controller_input_ && use_controller_input_) {
+    if (allow_controller_input_ && (use_controller_input_ || num_players_ > 1)) {
+        const int local_index = std::max(0, LocalPlayerIndexForInputID(controller_id));
+        const std::string profile = "gamepad_" + std::to_string(local_index);
+        const bool invert_x = config[profile + "_invert_x_look"].toNumber<bool>();
+        const bool invert_y = config[profile + "_invert_y_look"].toNumber<bool>();
         for (auto& open_joystick : open_joysticks_) {
             const RC_JoystickStruct js = open_joystick.second;
             if (js.GetConst().player_input != controller_id) {
@@ -649,47 +708,57 @@ void Input::ProcessController(int controller_id, float timestep) {
             const Joystick::ButtonMap& bm = joystick.buttons_down_;
             for (const auto& iter2 : bm) {
                 if (iter2.second) {
+                    std::string binding = iter2.first;
+                    if (invert_x) {
+                        if (binding == "look_left") binding = "look_right";
+                        else if (binding == "look_right") binding = "look_left";
+                    }
+                    if (invert_y) {
+                        if (binding == "look_up") binding = "look_down";
+                        else if (binding == "look_down") binding = "look_up";
+                    }
                     float sensitivity = 1.0f;
-                    if (memcmp(iter2.first.c_str(), "look", 4) == 0) {
+                    if (binding.compare(0, 5, "look_") == 0) {
                         sensitivity = joystick.look_sensitivity_;
                     }
                     float depth = iter2.second * sensitivity;
 
-                    int& count = control.key_down[iter2.first].count;
-                    int& depth_count = control.key_down[iter2.first].depth_count;
+                    int& count = control.key_down[binding].count;
+                    int& depth_count = control.key_down[binding].depth_count;
                     if (count <= 0) {
                         count *= -1;
                         ++count;
                         if (depth > KeyState::kDepthThreshold)
                             ++depth_count;
                     }
-                    control.key_down[iter2.first].depth = depth;
+                    control.key_down[binding].depth = depth;
                 }
             }
         }
     }
-    // Keyboard input, only bound to player one if in split screen.
-    bool catch_kbmouse = (controller_id == 0);
-    if (catch_kbmouse) {
+    // Gameplay follows the keyboard's joined player. Menu navigation also
+    // reaches P1 so the couch can manage its lobby using the keyboard.
+    const bool catch_kbmouse = controller_id == GetLocalPlayerInputID(keyboard_local_player_);
+    if (catch_kbmouse || controller_id == 0) {
         static const std::string kKey = "key";
         const StrMap& key_map = bindings_[kKey];
         for (const auto& iter : key_map) {
+            if (!catch_kbmouse && (!keyboard_menu_shared_ || iter.first.compare(0, 5, "menu_") != 0)) continue;
             if (IsKeyDown(iter.second.c_str())) {
                 PlayerInputKeyDown(&control.key_down[iter.first]);
                 use_controller_input_ = false;
             }
         }
-        keyboard_.Update(timestep);
+        if (controller_id == 0) keyboard_.Update(timestep);
 
-        if (in_focus_) {
+        if (catch_kbmouse && in_focus_) {
             control.key_down["look_right"].depth += mouse_.delta_[0] * mouse_sensitivity_ * (invert_x_mouse_look_ ? -1.0f : 1.0f);
             control.key_down["look_down"].depth += mouse_.delta_[1] * mouse_sensitivity_ * (invert_y_mouse_look_ ? -1.0f : 1.0f);
             mouse_.delta_[0] = 0;
             mouse_.delta_[1] = 0;
         }
-
-        ApplyInjectedInput(control);
     }
+    ApplyInjectedInput(control, controller_id);
     // Zero all negative keydown counts
     for (auto& iter : kd) {
         if (iter.second.count < 0) {
@@ -698,6 +767,19 @@ void Input::ProcessController(int controller_id, float timestep) {
             iter.second.depth = 0.0f;
         }
     }
+}
+
+void Input::RecordKeyboardJoinEvent(const SDL_Event& event) {
+    if (event.type == SDL_KEYDOWN && !event.key.repeat && in_focus_ &&
+        (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER)) {
+        keyboard_join_pressed_ = true;
+    }
+}
+
+bool Input::KeyboardJoinPressed() {
+    const bool pressed = keyboard_join_pressed_;
+    keyboard_join_pressed_ = false;
+    return pressed;
 }
 
 Keyboard& Input::getKeyboard() {
@@ -767,11 +849,15 @@ std::set<std::string> Input::GetAllAvailableBindings() {
 }
 
 std::string Input::GetBindingValue(const std::string& binding_category, const std::string& binding) {
-    // If the category is "gamepad_[0-9][...]", default to "gamepad_[...] if the bind doesn't exist
-    if (binding_category.size() > 10 && memcmp(binding_category.c_str(), "gamepad_", 8) == 0 && isdigit(binding_category.c_str()[8]) && binding_category.c_str()[9] == '[') {
+    // Player-specific categories inherit individual missing bindings, including
+    // multi-digit player indices used by large local sessions.
+    if (IsPlayerGamepadCategory(binding_category)) {
         BindMap::iterator iter = bindings_.find(binding_category);
         if (iter != bindings_.end()) {
-            return iter->second[binding];
+            StrMap::const_iterator found = iter->second.find(binding);
+            if (found != iter->second.end()) {
+                return found->second;
+            }
         }
         return bindings_["gamepad"][binding];
     } else {
@@ -811,15 +897,18 @@ void Input::HandleMouseButtonUp(int sdl_button_index) {
 }
 
 PlayerInput* Input::GetController(int id) {
-    return id >= 0 && id < player_inputs_.size() ? &player_inputs_[id] : NULL;
+    return id >= 0 && static_cast<size_t>(id) < player_inputs_.size() ? &player_inputs_[id] : NULL;
 }
 
 void Input::ProcessBindings() {
     for (auto& open_joystick : open_joysticks_) {
         RC_JoystickStruct js = open_joystick.second;
         js->joystick.ClearBinding();
+        if (js->player_input < 0) {
+            continue;
+        }
         char gamepad_name[32];
-        FormatString(gamepad_name, 32, "gamepad_%i", js->player_input);
+        FormatString(gamepad_name, 32, "gamepad_%i", LocalPlayerIndexForInputID(js->player_input));
         if (!js->gamepad_bind.empty()) {
             StrMap& gamepad_map = bindings_[gamepad_name];
             for (auto& xb_iter : gamepad_map) {
@@ -883,52 +972,157 @@ void Input::UpdateKeyboardFocus() {
     keyboard_.SetMode(mask);
 }
 
-void Input::SetUpForXPlayers(unsigned num_players) {
-    if (num_players_ != num_players) {
-        num_players_ = num_players;
-        // Setup the enabled number of local controllers to match local player count.
-        for (unsigned i = 0; i < 4; i++) {
-            player_inputs_[i].enabled = (i < num_players);
+void Input::AssignLocalJoysticks(bool reset) {
+    const unsigned local_slots = static_cast<unsigned>(local_player_inputs_.size());
+    std::set<int> assigned;
+    // Offline single player accepts any pad. Online device claims belong to
+    // the lobby: hotplug must not temporarily give an unknown pad P1's input.
+    for (auto& entry : open_joysticks_) {
+        JoystickStruct& js = *entry.second.operator->();
+        const int previous = js.player_input;
+        if (local_slots == 1 && !preserve_remote_inputs_) {
+            js.player_input = 0;
+        } else if ((!preserve_remote_inputs_ && reset) || LocalPlayerIndexForInputID(js.player_input) < 0 ||
+                   !assigned.insert(js.player_input).second) {
+            js.player_input = -1;
         }
-
-        if (num_players <= 1) {
-            for (auto& open_joystick : open_joysticks_) {
-                RC_JoystickStruct js = open_joystick.second;
-                js->player_input = 0;
-                std::map<std::string, float>::iterator buttons_iter = js->joystick.buttons_down_.begin();
-                for (; buttons_iter != js->joystick.buttons_down_.end(); ++buttons_iter) {
-                    buttons_iter->second = 0.0f;
-                }
-            }
+        if (previous != js.player_input) {
+            js.joystick.buttons_down_.clear();
         }
-        int num_joysticks = open_joysticks_.size();
-        if (num_players >= 2) {
-            if (num_joysticks < (int)num_players) {
-                int index = 1;
-                for (auto& open_joystick : open_joysticks_) {
-                    RC_JoystickStruct js = open_joystick.second;
-                    js->player_input = index;
-                    ++index;
-                    std::map<std::string, float>::iterator buttons_iter = js->joystick.buttons_down_.begin();
-                    for (; buttons_iter != js->joystick.buttons_down_.end(); ++buttons_iter) {
-                        buttons_iter->second = 0.0f;
-                    }
-                }
-            } else {
-                int index = 0;
-                for (auto& open_joystick : open_joysticks_) {
-                    RC_JoystickStruct js = open_joystick.second;
-                    js->player_input = index;
-                    ++index;
-                    std::map<std::string, float>::iterator buttons_iter = js->joystick.buttons_down_.begin();
-                    for (; buttons_iter != js->joystick.buttons_down_.end(); ++buttons_iter) {
-                        buttons_iter->second = 0.0f;
-                    }
-                }
-            }
-        }
-        ProcessBindings();
     }
+    if (local_slots > 1 && !preserve_remote_inputs_) {
+        unsigned next = reset && open_joysticks_.size() >= local_slots ? 0 : 1;
+        for (auto& entry : open_joysticks_) {
+            JoystickStruct& js = *entry.second.operator->();
+            if (js.player_input >= 0) {
+                continue;
+            }
+            while (next < local_slots && assigned.count(GetLocalPlayerInputID(next))) {
+                ++next;
+            }
+            if (next < local_slots) {
+                js.player_input = GetLocalPlayerInputID(next++);
+            } else if (!assigned.count(0)) {
+                js.player_input = 0;
+            }
+            if (js.player_input >= 0) {
+                assigned.insert(js.player_input);
+            }
+            js.joystick.buttons_down_.clear();
+        }
+    }
+    UpdateGamepadLookSensitivity();
+    UpdateGamepadDeadzone();
+    ProcessBindings();
+    joystick_assignment_dirty_ = false;
+}
+
+int Input::GetLocalPlayerInputID(unsigned local_index) const {
+    return local_index < local_player_inputs_.size() ? local_player_inputs_[local_index] : -1;
+}
+
+int Input::LocalPlayerIndexForInputID(int input_id) const {
+    auto found = std::find(local_player_inputs_.begin(), local_player_inputs_.end(), input_id);
+    return found == local_player_inputs_.end() ? -1 : static_cast<int>(found - local_player_inputs_.begin());
+}
+
+void Input::BindLocalJoystick(int instance_id, int local_index) {
+    auto found = open_joysticks_.find(instance_id);
+    if (found == open_joysticks_.end()) return;
+    const int input_id = local_index < 0 ? -1 : GetLocalPlayerInputID(static_cast<unsigned>(local_index));
+    if (found->second->player_input == input_id) return;
+    found->second->player_input = input_id;
+    found->second->joystick.buttons_down_.clear();
+    ProcessBindings();
+    UpdateGamepadLookSensitivity();
+    UpdateGamepadDeadzone();
+}
+
+void Input::BindLocalKeyboard(int local_index) {
+    keyboard_local_player_ = local_index >= 0 &&
+        static_cast<size_t>(local_index) < local_player_inputs_.size() ? local_index : -1;
+    mouse_.delta_[0] = mouse_.delta_[1] = 0;
+}
+
+void Input::RemoveLocalPlayerInput(unsigned local_index) {
+    const unsigned count = static_cast<unsigned>(local_player_inputs_.size());
+    if (local_index == 0 || local_index >= count) return;
+    const Config saved_config = config;
+    auto prefix = [](unsigned index) { return "gamepad_" + std::to_string(index); };
+    auto is_profile = [](const std::string& key, const std::string& start) {
+        return key.compare(0, start.size(), start) == 0 && key.size() > start.size() &&
+            (key[start.size()] == '_' || key[start.size()] == '[');
+    };
+    for (unsigned index = local_index; index < count; ++index) {
+        const std::string target = prefix(index), source = prefix(index + 1);
+        for (auto it = config.map_.begin(); it != config.map_.end();) {
+            if (is_profile(it->first, target)) it = config.map_.erase(it);
+            else ++it;
+        }
+        bindings_.erase(target);
+        if (index + 1 < count) {
+            for (const auto& entry : saved_config.map_) {
+                if (is_profile(entry.first, source)) {
+                    config.map_[target + entry.first.substr(source.size())] = entry.second;
+                }
+            }
+        }
+    }
+    local_player_inputs_.erase(local_player_inputs_.begin() + local_index);
+    if (keyboard_local_player_ == static_cast<int>(local_index)) keyboard_local_player_ = -1;
+    else if (keyboard_local_player_ > static_cast<int>(local_index)) --keyboard_local_player_;
+    SetUpForXPlayers(count - 1, true);
+    SetFromConfig(config);
+}
+
+void Input::SetUpForXPlayers(unsigned num_players, bool preserve_remote) {
+    const bool changed = num_players_ != num_players || preserve_remote_inputs_ != preserve_remote;
+    if (!changed && !joystick_assignment_dirty_) {
+        return;
+    }
+    const bool first_split = num_players_ <= 1 && num_players > 1;
+    num_players_ = num_players;
+    preserve_remote_inputs_ = preserve_remote;
+    if (!preserve_remote) keyboard_local_player_ = 0;
+    // Slot zero also drives menus when no level is loaded. Retain the original
+    // four reserved slots so the standalone online controller IDs stay stable.
+    const unsigned local_slots = std::max(1u, num_players);
+    if (player_inputs_.size() < local_slots) {
+        player_inputs_.resize(local_slots);
+    }
+    std::vector<int> local_ids;
+    local_ids.reserve(local_slots);
+    for (unsigned i = 0; i < local_slots; ++i) {
+        int id = !preserve_remote || i >= local_player_inputs_.size() ? static_cast<int>(i) : local_player_inputs_[i];
+        if (preserve_remote && (id < 0 || player_inputs_[id].remote_controlled ||
+                                std::find(local_ids.begin(), local_ids.end(), id) != local_ids.end())) {
+            id = static_cast<int>(player_inputs_.size());
+            player_inputs_.emplace_back();
+        }
+        local_ids.push_back(id);
+    }
+    local_player_inputs_.swap(local_ids);
+    for (size_t i = 0; i < player_inputs_.size(); ++i) {
+        PlayerInput& control = player_inputs_[i];
+        if (LocalPlayerIndexForInputID(static_cast<int>(i)) >= 0) {
+            // Offline can follow an online session, whose remote slots are no
+            // longer in use. Online only requests one local slot.
+            if (control.remote_controlled || !control.enabled) {
+                control.key_down.clear();
+            }
+            control.remote_controlled = false;
+            control.enabled = true;
+        } else if (!control.remote_controlled) {
+            control.enabled = false;
+            control.key_down.clear();
+            injected_player_keys_.erase(static_cast<int>(i));
+            injected_player_look_.erase(static_cast<int>(i));
+        }
+    }
+    for (unsigned i = 0; i < std::max(4u, local_slots); ++i) {
+        CompleteGamepadBindings("gamepad_" + std::to_string(i), bindings_);
+    }
+    AssignLocalJoysticks(first_split);
 }
 
 void Input::RequestQuit() {
@@ -961,36 +1155,47 @@ static void CompleteGamepadBindings(const std::string& type, BindMap& bind_map) 
     }
     char buffer[128];
     FormatString(buffer, 128, "%s_deadzone", type.c_str());
-    if (!config.HasKey(buffer)) {
-        config.GetRef(std::string(buffer)) = config["gamepad_deadzone"];
+    if (!config.HasKey(buffer) || config[buffer].raw().empty()) {
+        if (!config["gamepad_deadzone"].raw().empty()) config.GetRef(std::string(buffer)) = config["gamepad_deadzone"];
     }
     FormatString(buffer, 128, "%s_look_sensitivity", type.c_str());
-    if (!config.HasKey(buffer)) {
-        config.GetRef(std::string(buffer)) = config["gamepad_look_sensitivity"];
+    if (!config.HasKey(buffer) || config[buffer].raw().empty() || config[buffer].toNumber<float>() <= 0.0f) {
+        const float inherited = config["gamepad_look_sensitivity"].toNumber<float>();
+        if (inherited > 0.0f) config.GetRef(std::string(buffer)) = inherited;
+    }
+    for (const char* axis : {"x", "y"}) {
+        std::string key = type + "_invert_" + axis + "_look";
+        if (!config.HasKey(key)) {
+            config.GetRef(key) = false;
+        }
     }
 }
 
 void Input::SetFromConfig(const Config& config) {
-    bindings_.erase("gamepad_0");
-    bindings_.erase("gamepad_1");
-    bindings_.erase("gamepad_2");
-    bindings_.erase("gamepad_3");
+    bindings_.clear();
     for (Config::Map::const_iterator iter = config.map_.begin(); iter != config.map_.end(); ++iter) {
         CheckBinding(iter, "key", bindings_);
         CheckBinding(iter, "gamepad", bindings_);
-        CheckBinding(iter, "gamepad_0", bindings_);
-        CheckBinding(iter, "gamepad_1", bindings_);
-        CheckBinding(iter, "gamepad_2", bindings_);
-        CheckBinding(iter, "gamepad_3", bindings_);
+        const size_t bracket = iter->first.find('[');
+        if (bracket != std::string::npos) {
+            const std::string category = iter->first.substr(0, bracket);
+            if (IsPlayerGamepadCategory(category)) {
+                CheckBinding(iter, category, bindings_);
+            }
+        }
         CheckBinding(iter, "controller", bindings_);
         CheckBinding(iter, "bind", bindings_);
         CheckBinding(iter, "bind_win", bindings_);
         CheckBinding(iter, "bind_unix", bindings_);
     }
-    CompleteGamepadBindings("gamepad_0", bindings_);
-    CompleteGamepadBindings("gamepad_1", bindings_);
-    CompleteGamepadBindings("gamepad_2", bindings_);
-    CompleteGamepadBindings("gamepad_3", bindings_);
+    for (unsigned i = 0; i < std::max(4u, num_players_); ++i) {
+        CompleteGamepadBindings("gamepad_" + std::to_string(i), bindings_);
+    }
+    for (const auto& category : bindings_) {
+        if (IsPlayerGamepadCategory(category.first)) {
+            CompleteGamepadBindings(category.first, bindings_);
+        }
+    }
     use_raw_input = config["use_raw_input"].toNumber<bool>();
     // Process hotkey bindings
     StrMap& binds = bindings_["bind"];
@@ -1023,7 +1228,8 @@ void Input::ClearQuitRequested() {
 
 int Input::PlayerOpenedMenu() {
     for (size_t i = 0; i < player_inputs_.size(); ++i) {
-        if (player_inputs_[i].key_down["quit"].count == 1) {
+        if (player_inputs_[i].enabled && !player_inputs_[i].remote_controlled &&
+            player_inputs_[i].key_down["quit"].count == 1) {
             return i;
         }
     }
@@ -1083,8 +1289,9 @@ std::vector<Mouse::MousePress> Input::GetMouseInputs() {
 
 std::vector<Joystick::JoystickPress> Input::GetJoystickInputs(int player_index) {
     std::vector<Joystick::JoystickPress> ret_inputs;
+    const int input_id = player_index < 0 ? -1 : GetLocalPlayerInputID(static_cast<unsigned>(player_index));
     for (auto& open_joystick : open_joysticks_) {
-        if (open_joystick.second->player_input == player_index) {
+        if (input_id >= 0 && open_joystick.second->player_input == input_id) {
             std::vector<Joystick::JoystickPress> inputs = open_joystick.second->joystick.GetJoystickInputs();
             ret_inputs.reserve(ret_inputs.size() + inputs.size());
             for (auto& input : inputs) {

@@ -19,14 +19,21 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import spirv_patch  # noqa: E402
+from shader_tools import find_shader_tool  # noqa: E402
 
-SDK = os.environ.get("VULKAN_SDK") or "R:/CoreFXProject/VulkanSDK"
-GLSLANG = os.path.join(SDK, "Bin", "glslangValidator.exe")
-SPIRV_VAL = os.path.join(SDK, "Bin", "spirv-val.exe")
-SPIRV_CROSS = os.path.join(SDK, "Bin", "spirv-cross.exe")
+GLSLANG = find_shader_tool("glslangValidator")
+SPIRV_VAL = find_shader_tool("spirv-val")
+SPIRV_CROSS = find_shader_tool("spirv-cross")
 ORDER = ["vert", "tesc", "tese", "geom", "frag"]
 FRAG_OUTPUTS = {"out_color": 0, "out_vel": 1}
 UNIFORM_INIT = __import__("re").compile(r"^\s*uniform\s+\w+\s+\w+\s*(\[[^\]]*\])?\s*=")
+
+
+def require_tools():
+    global GLSLANG, SPIRV_VAL, SPIRV_CROSS
+    GLSLANG = find_shader_tool("glslangValidator", required=True)
+    SPIRV_VAL = find_shader_tool("spirv-val", required=True)
+    SPIRV_CROSS = find_shader_tool("spirv-cross", required=True)
 
 
 def run(args, cwd=None):
@@ -49,6 +56,8 @@ def io_of(spv):
 
 def build_one(idx, name, stages, src_dir, out_dir):
     """-> (problems: [(kind, detail)], files)"""
+    if not all((GLSLANG, SPIRV_VAL, SPIRV_CROSS)):
+        require_tools()
     d = os.path.join(out_dir, f"{idx:04d}")
     os.makedirs(d, exist_ok=True)
     present = [st for st in ORDER if st in stages]
@@ -125,6 +134,7 @@ def build_one(idx, name, stages, src_dir, out_dir):
 
 
 def build_all(src_dir, program_stages, out_dir, workers=8):
+    require_tools()
     os.makedirs(out_dir, exist_ok=True)
     progs = [(i, p["name"], p["stages"]) for i, p in enumerate(program_stages)]
     json.dump([{"index": i, "name": p["name"], "flags": p.get("flags", 0)} for i, p in enumerate(program_stages)],

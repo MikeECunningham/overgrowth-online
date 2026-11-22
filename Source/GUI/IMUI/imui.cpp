@@ -32,6 +32,7 @@
 
 #include <UserInput/input.h>
 #include <GUI/IMUI/imui.h>
+#include <GUI/player_menu_context.h>
 #include <Wrappers/glm.h>
 #include <Internal/profiler.h>
 #include <Main/engine.h>
@@ -221,14 +222,16 @@ void IMUIContext::ClearHot() {
 void IMUIContext::UpdateControls() {
     Input* user_input = Input::Instance();
     const Mouse& mouse = user_input->getMouse();
-    mouse_pos[0] = (float)mouse.pos_[0];
-    mouse_pos[1] = (float)(Graphics::Instance()->window_dims[1] - mouse.pos_[1]);
+    const vec2 local_mouse = PlayerMenuUI::MouseTopLeft();
+    mouse_pos[0] = local_mouse[0];
+    mouse_pos[1] = PlayerMenuUI::Height() - local_mouse[1];
+    const bool pressed = PlayerMenuUI::AllowsMouse() && mouse.mouse_down_[Mouse::LEFT];
     switch (lmb_state) {
         case kMouseUp:
             lmb_state = kMouseStillUp;
             // printf("Mouse: Still up\n");
         case kMouseStillUp:
-            if (mouse.mouse_down_[Mouse::LEFT]) {
+            if (pressed) {
                 lmb_state = kMouseDown;
                 // printf("Mouse: Down\n");
             }
@@ -237,7 +240,7 @@ void IMUIContext::UpdateControls() {
             lmb_state = kMouseStillDown;
             // printf("Mouse: Still down\n");
         case kMouseStillDown:
-            if (!mouse.mouse_down_[Mouse::LEFT]) {
+            if (!pressed) {
                 lmb_state = kMouseUp;
                 // printf("Mouse: up\n");
             }
@@ -450,8 +453,10 @@ void IMUIContext::render() {
     graphics->setGLState(hud_gl_state.gl_state);
     glm::mat4 proj_mat;
 
-    const float winWidth = (float)graphics->window_dims[0];
-    const float winHeight = (float)graphics->window_dims[1];
+    const float winWidth = static_cast<float>(PlayerMenuUI::Width());
+    const float winHeight = static_cast<float>(PlayerMenuUI::Height());
+    const PlayerMenuUI::Context* menu = PlayerMenuUI::Current();
+    const bool previous_scissor = graphics->ScissorTestEnabled();
 
     const float max_aspect_ratio = 16.0f / 9.0f;
     float aspect_ratio = winWidth / winHeight;
@@ -470,13 +475,21 @@ void IMUIContext::render() {
 
         proj_mat = ReverseZ(glm::translate(glm::ortho(0.0f, winWidth, 0.0f, winHeight), glm::vec3(xOffset, 0.0f, 0.0f)));
 
-        if (renderable->enableClip) {
-            Graphics::Instance()->SetScissorRect((GLint)(renderable->clipPosition[0] + xOffset),
-                                                 (GLint)(winHeight - (renderable->clipPosition[1] + renderable->clipSize[1])),
-                                                 (GLsizei)(renderable->clipSize[0]),
-                                                 (GLsizei)(renderable->clipSize[1]));
-
-            Graphics::Instance()->setScissorTest(true);
+        if (renderable->enableClip || menu) {
+            int x = 0, y = 0, right = static_cast<int>(winWidth), top = static_cast<int>(winHeight);
+            if (renderable->enableClip) {
+                x = static_cast<int>(renderable->clipPosition[0] + xOffset);
+                y = static_cast<int>(winHeight - renderable->clipPosition[1] - renderable->clipSize[1]);
+                right = x + static_cast<int>(renderable->clipSize[0]);
+                top = y + static_cast<int>(renderable->clipSize[1]);
+            }
+            if (menu) {
+                x = std::max(0, std::min(menu->width, x)); y = std::max(0, std::min(menu->height, y));
+                right = std::min(menu->width, right); top = std::min(menu->height, top);
+            }
+            graphics->SetScissorRect(x + (menu ? menu->x : 0), y + (menu ? menu->y : 0),
+                std::max(0, right - x), std::max(0, top - y));
+            graphics->setScissorTest(true);
         }
 
         switch (renderable->type) {
@@ -587,7 +600,7 @@ void IMUIContext::render() {
 
                 // Make sure there's anything to do
                 if (text->owner == NULL || text->text == "" || text->fontName == "") {
-                    return;
+                    break;
                 }
 
                 // Make sure we have our text atlas
@@ -596,7 +609,7 @@ void IMUIContext::render() {
                 if (atlas == NULL) {
                     std::string errorMessage = "Unable to find font " + text->fontName;
                     DisplayError("Error", errorMessage.c_str());
-                    return;
+                    break;
                 }
 
                 // Now that we're sure everything is ok, we can finally figure out how big our text is
@@ -748,8 +761,8 @@ void IMUIContext::render() {
                 LOGE << "Unknown renderable type: " << renderable->type << std::endl;
         }
 
-        if (renderable->enableClip) {
-            Graphics::Instance()->setScissorTest(false);
+        if (renderable->enableClip || menu) {
+            graphics->setScissorTest(previous_scissor);
         }
 
         // Clean up the copy
@@ -758,6 +771,7 @@ void IMUIContext::render() {
     graphics->ResetVertexAttribArrays();
 
     renderQueue.clear();
+    if (menu) graphics->SetScissorRect(menu->x, menu->y, menu->width, menu->height);
 }
 
 TextAtlas* IMUIContext::getTextAtlas(std::string fontName, int size, int flags) {

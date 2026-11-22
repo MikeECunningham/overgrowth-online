@@ -37,6 +37,7 @@
 // https://github.com/ocornut/imgui
 
 struct SDL_Window;
+struct ImFont;
 typedef union SDL_Event SDL_Event;
 
 IMGUI_API bool ImGui_ImplSdlGL3_Init(SDL_Window* window);
@@ -48,3 +49,4 @@ IMGUI_API bool ImGui_ImplSdlGL3_ProcessEvent(SDL_Event* event);
 IMGUI_API void ImGui_ImplSdlGL3_InvalidateDeviceObjects();
 IMGUI_API bool ImGui_ImplSdlGL3_CreateDeviceObjects();
 IMGUI_API void ImGui_ImplSdlGL3_RenderDrawLists(ImDrawData* draw_data);
+IMGUI_API ImFont* ImGui_ImplSdlGL3_MenuFont(bool heading);

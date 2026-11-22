@@ -140,6 +140,7 @@ class Level : public ASNetworkCallback {
     std::string GetAchievementsString() const;
     const std::string& GetPath(const std::string& key) const;
     bool HasFocus();
+    bool HasScriptFocus();
     bool DialogueCameraControl();
     void Reset();
 

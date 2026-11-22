@@ -1,42 +1,40 @@
 PROCS ?= $(shell nproc)
+BUILD_DIR ?= Build
+GAME_BINARY ?= $(abspath $(BUILD_DIR))/OvergrowthOnline.bin.x86_64
+CMAKE_ARGS ?=
 
-default: setup build
+.PHONY: default setup setup-release setup-telemetry setup-debug setup-clang-release activate-ogda deactivate-ogda build run debug test clean
+
+default: build
 setup:
-	mkdir -p Build
-	cd Build; cmake ../Projects
+	cmake -S Projects -B "$(BUILD_DIR)" -DCMAKE_BUILD_TYPE=Release -DBUILD_OGDA=OFF $(CMAKE_ARGS)
 setup-release:
-	mkdir -p Build
-	cd Build; cmake -DCMAKE_BUILD_TYPE=Release -DNO_TELEMETRY=On -DBUILD_OGDA=Off ../Projects
+	cmake -S Projects -B "$(BUILD_DIR)" -DCMAKE_BUILD_TYPE=Release -DENABLE_RAD_TELEMETRY=OFF -DBUILD_OGDA=OFF $(CMAKE_ARGS)
 
 setup-telemetry:
-	mkdir -p Build
-	cd Build; cmake -DCMAKE_BUILD_TYPE=Release -DNO_TELEMETRY=Off -DBUILD_OGDA=Off ../Projects
+	cmake -S Projects -B "$(BUILD_DIR)" -DCMAKE_BUILD_TYPE=Release -DENABLE_RAD_TELEMETRY=ON -DBUILD_OGDA=OFF $(CMAKE_ARGS)
 
 setup-debug:
-	mkdir -p Build
-	cd Build; cmake -DCMAKE_BUILD_TYPE=Debug -DNO_TELEMETRY=On -DBUILD_OGDA=Off ../Projects
+	cmake -S Projects -B "$(BUILD_DIR)" -DCMAKE_BUILD_TYPE=Debug -DENABLE_RAD_TELEMETRY=OFF -DBUILD_OGDA=OFF $(CMAKE_ARGS)
 
 setup-clang-release:
-	mkdir -p Build
-	cd Build; cmake -DCMAKE_BUILD_TYPE=Release  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ ../Projects
+	cmake -S Projects -B "$(BUILD_DIR)" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DBUILD_OGDA=OFF $(CMAKE_ARGS)
 
 activate-ogda:
-	mkdir -p Build
-	cd Build; cmake -DBUILD_OGDA=On ../Projects
+	cmake -S Projects -B "$(BUILD_DIR)" -DBUILD_OGDA=ON $(CMAKE_ARGS)
 
 deactivate-ogda:
-	mkdir -p Build
-	cd Build; cmake -DBUILD_OGDA=Off ../Projects
+	cmake -S Projects -B "$(BUILD_DIR)" -DBUILD_OGDA=OFF $(CMAKE_ARGS)
 
-build: 
-	$(MAKE) --no-print-directory -j$(PROCS) -C Build
+build: setup
+	cmake --build "$(BUILD_DIR)" --parallel $(PROCS)
 run:
-	cd Build; ./Overgrowth.bin.x86_64
+	"$(GAME_BINARY)" --working-dir "$(CURDIR)/"
 
 debug:
-	cd Build; cgdb ./Overgrowth.bin.x86_64
+	cgdb "$(GAME_BINARY)"
 
 test: 
-	cd Build; ./Overgrowth.bin.x86_64 --run-unit-tests
+	"$(GAME_BINARY)" --run-unit-tests --no-dialogues
 clean:
-	$(MAKE) --no-print-directory -j$(PROCS) -C Build clean
+	cmake --build "$(BUILD_DIR)" --target clean

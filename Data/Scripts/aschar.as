@@ -10930,7 +10930,7 @@ void ApplyCameraControls(const Timestep &in ts) {
     }
 
     if(!camera.GetAutoCamera()) {
-        if(!level.HasFocus() && cam_input) {
+        if(!PlayerMenuHasFocus(this_mo.controller_id) && cam_input) {
             // Handle direct camera rotation control
             target_rotation -= GetLookXAxis(this_mo.controller_id);
             target_rotation2 -= GetLookYAxis(this_mo.controller_id);
@@ -11030,7 +11030,7 @@ void ApplyCameraControls(const Timestep &in ts) {
         target_rotation2 = mix(target_rotation2, old_tr2, min(1.0f, auto_cam_override));
 
         // Apply manual camera rotation input
-        if(!level.HasFocus() && cam_input) {
+        if(!PlayerMenuHasFocus(this_mo.controller_id) && cam_input) {
             target_rotation -= GetLookXAxis(this_mo.controller_id);
             target_rotation2 -= GetLookYAxis(this_mo.controller_id);
         }

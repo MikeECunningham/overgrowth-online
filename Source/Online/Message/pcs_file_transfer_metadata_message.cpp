@@ -67,6 +67,7 @@ void PCSFileTransferMetadataMessage::Execute(const OnlineMessageRef& ref, void* 
     // Due to the required refactor for this behaviour, we can just start loading what we assume is the map the host would have sent us.
 
     Online* online = Online::Instance();
+    if (online->LobbyWaiting()) return;  // a finished round cannot reopen its old world
 
     // Overgrowth Online: the host told us as it started its own load and we
     // loaded together; this is the handshake's copy: we are on it (or still

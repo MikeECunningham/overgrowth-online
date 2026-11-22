@@ -10,7 +10,81 @@ on; the guest joins. Both must keep running, with no GL problems and no NaN.
 
 import time
 
-from .scenarios import PROFILES, LEVEL, join, wait_loaded
+from .scenarios import PROFILES, LEVEL, dist, join, wait_loaded
+
+
+def local_splitscreen(ctx):
+    """The pause button adds nine local views, with independent P5 input.
+
+    A full level reload must discard the debug roster and its camera override.
+    Run with OGMP_KEYS=renderer=vulkan to exercise that backend too.
+    """
+    inst = ctx.instance("local_splitscreen", level=LEVEL, width=1280, height=720,
+                        keys={"split_screen": "false", "gl_debug": "1"})
+    wait_loaded(inst)
+    bridge = inst.bridge
+    before = bridge.state()
+    npc_ids = {c["id"] for c in before if not c["is_player"]}
+    m, fails = {"counts": []}, []
+
+    def execute(code):
+        bridge.call("exec", target="level", code=code)
+
+    execute('ReceiveMessage("open_menu");')
+    bridge.wait(lambda: bridge.status()["paused"], 10, what="pause menu")
+    for count in range(2, 10):
+        execute('imGUI.receiveMessage(IMMessage("debug_add_local_player"));')
+        bridge.wait(lambda: bridge.status()["local_players"] == count, 20,
+                    what=f"debug local player {count}")
+        bridge.wait(lambda: bridge.status()["local_inputs"] == count, 10,
+                    what=f"local input slots for {count} players")
+        players = [c for c in bridge.state() if c["is_player"]]
+        m["counts"].append(len(players))
+        if {c["controller_id"] for c in players} != set(range(count)):
+            fails.append(f"{count} players: controllers are not unique contiguous slots")
+        if {c["camera_id"] for c in players} != set(range(count)):
+            fails.append(f"{count} players: cameras are not unique contiguous slots")
+    ctx.shot(inst, "pause_nine")
+
+    execute('ReceiveMessage("open_menu");')
+    bridge.wait(lambda: not bridge.status()["paused"], 10, what="continue local play")
+    time.sleep(0.5)
+    start = {c["controller_id"]: c for c in bridge.state() if c["is_player"]}
+    bridge.call("input", controller=4, hold={"up": 1.0}, steps=180)
+    time.sleep(1.5)
+    bridge.call("input", controller=4, release_all=True)
+    end = {c["controller_id"]: c for c in bridge.state() if c["is_player"]}
+    m["p5_moved_m"] = round(dist(start[4]["pos"], end[4]["pos"]), 3)
+    m["p1_moved_m"] = round(dist(start[0]["pos"], end[0]["pos"]), 3)
+    if m["p5_moved_m"] < 1.0 or m["p1_moved_m"] > 0.5:
+        fails.append("P5 input did not move P5 independently of P1")
+    if {c["id"] for c in bridge.state() if not c["is_player"]} != npc_ids:
+        fails.append("debug players changed the NPC roster")
+    ctx.shot(inst, "nine_screens")
+    health = bridge.call("nan_scan")
+    m["nan_characters"] = len(health.get("characters", []))
+    if m["nan_characters"]:
+        fails.append("non-finite character state")
+    status = bridge.status()
+    m["renderer"] = status["renderer"]
+    m["render_problems"] = status.get("vk_problems", 0) + status["gl_problems"]
+    if m["render_problems"]:
+        fails.append("renderer reported problems with nine screens")
+
+    bridge.call("load_level", path="Data/Levels/" + LEVEL, discard=True)
+    bridge.wait(lambda: bridge.status()["level_loaded"] and bridge.status()["local_players"] == 1,
+                150, what="fresh single-player roster after reload")
+    status = bridge.status()
+    m["after_reload"] = {k: status[k] for k in ("local_players", "local_inputs", "split_screen")}
+    if status["local_inputs"] != 1 or status["split_screen"]:
+        fails.append("debug input/camera state survived the level reload")
+    # Reusing camera 1 after a reload exercises the camera-object lifetime too.
+    execute('ReceiveMessage("open_menu");')
+    bridge.wait(lambda: bridge.status()["paused"], 10, what="pause menu after reload")
+    execute('imGUI.receiveMessage(IMMessage("debug_add_local_player"));')
+    bridge.wait(lambda: bridge.status()["local_players"] == 2, 20,
+                what="second local player after reload")
+    return {"passed": not fails, "metrics": m, "notes": fails}
 
 
 def splitscreen_join(ctx, profile="lan"):

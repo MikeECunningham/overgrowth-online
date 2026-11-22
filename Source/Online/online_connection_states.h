@@ -35,6 +35,8 @@ struct PendingConnection {
 
     bool received_client_params = false;
     std::string player_name;
+    std::vector<std::string> local_names;
+    std::vector<int> local_screens;
     std::string active_mods_string;
     PlayerID player_id;
 
@@ -71,5 +73,9 @@ class StateWaiting : public BaseState<PendingConnection> {
 
 class StateEstablished : public BaseState<PendingConnection> {
     void OnEnter() override;
+    BaseState<PendingConnection>* OnUpdate() override;
+};
+
+class StateLobbyWaiting : public BaseState<PendingConnection> {
     BaseState<PendingConnection>* OnUpdate() override;
 };

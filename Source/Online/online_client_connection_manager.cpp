@@ -81,6 +81,16 @@ void ClientConnectionManager::ResetConnections() {
     }
 }
 
+void ClientConnectionManager::ParkConnectionsInLobby() {
+    connection_states.clear();
+    for (const auto& peer : Online::Instance()->GetPeers()) {
+        PendingConnection pending(peer.conn_id);
+        pending.player_id = peer.peer_id;
+        connection_states.emplace(std::piecewise_construct, std::make_tuple(peer.peer_id),
+                                  std::make_tuple(new StateLobbyWaiting(), pending));
+    }
+}
+
 void ClientConnectionManager::ApplyPackage(const PeerID peer_id, PCSBuildVersionMessage* build_version) {
     connection_states[peer_id].actor.received_version = true;
     connection_states[peer_id].actor.build_id = build_version->build_id;
@@ -94,6 +104,8 @@ void ClientConnectionManager::ApplyPackage(const PeerID peer_id, PCSLoadingCompl
 void ClientConnectionManager::ApplyPackage(const PeerID peer_id, PCSClientParametersMessage* client_parameters) {
     connection_states[peer_id].actor.player_name = client_parameters->player_name;
     connection_states[peer_id].actor.active_mods_string = client_parameters->enabled_mods_string;
+    connection_states[peer_id].actor.local_names = client_parameters->local_names;
+    connection_states[peer_id].actor.local_screens = client_parameters->local_screens;
     connection_states[peer_id].actor.received_client_params = true;
 }
 

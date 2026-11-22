@@ -895,6 +895,10 @@ std::string Level::GetAchievementsString() const {
 }
 
 bool Level::HasFocus() {
+    return Engine::Instance()->HasPlayerMenus() || HasScriptFocus();
+}
+
+bool Level::HasScriptFocus() {
     ASArglist args;
     bool has_focus = false;
     ASArg return_arg;

@@ -1897,7 +1897,9 @@ std::vector<std::string> ModInstance::GenerateValidityErrorsArr(const ModValidit
     }
 
     if (val.Intersects(kValidityActiveModCollision)) {
-        if (instance) {
+        if (!instance) {
+            e.push_back("File collisions with another active mod");
+        } else {
             std::vector<ModInstance*>::iterator modit = ModLoading::Instance().mods.begin();
             for (; modit != ModLoading::Instance().mods.end(); modit++) {
                 if ((*modit)->sid != instance->sid) {
@@ -2194,6 +2196,38 @@ std::vector<std::string> ModInstance::GenerateValidityErrorsArr(const ModValidit
 
     if (val.Intersects(kValidityCampaignIDMissing)) {
         e.push_back("Campaign IDs are missing");
+    }
+
+    // These metadata checks were added without their corresponding UI errors.
+    static const struct {
+        const ModValidity* flag;
+        const char* message;
+    } metadata_errors[] = {
+        {&kValidityCampaignMenuMusicTooLong, "Campaign menu music path too long"},
+        {&kValidityCampaignMenuMusicMissing, "Campaign menu music missing"},
+        {&kValidityCampaignMenuScriptTooLong, "Campaign menu script path too long"},
+        {&kValidityMainScriptTooLong, "Main script path too long"},
+        {&kValidityAttributeIdTooLong, "Attribute ID too long"},
+        {&kValidityAttributeIdInvalid, "Invalid attribute ID"},
+        {&kValidityAttributeValueTooLong, "Attribute value too long"},
+        {&kValidityAttributeValueInvalid, "Invalid attribute value"},
+        {&kValidityLevelIdTooLong, "Level ID too long"},
+        {&kValidityLevelParameterNameTooLong, "Level parameter name too long"},
+        {&kValidityLevelParameterNameMissing, "Level parameter name missing"},
+        {&kValidityLevelParameterValueTooLong, "Level parameter value too long"},
+        {&kValidityLevelParameterValueMissing, "Level parameter value missing"},
+        {&kValidityLevelParameterTypeTooLong, "Level parameter type too long"},
+        {&kValidityPoseNameTooLong, "Pose name too long"},
+        {&kValidityPoseNameMissing, "Pose name missing"},
+        {&kValidityPosePathTooLong, "Pose path too long"},
+        {&kValidityPosePathMissing, "Pose path missing"},
+        {&kValidityPoseCommandTooLong, "Pose command too long"},
+        {&kValidityPoseCommandMissing, "Pose command missing"},
+    };
+    for (const auto& error : metadata_errors) {
+        if (val.Intersects(*error.flag)) {
+            e.push_back(error.message);
+        }
     }
 
     return e;

@@ -52,6 +52,18 @@ std::vector<Possession> AvatarControlManager::GeneratePossessionList() {
 
     std::vector<Possession> possessions;
 
+    if (!online->IsActive()) {
+        // Offline player actors own contiguous local input/camera slots. The
+        // dynamic scene query preserves the order of already assigned players.
+        possessions.reserve(engine->avatar_ids.size());
+        for (size_t i = 0; i < engine->avatar_ids.size(); ++i) {
+            const int controller_id = static_cast<int>(i);
+            possessions.emplace_back(engine->avatar_ids[i], controller_id,
+                                     engine->GetSplitScreen() ? controller_id : 0, true);
+        }
+        return possessions;
+    }
+
     int local_player_index = 0;
     if (online->IsActive()) {
         for (auto& player_state : online->GetPlayerStates()) {
@@ -59,13 +71,16 @@ std::vector<Possession> AvatarControlManager::GeneratePossessionList() {
                 continue;
             }
 
-            bool is_local = online->IsLocalAvatar(player_state.object_id);
+            bool is_local = player_state.peer_id == online->LocalPeerID();
             int camera_id = -1;
             int controller_id = -1;
 
             if (is_local) {
-                camera_id = 0;
-                controller_id = local_player_index;
+                camera_id = std::max(0, player_state.screen - 1);
+                controller_id = Input::Instance()->GetLocalPlayerInputID(player_state.local_index);
+                const int previous_camera = ActiveCameras::GetID();
+                ActiveCameras::Set(camera_id);
+                ActiveCameras::Set(previous_camera);
                 local_player_index++;
             } else if (online->IsClient()) {
                 // Another player's avatar on a client: our own virtual slot
@@ -107,6 +122,10 @@ std::vector<Possession> AvatarControlManager::GeneratePossessionList() {
             continue;
         }
 
+        // The host leaves unclaimed map avatars available for roster players;
+        // they are not additional people on the host's keyboard.
+        if (online->IsHosting()) continue;
+
         int camera_id = 0;
 
         if (Engine::Instance()->GetSplitScreen()) {
@@ -126,16 +145,16 @@ std::vector<ObjectID> AvatarControlManager::GetUnpossessedAvatars() {
 
     std::vector<ObjectID> unpossessed_avatars;
 
-    int avatar_ids[Engine::kMaxAvatars];
-    int num_avatars;
+    std::vector<int> avatar_ids;
     if (scenegraph_ != nullptr) {
-        scenegraph_->GetPlayerCharacterIDs(&num_avatars, avatar_ids, Engine::kMaxAvatars);
+        scenegraph_->GetPlayerCharacterIDs(avatar_ids);
 
-        for (int i = 0; i < num_avatars; i++) {
-            bool found = online->IsAvatarPossessed(avatar_ids[i]);
+        for (int avatar_id : avatar_ids) {
+            bool found = false;
+            for (const auto& state : online->GetPlayerStates()) found = found || state.object_id == avatar_id;
 
             if (found == false) {
-                unpossessed_avatars.push_back(avatar_ids[i]);
+                unpossessed_avatars.push_back(avatar_id);
             }
         }
     }
@@ -148,7 +167,8 @@ void AvatarControlManager::Update() {
     Online* online = Online::Instance();
     SceneGraph* scenegraph_ = Engine::Instance()->GetSceneGraph();
 
-    scenegraph_->GetPlayerCharacterIDs(&engine->num_avatars, engine->avatar_ids, Engine::kMaxAvatars);
+    scenegraph_->GetPlayerCharacterIDs(engine->avatar_ids);
+    engine->num_avatars = static_cast<int>(engine->avatar_ids.size());
 
     if (scenegraph_->map_editor->state_ != MapEditor::kInGame) {  // We probably shouldn't do this in mp at all, not even our own controlable char as host
         for (int i = 0; i < engine->num_avatars; ++i) {
@@ -183,11 +203,13 @@ void AvatarControlManager::Update() {
                 }
             }
         }
-        Camera& active_camera = *ActiveCameras::Get();
-        CameraObject& camera_object = *active_camera.getCameraObject();
-        if (!camera_object.controlled) {
-            camera_object.controlled = true;
-            camera_object.SetTranslation(active_camera.GetPos());
+        // Only the primary camera has the level's editor camera object. Local
+        // chase cameras are created dynamically and do not own editor objects.
+        Camera* editor_camera = ActiveCameras::GetCamera(0);
+        CameraObject* camera_object = editor_camera ? editor_camera->getCameraObject() : nullptr;
+        if (camera_object != nullptr && !camera_object->controlled) {
+            camera_object->controlled = true;
+            camera_object->SetTranslation(editor_camera->GetPos());
         }
     } else {
         // If there is no controllable avatars in the scene, create one at the camera position and use it.
@@ -195,18 +217,17 @@ void AvatarControlManager::Update() {
         if (engine->num_avatars == 0 && !online->IsClient()) {
             int id = scenegraph_->map_editor->CreateObject("Data/Objects/IGF_Characters/IGF_TurnerActor.xml");
             MovementObject* mo = static_cast<MovementObject*>(scenegraph_->GetObjectFromID(id));
-            mo->SetTranslation(ActiveCameras::Get()->getCameraObject()->GetTranslation());
+            Camera* camera = ActiveCameras::GetCamera(0);
+            CameraObject* camera_object = camera ? camera->getCameraObject() : nullptr;
+            mo->SetTranslation(camera_object ? camera_object->GetTranslation() :
+                               (camera ? camera->GetPos() : vec3(0.0f, 1.0f, 0.0f)));
             mo->is_player = true;
-            scenegraph_->GetPlayerCharacterIDs(&engine->num_avatars, engine->avatar_ids, Engine::kMaxAvatars);
+            scenegraph_->GetPlayerCharacterIDs(engine->avatar_ids);
+            engine->num_avatars = static_cast<int>(engine->avatar_ids.size());
         }
 
-        // If we're running in multiplayer, disable multiple local avatars for now.
-        // This might change in the future if we want to support local split-screen, then
-        // this has to be called with the number of local players on _this_ client/host,
-        // because this function sets up the bindings between controllers and the indexes of controller
-        // input from 0 to 3.
         if (online->IsActive()) {
-            Input::Instance()->SetUpForXPlayers(1);
+            Input::Instance()->SetUpForXPlayers(online->LocalLobbyPlayerCount(), true);
         } else {
             Input::Instance()->SetUpForXPlayers(engine->num_avatars);
         }
@@ -264,6 +285,9 @@ void AvatarControlManager::Update() {
                 avatar->camera_id = possession.camera_id;
             }
         }
-        ActiveCameras::Get()->getCameraObject()->controlled = false;
+        Camera* editor_camera = ActiveCameras::GetCamera(0);
+        if (editor_camera != nullptr && editor_camera->getCameraObject() != nullptr) {
+            editor_camera->getCameraObject()->controlled = false;
+        }
     }
 }

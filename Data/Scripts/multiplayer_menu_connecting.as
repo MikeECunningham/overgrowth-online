@@ -99,6 +99,11 @@ bool CanGoBack() {
 }
 
 void Update() {
+    LobbyUpdate();
+    if(LobbyActive()) {
+        this_ui.SendCallback("multiplayer_lobby.as");
+        return;
+    }
     UpdateController();
     UpdateKeyboardMouse();
 

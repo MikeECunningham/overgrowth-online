@@ -3,6 +3,11 @@
 #include "crn_core.h"
 #include "crn_threading_pthreads.h"
 #include "crn_timer.h"
+#include <cerrno>
+#include <cstdio>
+#ifndef WIN32
+#include <unistd.h>
+#endif
 
 #if CRNLIB_USE_PTHREADS_API
 
@@ -132,17 +137,35 @@ namespace crnlib
       CRNLIB_ASSERT(maximumCount >= initialCount);
 
       m_name = name;
-      m_sem = sem_open(m_name, O_CREAT, 0644, initialCount);
+      // Names passed by task_pool are labels, not shared synchronization names.
+      // Every pool, including pools in other game processes, needs its own
+      // semaphore. Unlink immediately so a crash cannot leave stale tokens.
+      static volatile atomic32_t semaphore_sequence = 0;
+      char unique_name[64];
+      do
+      {
+#ifdef WIN32
+         const unsigned long process_id = static_cast<unsigned long>(_getpid());
+#else
+         const unsigned long process_id = static_cast<unsigned long>(getpid());
+#endif
+         snprintf(unique_name, sizeof(unique_name), "/crn%lx-%lx", process_id,
+                  static_cast<unsigned long>(atomic_increment32(&semaphore_sequence)));
+         m_sem = sem_open(unique_name, O_CREAT | O_EXCL, 0600, initialCount);
+      } while (m_sem == SEM_FAILED && errno == EEXIST);
       if (m_sem == SEM_FAILED)
       {
          CRNLIB_FAIL("semaphore: sem_open() failed");
+      }
+      else
+      {
+         sem_unlink(unique_name);
       }
    }
 
    semaphore::~semaphore()
    {
       sem_close(m_sem);
-      sem_unlink(m_name);
    }
 
    void semaphore::release(long releaseCount)
@@ -191,27 +214,29 @@ namespace crnlib
 
    bool semaphore::wait(uint32 milliseconds)
    {
-      int status;
       if (milliseconds == cUINT32_MAX)
       {
-         status = sem_wait(m_sem);
+         int status;
+         do { status = sem_wait(m_sem); } while (status && errno == EINTR);
+         if (!status) return true;
       }
       else
       {
-         alarm(milliseconds / 1000);
-         status = sem_wait(m_sem);
-      }
-
-      if (status)
-      {
-         if (errno != ETIMEDOUT)
+         // sem_timedwait is unavailable on older macOS versions. Polling this
+         // short completion wait also avoids changing the process SIGALRM.
+         timer elapsed;
+         elapsed.start();
+         for (;;)
          {
-            CRNLIB_FAIL("semaphore: sem_wait() or sem_timedwait() failed");
+            if (!sem_trywait(m_sem)) return true;
+            if (errno == EINTR) continue;
+            if (errno != EAGAIN) break;
+            if (elapsed.get_elapsed_ms() >= milliseconds) return false;
+            crn_sleep(1);
          }
-         return false;
       }
-
-      return true;
+      CRNLIB_FAIL("semaphore: wait failed");
+      return false;
    }
 
    spinlock::spinlock()

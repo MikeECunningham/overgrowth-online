@@ -49,6 +49,7 @@ class ClientConnectionManager {
     void RemoveConnection(const PeerID peer_id);
     void AddConnection(const PeerID peer_id, const NetConnectionID net_connection_id);
     void ResetConnections();
+    void ParkConnectionsInLobby();
 
     void ApplyPackage(const PeerID peer_id, OnlineMessages::PCSBuildVersionMessage* build_version);
     void ApplyPackage(const PeerID peer_id, OnlineMessages::PCSLoadingCompletedMessage* loading_completed);

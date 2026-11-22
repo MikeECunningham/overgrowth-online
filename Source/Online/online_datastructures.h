@@ -42,7 +42,9 @@ using std::array;
 typedef uint32_t OnlineMessageID;
 typedef uint16_t OnlineMessageType;
 typedef uint8_t PeerID;
-typedef uint8_t PlayerID;
+// A transport peer may own several local players. Logical IDs must not wrap
+// into the peer namespace when a client adds its fifth (or 256th) player.
+typedef uint32_t PlayerID;
 typedef int32_t CommonObjectID;
 
 class OnlineMessageRef {
@@ -73,6 +75,12 @@ enum class MultiplayerMode : uint8_t {
 };
 
 struct PlayerState {
+    PlayerID player_id = 0;
+    PeerID peer_id = 255;  // machine that simulates this player; host is 255
+    uint32_t local_index = 0;
+    int team = 1;
+    int screen = 1;  // one-based screen in that peer's local context
+    bool connected = true;
     std::string playername = "UNKNOWN";
     ObjectID object_id = 1;
     uint16_t ping = 0;

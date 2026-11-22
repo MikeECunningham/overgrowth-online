@@ -31,11 +31,13 @@ int controller_id = 0;
 bool has_gui = false;
 bool toggle_gui = false;
 bool draw_settings = false;
+string debug_local_player_notice;
 bool has_display_text = false;
 string display_text = "";
 uint32 display_text_id;
 string hotspot_image_string;
 bool menu_paused = false;
+bool menu_world_paused = false;
 bool allow_retry = true;
 
 // Overgrowth Online: the host's Retry loads the level again for everyone (the
@@ -300,10 +302,14 @@ void ReceiveMessage(string msg) {
             fade_in_end = the_time+fade_time*2.0f;
         }
     } else if(token == "open_menu") {
+        // Native personal menus consume their own Start/Escape presses. Keep
+        // the legacy route for editor mode and scripts that request it.
         if(!has_gui){
             toggle_gui = true;
-            SetPaused(true);
-            menu_paused = true;
+            if(!Online_IsActive() && DebugLocalPlayerCount() <= 1) {
+                SetPaused(true);
+                menu_paused = true;
+            }
         }else{
             if(draw_settings){
                 ProcessSettingsMessage(IMMessage("back"));
@@ -334,7 +340,10 @@ void ReceiveMessage(string msg) {
             }
         }
     } else if(token.findFirst("menu_player") == 0) {
-        ProcessSettingsMessage(IMMessage(token));
+        int player = parseInt(token.substr(11));
+        SetControllerPlayer(player);
+        SetConfigValueInt("menu_player_config", max(0, GetLocalPlayerIndexForInputID(player)));
+        if(draw_settings) SwitchSettingsScreen(current_screen);
     } else {
         dialogue.ReceiveMessage(msg);
     }
@@ -483,6 +492,13 @@ void CoopDialogueFreeze() {
 }
 
 void Update(int paused) {
+    if(menu_paused && (Online_IsActive() || DebugLocalPlayerCount() > 1)) {
+        menu_paused = false;
+        SetPaused(false);
+    }
+    bool changed_world_pause = menu_world_paused != (paused != 0);
+    menu_world_paused = paused != 0;
+    if(changed_world_pause && has_gui && !draw_settings) AddPauseMenu();
     CoopDialogueFreeze();
     CoopReviveUpdate();
     CoopStoryUpdate();
@@ -504,9 +520,15 @@ void Update(int paused) {
         has_gui = true;
     }
     else if(has_gui && toggle_gui){
+        ResetController();
         imGUI.clear();
         toggle_gui = false;
         has_gui = false;
+        menu_paused = false;
+        // Release menu ownership even when this personal menu never paused
+        // the shared world. Explicit user/online pauses remain in effect.
+        SetPaused(false);
+        SetControllerPlayer(0);
     }
 
     if(level.HasFocus()){
@@ -548,6 +570,25 @@ void Update(int paused) {
             draw_settings = true;
             ResetController();
             BuildUI("Screen");
+        }
+        else if (message.name == "debug_add_local_player")
+        {
+            int id = DebugAddLocalPlayer();
+            debug_local_player_notice = id < 0 ? "Could not add player." : "";
+            AddPauseMenu();
+        }
+        else if(message.name == "toggle_world_pause")
+        {
+            if(LobbyCanPause() && LobbySetPaused(!menu_world_paused)) {
+                menu_world_paused = !menu_world_paused;
+                AddPauseMenu();
+            }
+        }
+        else if(message.name == "end_game_to_lobby")
+        {
+            if(Online_IsHosting() && GetConfigValueInt("controller_menu_owner") == 0 && LobbyEndGame()) {
+                return;
+            }
         }
         else if (message.name == "Disconnect")
         {            
@@ -800,9 +841,9 @@ void AddPauseMenu(){
     float header_width = 550;
     float header_height = 128;
 
+    ResetController();
     imGUI.clear();
     imGUI.setup();
-    ResetController();
     category_elements.resize(0);
     @current_item = null;
 
@@ -857,12 +898,37 @@ void AddPauseMenu(){
         buttons_holder.setAlignment(CACenter, CACenter);
         mainDiv.append(buttons_holder);
         AddButton("Continue", buttons_holder, 30, forward_chevron);
-        if (!Online_IsClient()) {
+        bool local_p1 = GetConfigValueInt("controller_menu_owner") == 0;
+        if (local_p1 && !Online_IsClient()) {
             AddButton("Retry", buttons_holder, 30, retry_icon);
         }
         AddButton("Settings", buttons_holder, 30, settings_icon);
 
-        if (Online_IsActive()) {
+        if((Online_IsActive() || DebugLocalPlayerCount() > 1) && LobbyCanPause()) {
+            AddButton(menu_world_paused ? "Resume world" : "Pause world", buttons_holder, "null",
+                      button_background_diamond, false, 600.0f, 30.0f,
+                      mouseover_scale_button, IMMessage("toggle_world_pause"));
+        }
+
+        if(local_p1 && Online_IsHosting()) {
+            AddButton("End game", buttons_holder, "null", button_background_diamond,
+                      false, 600.0f, 30.0f, mouseover_scale_button, IMMessage("end_game_to_lobby"));
+        }
+
+        if (local_p1 && !Online_IsActive()) {
+            AddButton("Add player (debug)", buttons_holder, "null", button_background_diamond,
+                      false, 700.0f, 30.0f, mouseover_scale_button, IMMessage("debug_add_local_player"));
+            IMText local_players(debug_local_player_notice == "" ?
+                                 "Local players: " + DebugLocalPlayerCount() : debug_local_player_notice,
+                                 button_font_extra_small);
+            IMContainer local_players_container(700.0f, 70.0f);
+            local_players_container.setAlignment(CACenter, CACenter);
+            local_players.setClip(false);
+            local_players_container.setElement(local_players);
+            buttons_holder.append(local_players_container);
+        }
+
+        if (local_p1 && Online_IsActive()) {
             if (Online_IsClient()) {
                 AddButton("Disconnect", buttons_holder, 30, settings_icon);
             } else if (Online_HasFriendInviteOverlay()) {
@@ -870,10 +936,10 @@ void AddPauseMenu(){
             }
         }
 
-        if(EditorEnabled()){
+        if(local_p1 && EditorEnabled()){
             AddButton("Media Mode", buttons_holder, 30, media_icon);
         }
-        AddButton("Main Menu", buttons_holder, 30, exit_icon);
+        if(local_p1) AddButton("Main Menu", buttons_holder, 30, exit_icon);
 
         buttons_holder.append(IMSpacer(DOVertical, 100.0f));
     }
