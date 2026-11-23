@@ -6724,10 +6724,13 @@ Path Engine::GetLatestLevelPath() {
 
 void Engine::CommitPause() {
     bool was_paused = paused;
-    if (!Online::Instance()->IsActive()) {
-        paused = user_paused || menu_paused || (player_menus_ && player_menus_->PausesWorld());
+    Online* online = Online::Instance();
+    const bool solo_party = online->IsLocalOnlySession() && online->LocalLobbyPlayerCount() <= 1;
+    if (!online->IsActive() || solo_party) {
+        paused = user_paused || menu_paused || (player_menus_ && player_menus_->PausesWorld()) ||
+            (solo_party && online->TimeFrozen());
     } else {
-        paused = Online::Instance()->TimeFrozen();  // (Overgrowth Online: the host froze time for everyone)
+        paused = online->TimeFrozen();  // (Overgrowth Online: the host froze time for everyone)
     }
 
     game_timer.target_time_scale = (paused || slow_motion) ? 0.1f : current_global_scale_mult;

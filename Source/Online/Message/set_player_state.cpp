@@ -39,6 +39,7 @@ SetPlayerState::SetPlayerState(PlayerID player_id, const PlayerState* player_sta
     local_index = player_state->local_index;
     team = player_state->team;
     screen = player_state->screen;
+    is_bot = player_state->is_bot;
 }
 
 binn* SetPlayerState::Serialize(void* object) {
@@ -55,6 +56,7 @@ binn* SetPlayerState::Serialize(void* object) {
     binn_object_set_uint32(l, "local_index", t->local_index);
     binn_object_set_int32(l, "team", t->team);
     binn_object_set_int32(l, "screen", t->screen);
+    binn_object_set_bool(l, "is_bot", t->is_bot);
 
     return l;
 }
@@ -72,6 +74,9 @@ void SetPlayerState::Deserialize(void* object, binn* l) {
     binn_object_get_uint32(l, "local_index", &t->local_index);
     binn_object_get_int32(l, "team", &t->team);
     binn_object_get_int32(l, "screen", &t->screen);
+    BOOL bot = FALSE;
+    binn_object_get_bool(l, "is_bot", &bot);
+    t->is_bot = bot != FALSE;
 }
 
 void SetPlayerState::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {
@@ -79,7 +84,13 @@ void SetPlayerState::Execute(const OnlineMessageRef& ref, void* object, PeerID f
     ObjectID object_id = Online::Instance()->GetObjectID(t->object_id);
 
     // Clients have not (and should not) registered a camera id locally applying the host's camera_id will lead to a crash.
-    if (Online::Instance()->IsClient()) {
+    if (t->is_bot) {
+        t->controller_id = -1;
+        t->camera_id = -1;
+        t->screen = 0;
+        t->local_index = std::numeric_limits<uint32_t>::max();
+        t->peer_id = 255;
+    } else if (Online::Instance()->IsClient()) {
         t->camera_id = 0;
     }
 
@@ -94,6 +105,7 @@ void SetPlayerState::Execute(const OnlineMessageRef& ref, void* object, PeerID f
     new_player_state.local_index = t->local_index;
     new_player_state.team = t->team;
     new_player_state.screen = t->screen;
+    new_player_state.is_bot = t->is_bot;
 
     // Set new state
     Online::Instance()->online_session->player_states[t->player_id] = new_player_state;
@@ -102,6 +114,11 @@ void SetPlayerState::Execute(const OnlineMessageRef& ref, void* object, PeerID f
     if (avatar && avatar->created_on_the_fly) {
         avatar->exclude_from_save = true;
         avatar->exclude_from_undo = true;
+    }
+    if (avatar && t->is_bot && avatar->GetType() == _movement_object) {
+        auto* bot = static_cast<MovementObject*>(avatar);
+        bot->is_player = false; bot->controlled = false; bot->controller_id = -1;
+        bot->camera_id = 0;  // NPC scripts query the existing main camera, without owning a view.
     }
     Online::Instance()->ApplyAssignedTeam(object_id);
 }

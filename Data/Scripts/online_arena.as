@@ -14,9 +14,9 @@
 //                 The host may instead force its manual lobby teams.
 //                 The crowd and the arena music.
 //
-//                 Bots (the host's AI fighters, config "oo_arena_bots": fill the
-//                 match up to that many fighters, 0 none; 2 if never set): a
-//                 player who joins takes a bot's place from the next round.
+//                 Bots are explicit lobby seats. The native host creates their
+//                 AI actors; this script never fills or deletes those seats.
+//                 Humans and bots who join enter the next round together.
 //                 The randomizer (config "oo_arena_random"): every round each
 //                 fighter, players and bots, becomes a random species and look
 //                 with random gear; when it is switched off the players get
@@ -55,8 +55,7 @@ ArenaPhase phase = kWaiting;
 float phase_time = 0.0f;   // the_time when the phase began
 int intro_step = 0;
 
-array<int> bots;           // the host's AI fighters
-int bot_serial = 0;
+array<int> bots;           // live actors belonging to explicit lobby bot seats
 
 // The randomizer: this round's (per roster place) character and gear
 bool random_round = false;
@@ -323,7 +322,8 @@ void HostUpdate() {
     DropGonePlayers();
 
     if(phase == kWaiting) {
-        if((LobbyGetForceTeams() ? TeamCount(Players()) : int(Players().length())) + WantedBots() >= 2) {
+        array<int> fighters = Fighters();
+        if((LobbyGetForceTeams() ? TeamCount(fighters) : int(fighters.length())) >= 2) {
             if(shown_text != "") {
                 Show("");
             }
@@ -332,7 +332,7 @@ void HostUpdate() {
             }
         } else {
             phase_time = the_time;
-            string waiting = Players().length() + WantedBots() >= 2 ?
+            string waiting = fighters.length() >= 2 ?
                 "Waiting for another team" : "Waiting for another player";
             if(shown_text != waiting) {
                 Show(waiting);
@@ -447,15 +447,12 @@ void StartRound() {
     round_winner = -1;
     round_winners.resize(0);
 
-    // Bots: as many as wanted now (a joined player takes one's place)
+    // Bot actors belong to native roster seats, just like the human actors.
     int previous_size = int(roster.length());
     SyncBots();
 
     // Everyone here plays (late joiners from the next round on), on their lobby teams.
-    array<int> players = Players();
-    for(uint k = 0; k < bots.length(); ++k) {
-        players.insertLast(bots[k]);
-    }
+    array<int> players = Fighters();
     for(uint k = 0; k < players.length(); ++k) {
         if(roster.find(players[k]) < 0) {
             roster.insertLast(players[k]);
@@ -641,8 +638,9 @@ void Become(int id, const string &in path) {
     }
 }
 
-// The players' characters here, in join order
-array<int> Players() {
+// Every ready seat gets exactly one fighter. Native owns creation/removal and
+// the mapping from a persistent lobby seat to this level's actor.
+array<int> Fighters() {
     array<int> ids;
     array<PlayerState>@ states = GetPlayerStates();
     for(uint k = 0; k < states.length(); ++k) {
@@ -657,14 +655,10 @@ array<int> Players() {
 // Players who left drop out; keep every avatar on its lobby team, including
 // newly possessed characters and characters replaced by the randomizer.
 void DropGonePlayers() {
-    array<int> players = Players();
-    for(int k = int(bots.length()) - 1; k >= 0; --k) {
-        if(!MovementObjectExists(bots[k])) {
-            bots.removeAt(k);
-        }
-    }
+    SyncBots();
+    array<int> players = Fighters();
     for(int k = int(roster.length()) - 1; k >= 0; --k) {
-        if(players.find(roster[k]) < 0 && bots.find(roster[k]) < 0) {
+        if(players.find(roster[k]) < 0) {
             roster.removeAt(k);
             points.removeAt(k);
             if(k < int(fighter_teams.length())) fighter_teams.removeAt(k);
@@ -690,7 +684,6 @@ void OwnTeam(int id) {
 string DesiredTeamForAvatar(int id) {
     int assigned = LobbyGetAssignedTeam(id);
     if(assigned > 0) return "arena_team_" + assigned;
-    if(bots.find(id) >= 0) return "bot" + id;
     array<PlayerState>@ states = GetPlayerStates();
     for(uint k = 0; k < states.length(); ++k) {
         if(states[k].avatar_id == id) {
@@ -759,61 +752,26 @@ void HealOwn() {
 
 // ---- host: bots -----------------------------------------------------------
 
-// How many fighters the host wants the match filled up to (0: no bots)
-int ArenaFighters() {
-    return ConfigHasKey("oo_arena_bots") ? max(0, GetConfigValueInt("oo_arena_bots")) : 2;
-}
-
-int WantedBots() {
-    int fighters = ArenaFighters();
-    return fighters <= 0 ? 0 : max(0, fighters - int(Players().length()));
-}
-
-// Bots in or out (round starts): the newest leave first
+// Track the host-simulated actors without creating or deleting roster seats.
+// A late bot waits quietly until the next round, as a late human does.
 void SyncBots() {
-    int want = WantedBots();
-    while(int(bots.length()) > want) {
-        int id = bots[bots.length() - 1];
-        bots.removeLast();
-        int at = roster.find(id);
-        if(at >= 0) {
-            roster.removeAt(at);
-            points.removeAt(at);
-            if(at < int(fighter_teams.length())) fighter_teams.removeAt(at);
-            if(at < int(fighter_spots.length())) fighter_spots.removeAt(at);
+    bots.resize(0);
+    array<PlayerState>@ states = GetPlayerStates();
+    for(uint k = 0; k < states.length(); ++k) {
+        int id = states[k].avatar_id;
+        if(states[k].is_bot && id >= 0 && MovementObjectExists(id) && bots.find(id) < 0) {
+            bots.insertLast(id);
+            if(!ReadObjectFromID(id).GetScriptParams().HasParam("Arena AI Initialized")) ConfigureBot(id);
         }
-        if(ObjectExists(id)) {
-            QueueDeleteObjectID(id);
-        }
-    }
-    while(int(bots.length()) < want) {
-        bots.insertLast(MakeBot());
     }
 }
 
-// An AI fighter of the arena's own kinds (multi_arena_enemy_spawn.as), middling
-int MakeBot() {
-    array<string> kinds = {"char_guard", "char_raider", "char_civ"};
-    array<int> fur_channels = {1, 0, -1};
-    int kind = rand() % 3;
-    string path = level.GetPath(kinds[kind]);
-    if(path == "") {
-        path = level.GetPath("char_player");
-        kind = 2;
-    }
-    int id = CreateObject(path, true);
+// Keep the arena's middling AI tuning, on the actor native assigned this seat.
+void ConfigureBot(int id) {
     Object@ obj = ReadObjectFromID(id);
-    obj.SetTranslation(Online_SafeSpotNear(spots.length() > 0 ? spots[0] : arena_center, vec3(0.0f, 0.0f, 1.0f), 0));
-    if(fur_channels[kind] >= 0) {
-        array<vec3> furs = {vec3(0.45f, 0.33f, 0.22f), vec3(0.3f, 0.3f, 0.3f), vec3(0.6f, 0.5f, 0.38f), vec3(0.18f, 0.14f, 0.1f), vec3(0.75f, 0.72f, 0.68f)};
-        obj.SetPaletteColor(fur_channels[kind], furs[rand() % int(furs.length())]);
-    }
-    ++bot_serial;
     ScriptParams@ params = obj.GetScriptParams();
-    params.AddIntCheckbox("No Save", true);
-    params.AddString("Bot Name", "Bot " + bot_serial);
-    params.AddInt("Knockout Shield", kArenaShields);
-    params.SetString("Teams", "bot" + id);  // everyone for themselves
+    params.AddIntCheckbox("Arena AI Initialized", true);
+    if(!params.HasParam("Knockout Shield")) params.AddInt("Knockout Shield", kArenaShields);
     float d = 0.5f;
     params.SetFloat("Character Scale", mix(RangedRandomFloat(0.9f, 1.0f), RangedRandomFloat(1.0f, 1.1f), d));
     params.SetFloat("Block Follow-up", mix(RangedRandomFloat(0.01f, 0.25f), RangedRandomFloat(0.75f, 1.0f), d));
@@ -827,14 +785,13 @@ int MakeBot() {
     params.SetFloat("Ground Aggression", d);
     params.SetFloat("Damage Resistance", mix(RangedRandomFloat(0.6f, 0.8f), RangedRandomFloat(0.9f, 1.1f), d));
     obj.UpdateScriptParams();
-    Log(info, "Overgrowth Online: arena bot " + id + " (" + path + ")");
-    return id;
+    ReadCharacterID(id).ReceiveScriptMessage("set_combat_allowed false");
 }
 
 // "Fight!": the bots may fight, and know everyone in the match
 void BotsFight() {
     for(uint k = 0; k < bots.length(); ++k) {
-        if(!MovementObjectExists(bots[k])) {
+        if(!MovementObjectExists(bots[k]) || roster.find(bots[k]) < 0) {
             continue;
         }
         MovementObject@ bot = ReadCharacterID(bots[k]);
@@ -907,7 +864,7 @@ void SetUpMatch() {
         // matches everyone gets the same weapon (arena_level.as)
         intro = "Welcome to the arena!";
         int game_type = rand() % 3;
-        int fighters = int(Players().length()) + WantedBots();
+        int fighters = int(Fighters().length());
         template_ffa = rand() % 3 == 0;
         int teams = min(max(2, fighters), rand() % 2 == 0 ? 2 : 3);
         for(int t = 0; t < teams; ++t) template_weights.insertLast(1);

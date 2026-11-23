@@ -1127,6 +1127,30 @@ SCENARIOS["stucco_solo"] = _stucco_solo
 SCENARIOS["cave_spawns"] = _cave_spawns
 SCENARIOS["loose_weapon_playback"] = _loose_weapon_playback
 
+
+def _roster_bots_arena(ctx):
+    from .lobby_bot_arena_suite import roster_bots_arena
+    return roster_bots_arena(ctx)
+
+
+SCENARIOS["roster_bots_arena"] = _roster_bots_arena
+
+def _lobby_bots(ctx):
+    from .lobby_bots_suite import lobby_bots
+    return lobby_bots(ctx)
+
+
+SCENARIOS["lobby_bots"] = _lobby_bots
+
+
+def _bot_migration(ctx):
+    from .bot_migration_suite import bot_migration
+    return bot_migration(ctx)
+
+
+SCENARIOS["bot_migration"] = _bot_migration
+
+
 SUITES = {
     "smoke": ["boot", "move", "connect"],
     "baseline": ["connect", "connect_typical", "connect_bad", "bot_duel"],

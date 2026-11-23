@@ -13,11 +13,11 @@ cd overgrowth-online
 
 Use the same release tag or commit as the host. The inherited private Wolfire submodules are not required; clone without `--recurse-submodules`. Game assets are read from each player's installed game and are not included in the source.
 
-The current local-multiplayer prerelease is `0.42.0-alpha.3`. Once its tag has been
+The current local-multiplayer prerelease is `0.42.0-alpha.4`. Once its tag has been
 published, select that exact source revision before configuring:
 
 ```sh
-git switch --detach v0.42.0-alpha.3
+git switch --detach v0.42.0-alpha.4
 ```
 
 Until a tag is published, ask the host for the commit to use. The in-game version
@@ -75,6 +75,11 @@ Replace `$gamePath` with your own installation folder. Keep the executable in `B
 On a LAN, use the host's LAN address. Across the internet, the host may need to allow and forward **UDP 25744** to their computer. The source builds above use direct-IP networking. Steam invitations, friends-list joining and Valve relays use a separate Steamworks build; see [RELEASE.md](RELEASE.md).
 
 Keep the same fork version and enabled mods on every machine. Local players can join in the lobby or during play; reconnecting a controller restores its existing player. Each player can open their own Start menu without stopping multiplayer; the designated host has the default shared-pause authority.
+
+The host can use **Add bot** in the lobby or pause menu. Bots have roster entries
+with names and teams, and the host can remove them. They do not add screens or
+use controllers. In Arena, newly added bots join the next round; its usual
+random team/FFA rules apply unless **Force lobby teams** is checked.
 
 Joining an already-running single-player game creates a local party. Its roster,
 controller settings and screen assignments continue across campaign levels.

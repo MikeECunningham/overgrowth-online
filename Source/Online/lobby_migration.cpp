@@ -320,7 +320,7 @@ void Online::UpdateLobbyHostMigration() {
             reader.parse(handoff.snapshot, snapshot, false);
             std::set<PlayerID> expected, present;
             for (const auto& row : snapshot["players"])
-                if (row.get("peer", 0).asUInt() == handoff.origin) expected.insert(row.get("id", 0).asUInt());
+                if (!row.get("bot", false).asBool() && row.get("peer", 0).asUInt() == handoff.origin) expected.insert(row.get("id", 0).asUInt());
             for (const auto& state : GetLocalPlayerStates()) present.insert(state.player_id);
             if (!expected.empty() && present == expected) {
                 net.StopMigrationProbes();

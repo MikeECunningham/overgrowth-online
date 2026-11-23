@@ -849,6 +849,9 @@ class Online {
     ObjectID CampaignMainAvatarID() const;
     bool LobbyWaiting() const { return lobby_waiting_; }
     PlayerID AddLocalLobbyPlayer(const std::string& name);
+    PlayerID AddLobbyBot(const std::string& name = "", PlayerID actor = LobbyAuthority::InvalidPlayer);
+    ObjectID CreateLobbyBot(PlayerID id);
+    void AssignLobbyBots();
     PlayerID LobbyPlayerIDForLocalIndex(unsigned index) const;
     PlayerID LocalLobbyLeaderPlayerID() const;
     PlayerID LobbyHostPlayerID() const { return lobby_authority_.host; }
@@ -873,6 +876,7 @@ class Online {
     bool CanPromoteLobbyLeader(PlayerID target, PlayerID actor = LobbyAuthority::InvalidPlayer) const;
     bool PromoteLobbyLeader(PlayerID target, PlayerID actor = LobbyAuthority::InvalidPlayer);
     bool RenameLobbyPlayer(PlayerID id, const std::string& name, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool CanRenameLobbyPlayer(PlayerID id, PlayerID actor = LobbyAuthority::InvalidPlayer) const;
     bool CanSetLobbyTeam(PlayerID id, PlayerID actor = LobbyAuthority::InvalidPlayer) const;
     bool SetLobbyTeam(PlayerID id, int team, PlayerID actor = LobbyAuthority::InvalidPlayer);
     bool SetLobbyScreen(PlayerID id, int screen, PlayerID actor = LobbyAuthority::InvalidPlayer);
@@ -931,7 +935,7 @@ class Online {
     void SubmitLobbyRequest(const std::string& payload);
     void PrepareReturnToLobby();
     void RemoveLocalLobbyProfile(unsigned index);
-    std::vector<LobbyAuthority::Seat> LobbySeats() const;
+    std::vector<LobbyAuthority::Seat> LobbySeats(bool include_bots = false) const;
     PlayerID ResolveLobbyActor(PlayerID actor) const;
     void ApplyManualTeam(PlayerID id);
     void ApplyLocalLobbyScreens();
