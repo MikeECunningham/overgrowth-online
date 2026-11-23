@@ -223,6 +223,7 @@ extern OnlineMessageHandler message_handler;
 extern std::string g_launch_lobby;
 
 struct CampaignDifficultyState;
+struct CampaignFactionState;
 
 class Online {
    public:
@@ -708,6 +709,9 @@ class Online {
     void UpdateCampaignDifficulty(SceneGraph* graph);
     void ResetCampaignDifficulty(bool scene_disposed = false);
     int CampaignHumanCount() const;
+    int CampaignPartySize() const;
+    bool CampaignCharacterOnMainTeam(ObjectID avatar);
+    std::string CampaignWaitingText();
     bool CampaignEncounterDefeated(ObjectID hotspot, int goal) const;
     void ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai);
     bool CoopCampaign();                            // the level belongs to a linear (story) campaign
@@ -765,7 +769,7 @@ class Online {
     string last_safe_level;
     void CoopReviveRequest(const string& msg);      // "ohg revive <common id> x y z [fx fz]" from the host
     void ReviveAvatar(MovementObject* mo, const vec3& pos, const vec3& facing = vec3(0.0f));
-    void PlaceAvatar(ObjectID id, const vec3& pos, const vec3& facing);  // host: up at pos, wherever it runs
+    void PlaceAvatar(ObjectID id, const vec3& pos, const vec3& facing, ObjectID course_anchor = -1);  // host: up at pos, wherever it runs
     double coop_all_down_ms = -1.0;
     struct PendingRevive {
         ObjectID id;
@@ -912,6 +916,20 @@ class Online {
     bool SetLobbyHostControlsTeams(bool controls, PlayerID actor = LobbyAuthority::InvalidPlayer);
     bool LobbyHostControlsTeams() const { return lobby_host_controls_teams_; }
     bool LobbyForceTeams() const { return lobby_force_teams_; }
+    // Campaign affiliation is anchored to the persistent story player.
+    std::shared_ptr<CampaignFactionState> campaign_faction_state;
+    int CampaignMainLobbyTeam() const;
+    uint32_t CampaignFactionAnchorPlayer() const;
+    bool CampaignPlayerOnMainTeam(PlayerID player) const;
+    void RefreshCampaignFactions(const std::string& authored_main_tags = "", bool authored_tags_known = false);
+    void ResetCampaignFactions();
+    std::string CampaignTeamTags(int lobby_team) const;
+    std::string CampaignFactionMainTags() const;
+    std::vector<std::string> CampaignEnemyFactionProfiles() const;
+    std::string CampaignFactionPrefix() const;
+    std::string CampaignTeamAffiliation(int lobby_team) const;
+    void ReceiveCampaignFactions(const std::string& level, const std::string& main_tags,
+                                 const std::vector<std::string>& profiles, const std::string& prefix, int main_team, uint32_t anchor_player);
     bool UsesLobbyTeams() const;
     int AssignedModeTeam(ObjectID avatar) const;
     bool AssignModeTeams(const std::vector<std::pair<ObjectID, int>>& assignments);

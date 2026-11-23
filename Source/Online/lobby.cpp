@@ -138,11 +138,14 @@ void Online::RefreshLobbyAuthorities() {
     lobby_authority_.Refresh(seats);
     const bool reserved = LobbyMigrationBusy() && migration_saved_players_.count(campaign_main_player_id_) != 0;
     const auto main = online_session->player_states.find(campaign_main_player_id_);
-    if ((main == online_session->player_states.end() || main->second.is_bot) && !reserved) {
+    const int main_team = CampaignMainLobbyTeam();
+    const bool campaign_affiliation = lobby_force_teams_ && !CampaignTeamAffiliation(main_team).empty();
+    const bool opposing_fallback = campaign_affiliation && main != online_session->player_states.end() && main->second.team != main_team;
+    if ((main == online_session->player_states.end() || main->second.is_bot || opposing_fallback) && !reserved) {
         const PlayerState* replacement = nullptr;
         for (const auto& entry : online_session->player_states) {
             const auto& player = entry.second;
-            if (player.is_bot) continue;
+            if (player.is_bot || (campaign_affiliation && player.team != main_team)) continue;
             if (!replacement || (player.peer_id == 255 && replacement->peer_id != 255) ||
                 (player.peer_id == replacement->peer_id && player.local_index < replacement->local_index)) replacement = &player;
         }
@@ -356,7 +359,7 @@ PlayerID Online::AddLobbyBot(const std::string& name, PlayerID actor) {
         }));
     }
     bot.team = lobby_mode_ == "com-wolfire-arena" || lobby_campaign_ == "com-wolfire-arena" ?
-        static_cast<int>(online_session->player_states.size() + 1) : 1;
+        static_cast<int>(online_session->player_states.size() + 1) : CampaignMainLobbyTeam();
     online_session->player_states[bot.player_id] = bot;
     AssignLobbyBots();
     BroadcastLobby();
@@ -370,6 +373,17 @@ void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& n
     std::set<int> unique_screens(screens.begin(), screens.end());
     const bool valid_screens = screens.size() == count && unique_screens.size() == count &&
         *unique_screens.begin() == 1 && *unique_screens.rbegin() == static_cast<int>(count);
+    int couch_team = CampaignMainLobbyTeam();
+    const PlayerState* couch_primary = nullptr;
+    const auto leader = lobby_authority_.leaders.find(peer);
+    for (const auto& entry : online_session->player_states) {
+        const auto& member = entry.second;
+        if (member.is_bot || member.peer_id != peer) continue;
+        if (!couch_primary || (leader != lobby_authority_.leaders.end() && member.player_id == leader->second) ||
+            (member.local_index < couch_primary->local_index &&
+             (leader == lobby_authority_.leaders.end() || couch_primary->player_id != leader->second))) couch_primary = &member;
+    }
+    if (couch_primary) couch_team = couch_primary->team;
     for (size_t index = 0; index < count; ++index) {
         auto found = std::find_if(online_session->player_states.begin(), online_session->player_states.end(),
             [peer, index](const std::pair<const PlayerID, PlayerState>& p) { return !p.second.is_bot && p.second.peer_id == peer && p.second.local_index == index; });
@@ -383,7 +397,7 @@ void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& n
         state.object_id = -1;
         state.screen = valid_screens ? screens[index] : static_cast<int>(index + 1);
         state.team = lobby_mode_ == "com-wolfire-arena" || lobby_campaign_ == "com-wolfire-arena" ?
-            static_cast<int>(online_session->player_states.size() + 1) : 1;
+            static_cast<int>(online_session->player_states.size() + 1) : couch_team;
         online_session->player_states[id] = state;
         if (peer == LocalPeerID()) {
             online_session->player_states[id].controller_id = Input::Instance()->GetLocalPlayerInputID(static_cast<unsigned>(index));
@@ -457,6 +471,13 @@ std::string Online::LobbyPayload() const {
         message["leaders"].append(row);
     }
     message["natural_team"] = natural_player_team;
+    message["campaign_factions"]["level"] = level_name;
+    message["campaign_factions"]["main_tags"] = CampaignFactionMainTags();
+    message["campaign_factions"]["main_team"] = CampaignMainLobbyTeam();
+    message["campaign_factions"]["anchor_player"] = CampaignFactionAnchorPlayer();
+    message["campaign_factions"]["prefix"] = CampaignFactionPrefix();
+    message["campaign_factions"]["enemies"] = Json::Value(Json::arrayValue);
+    for (const auto& profile : CampaignEnemyFactionProfiles()) message["campaign_factions"]["enemies"].append(profile);
     message["mode_teams"] = Json::Value(Json::arrayValue);
     for (const auto& assignment : mode_teams_) {
         Json::Value row; row["object"] = assignment.first; row["team"] = assignment.second;
@@ -742,6 +763,7 @@ void Online::PrepareReturnToLobby() {
     own_character_applied.clear();
     initialized_appearances.clear(); appearance_graph = nullptr; appearance_level.clear();
     natural_player_team.clear(); natural_team_level.clear(); natural_team_graph = nullptr;
+    ResetCampaignFactions();
     held_hits.clear(); pending_revives.clear(); pending_avatar_characters.clear();
     pending_unsticks.clear(); pending_drop_orders.clear(); pending_item_launches.clear();
     owner_overrides.clear(); handed_back_ms.clear();
@@ -959,16 +981,30 @@ void Online::ApplyAssignedTeam(ObjectID avatar) {
     const auto assignment = mode_teams_.find(GetOriginalID(avatar));
     const int assigned = assignment == mode_teams_.end() ? 0 : assignment->second;
     std::string team;
-    if (assigned > 0) team = "arena_team_" + std::to_string(assigned);
+    const PlayerState* roster = nullptr;
+    if (online_session) for (const auto& player : online_session->player_states)
+        if (player.second.object_id == avatar) { roster = &player.second; break; }
+    if (roster && CoopCampaign()) {
+        SceneGraph* team_scene = Engine::Instance()->GetSceneGraph();
+        RefreshCampaignFactions(natural_player_team, natural_team_graph == team_scene && natural_team_level == level_name);
+        if (lobby_force_teams_) team = CampaignTeamTags(roster->team);
+        else {
+            // Ignoring lobby teams preserves the mode's current story faction,
+            // including scripted allegiance changes, across the whole party.
+            SceneGraph* scene = Engine::Instance()->GetSceneGraph();
+            Object* main = scene ? scene->GetObjectFromID(CampaignMainAvatarID()) : nullptr;
+            if (main && main->GetType() == _movement_object && main->GetScriptParams()->HasParam("Teams"))
+                team = main->GetScriptParams()->GetStringVal("Teams");
+            if (team.empty() || team.find(CampaignFactionPrefix()) != std::string::npos)
+                team = CampaignFactionMainTags().empty() ? natural_player_team : CampaignFactionMainTags();
+            if (team.empty()) team = CampaignTeamTags(CampaignMainLobbyTeam());
+        }
+    } else if (assigned > 0) team = "arena_team_" + std::to_string(assigned);
     else if (assigned < 0) team = assigned < -1 ? "lobby_team_" + std::to_string(-assigned) :
         natural_player_team.empty() ? "lobby_team_1" : natural_player_team;
-    else if (UsesLobbyTeams() && online_session) {
-        for (const auto& player : online_session->player_states) if (player.second.object_id == avatar) {
-            team = player.second.team > 1 ? "lobby_team_" + std::to_string(player.second.team) :
-                natural_player_team.empty() ? "lobby_team_1" : natural_player_team;
-            break;
-        }
-    }
+    else if (UsesLobbyTeams() && roster)
+        team = roster->team > 1 ? "lobby_team_" + std::to_string(roster->team) :
+            natural_player_team.empty() ? "lobby_team_1" : natural_player_team;
     if (team.empty()) return;
     SceneGraph* graph = Engine::Instance()->GetSceneGraph();
     Object* object = graph ? graph->GetObjectFromID(avatar) : nullptr;
@@ -1079,6 +1115,15 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         for (const auto& leader : message["leaders"])
             lobby_authority_.leaders[static_cast<PeerID>(leader.get("peer", 255).asUInt())] = leader.get("player", 255).asUInt();
         natural_player_team = message.get("natural_team", "").asString();
+        const auto& faction_data = message["campaign_factions"];
+        if (faction_data.isObject() && faction_data["level"].isString() && faction_data["main_tags"].isString() &&
+            faction_data["prefix"].isString() && faction_data["enemies"].isArray()) {
+            std::vector<std::string> profiles;
+            for (const auto& profile : faction_data["enemies"]) if (profile.isString()) profiles.push_back(profile.asString());
+            ReceiveCampaignFactions(faction_data["level"].asString(), faction_data["main_tags"].asString(), profiles,
+                                    faction_data["prefix"].asString(), faction_data.get("main_team", 1).asInt(),
+                                    faction_data.get("anchor_player", static_cast<Json::UInt>(campaign_main_player_id_)).asUInt());
+        }
         mode_teams_.clear();
         for (const auto& assignment : message["mode_teams"]) {
             const int team = assignment.get("team", 0).asInt();

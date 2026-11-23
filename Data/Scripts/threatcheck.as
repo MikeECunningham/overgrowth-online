@@ -27,13 +27,13 @@ int GetPlayerCharacterID() {
     int num = GetNumCharacters();
     for(int i=0; i<num; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.controlled && !char.remote){
+        if(char.controlled && !char.remote && Online_CampaignIsMainCharacter(char.GetID())){
             return i;
         }
     }
     for(int i=0; i<num; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.controlled){
+        if(char.controlled && Online_CampaignIsMainCharacter(char.GetID())){
             return i;
         }
     }
@@ -68,7 +68,7 @@ bool AllPlayersDown() {
     bool any = false;
     for(int i=0; i<num; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.controlled){
+        if(char.controlled && Online_CampaignIsMainCharacter(char.GetID())){
             any = true;
             if(char.GetIntVar("knocked_out") == _awake){
                 return false;
@@ -83,7 +83,7 @@ array<int> GetControlledCharacterIDs() {
     int num = GetNumCharacters();
     for(int i=0; i<num; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.controlled){
+        if(char.controlled && Online_CampaignIsMainCharacter(char.GetID())){
             ids.insertLast(i);
         }
     }
@@ -101,14 +101,14 @@ int NumActivelyHostileThreats() {
     int num_threats = 0;
     for(int i=0; i<num; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.GetIntVar("knocked_out") == _awake && 
-           !player_char.OnSameTeam(char) && 
+        if(ReadObjectFromID(char.GetID()).GetEnabled() && char.GetIntVar("knocked_out") == _awake &&
+           !player_char.OnSameTeam(char) &&
            char.QueryIntFunction("int IsUnaware()") != 1)
         {
             ++num_threats;
         }
     }
-    return num_threats;   
+    return num_threats;
 }
 
 int ThreatsRemaining() {
@@ -122,21 +122,21 @@ int ThreatsRemaining() {
     int num_threats = 0;
     for(int i=0; i<num; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.GetIntVar("knocked_out") == _awake && !player_char.OnSameTeam(char))
+        if(ReadObjectFromID(char.GetID()).GetEnabled() && char.GetIntVar("knocked_out") == _awake && !player_char.OnSameTeam(char))
         {
             ++num_threats;
         }
     }
     return num_threats;
 }
-   
+
 int ThreatsPossible() {
     int player_id = GetPlayerCharacterID();
     if(player_id == -1){
         return -1;
     }
     MovementObject@ player_char = ReadCharacter(player_id);
-   
+
     int num = GetNumCharacters();
     int num_threats = 0;
     for(int i=0; i<num; ++i){

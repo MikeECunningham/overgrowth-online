@@ -58,7 +58,7 @@ void CoopStoryUpdate() {
     array<PlayerState>@ states = GetPlayerStates();
     for(uint k = 0; k < states.length(); ++k) {
         int id = states[k].avatar_id;
-        if(id < 0 || id == coop_host_char || !MovementObjectExists(id) || coop_armed_ids.find(id) >= 0) {
+        if(id < 0 || !Online_CampaignIsMainCharacter(id) || id == coop_host_char || !MovementObjectExists(id) || coop_armed_ids.find(id) >= 0) {
             continue;
         }
         int seen = coop_seen_ids.find(id);
@@ -71,7 +71,7 @@ void CoopStoryUpdate() {
             continue;
         }
         coop_armed_ids.insertLast(id);
-        CoopShield(id);
+        if(!states[k].is_bot) CoopShield(id);  // bots keep their authored durability
         CoopArm(id);
     }
 }

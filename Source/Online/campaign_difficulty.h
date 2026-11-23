@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 
 namespace CampaignDifficulty {
 enum Strength { Rat = 0, Rabbit = 1, CatOrDog = 2, BigDog = 3, Wolf = 4 };
@@ -19,16 +21,33 @@ struct Factors {
     float ai = 0.0f;
 };
 
-inline float ExtraPlayers(int humans) {
-    const int count = std::max(1, std::min(64, humans));
+enum AITweak { NoTweak = 0, AggressionTweak = 1, GroundAggressionTweak = 2, FollowupTweak = 3 };
+constexpr uint32_t kUnspecifiedUnit = std::numeric_limits<uint32_t>::max();
+
+// Shared object IDs make this occasional variation identical on every peer.
+// No random rolls or party-size changes may turn a unit into a new AI build.
+inline AITweak TweakForUnit(uint32_t shared_id) {
+    if (shared_id == kUnspecifiedUnit) return NoTweak;
+    const uint32_t identity = shared_id * 1664525u + 1013904223u;
+    if ((identity & 7u) != 0) return NoTweak;
+    return static_cast<AITweak>(1u + ((identity >> 3u) % 3u));
+}
+
+inline float NightmareAIAmount(int participants) {
+    return participants < 4 ? 0.0f : participants < 8 ? 0.01f : participants < 16 ? 0.02f : 0.03f;
+}
+
+inline float ExtraPlayers(int participants) {
+    const int count = std::max(1, std::min(64, participants));
     return count <= 4 ? float(count - 1) : 3.0f + std::sqrt(float(count - 4));
 }
 
 // Preserve authored species, stats and difficulty. These are independent
 // multipliers; vitality is effective health, not health bars above 100%.
-inline Factors ForPlayers(int humans, bool boss, int strength, bool stats, bool nightmare) {
+inline Factors ForPlayers(int participants, bool boss, int strength, bool stats, bool nightmare,
+                          uint32_t shared_id = kUnspecifiedUnit) {
     Factors out;
-    const float extra = ExtraPlayers(humans);
+    const float extra = ExtraPlayers(participants);
     const int rank = std::max(int(Rat), std::min(int(Wolf), strength));
     if (stats) {
         const float vitality_step = boss ? 0.65f + 0.08f * rank : 0.18f + 0.035f * rank;
@@ -36,22 +55,22 @@ inline Factors ForPlayers(int humans, bool boss, int strength, bool stats, bool 
         out.damage = std::min(boss ? 1.9f : 1.6f, 1.0f + (boss ? 0.12f : 0.075f) * extra);
         out.armor = std::min(boss ? 1.9f : 1.5f, 1.0f + (boss ? 0.15f : 0.07f) * extra);
     }
-    if (nightmare) out.ai = std::min(0.35f, extra * (boss ? 0.085f : 0.07f));
+    if (nightmare && TweakForUnit(shared_id) != NoTweak) out.ai = NightmareAIAmount(participants);
     return out;
 }
 
 // Weak-species encounters gain numbers earlier. Bosses primarily gain
 // durability; large dogs and wolves do not become a pack at two players.
-inline int ExtraEnemies(int humans, int original_count, bool boss, int strength) {
-    if (humans <= 1 || original_count <= 0) return 0;
+inline int ExtraEnemies(int participants, int original_count, bool boss, int strength) {
+    if (participants <= 1 || original_count <= 0) return 0;
     const int rank = std::max(int(Rat), std::min(int(Wolf), strength));
     if (boss) {
-        if (rank == Wolf) return humans >= 8 ? 1 : 0;
-        if (rank == BigDog) return humans >= 6 ? 1 : 0;
-        return std::min(kBossExtraCap, (humans - 1) / 3);
+        if (rank == Wolf) return participants >= 8 ? 1 : 0;
+        if (rank == BigDog) return participants >= 6 ? 1 : 0;
+        return std::min(kBossExtraCap, (participants - 1) / 3);
     }
     const float density[] = {0.42f, 0.32f, 0.24f, 0.16f, 0.10f};
-    const double count = double(std::min(original_count, kActorCap)) * density[rank] * ExtraPlayers(humans);
+    const double count = double(std::min(original_count, kActorCap)) * density[rank] * ExtraPlayers(participants);
     return std::min(kRegularExtraCap, int(std::floor(count + 0.5)));
 }
 }  // namespace CampaignDifficulty

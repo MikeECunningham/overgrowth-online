@@ -198,7 +198,7 @@ class Situation {
             if(!known_chars[i].friendly){
                 if( MovementObjectExists(known_chars[i].id) ) {
                     MovementObject@ char = ReadCharacterID(known_chars[i].id);
-                    if(char.QueryIntFunction("int IsAggressive()") == 1){
+                    if(ReadObjectFromID(char.GetID()).GetEnabled() && char.QueryIntFunction("int IsAggressive()") == 1){
                         return true;
                     }
                 } else {

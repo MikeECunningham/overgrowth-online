@@ -31,7 +31,6 @@ int controller_id = 0;
 bool has_gui = false;
 bool toggle_gui = false;
 bool draw_settings = false;
-string debug_local_player_notice;
 bool has_display_text = false;
 string display_text = "";
 uint32 display_text_id;
@@ -546,12 +545,6 @@ void Update(int paused) {
             ResetController();
             BuildUI("Screen");
         }
-        else if (message.name == "debug_add_local_player")
-        {
-            int id = DebugAddLocalPlayer();
-            debug_local_player_notice = id < 0 ? "Could not add player." : "";
-            AddPauseMenu();
-        }
         else if(message.name == "toggle_world_pause")
         {
             if(LobbyCanPause() && LobbySetPaused(!menu_world_paused)) {
@@ -703,7 +696,7 @@ int GetPlayerCharacterID() {
     int num = GetNumCharacters();
     for(int i=0; i<num; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.controlled){
+        if(char.controlled && Online_CampaignIsMainCharacter(char.GetID())){
             return i;
         }
     }
@@ -715,7 +708,7 @@ array<int> GetControlledCharacterIDs() {
     int num = GetNumCharacters();
     for(int i=0; i<num; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.controlled){
+        if(char.controlled && Online_CampaignIsMainCharacter(char.GetID())){
             ids.insertLast(i);
         }
     }
@@ -888,19 +881,6 @@ void AddPauseMenu(){
         if(local_p1 && Online_IsHosting()) {
             AddButton("End game", buttons_holder, "null", button_background_diamond,
                       false, 600.0f, 30.0f, mouseover_scale_button, IMMessage("end_game_to_lobby"));
-        }
-
-        if (local_p1 && !Online_IsActive()) {
-            AddButton("Add player (debug)", buttons_holder, "null", button_background_diamond,
-                      false, 700.0f, 30.0f, mouseover_scale_button, IMMessage("debug_add_local_player"));
-            IMText local_players(debug_local_player_notice == "" ?
-                                 "Local players: " + DebugLocalPlayerCount() : debug_local_player_notice,
-                                 button_font_extra_small);
-            IMContainer local_players_container(700.0f, 70.0f);
-            local_players_container.setAlignment(CACenter, CACenter);
-            local_players.setClip(false);
-            local_players_container.setElement(local_players);
-            buttons_holder.append(local_players_container);
         }
 
         if (local_p1 && Online_IsActive()) {

@@ -55,6 +55,7 @@ void OnEnter(MovementObject @mo) {
                 obj.ReceiveScriptMessage("player_entered_checkpoint_fall_death "+checkpoint_id+" "+mo.GetID());  // (who fell)
             }
         } else {
+            if(!Online_CampaignIsMainCharacter(mo.GetID())) return;
             int at = entered.find(mo.GetID());
             if(at < 0) {
                 entered.insertLast(mo.GetID());
@@ -76,7 +77,7 @@ void OnExit(MovementObject @mo) {
 
 void Update() {
     for(int i = int(entered.length()) - 1; i >= 0; --i) {
-        if(!MovementObjectExists(entered[i]) || !ReadCharacterID(entered[i]).controlled) {
+        if(!MovementObjectExists(entered[i]) || !ReadCharacterID(entered[i]).controlled || !Online_CampaignIsMainCharacter(entered[i])) {
             entered.removeAt(i);
             entered_time.removeAt(i);
             continue;

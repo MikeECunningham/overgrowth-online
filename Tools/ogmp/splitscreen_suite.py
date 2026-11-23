@@ -14,7 +14,7 @@ from .scenarios import PROFILES, LEVEL, dist, join, wait_loaded
 
 
 def local_splitscreen(ctx):
-    """The pause button adds nine local views, with independent P5 input.
+    """Nine fixture players retain private pause menus and independent P5 input.
 
     A full level reload must retain the shared party and its screen assignments.
     Run with OGMP_KEYS=renderer=vulkan to exercise that backend too.
@@ -34,8 +34,7 @@ def local_splitscreen(ctx):
     bridge.wait(lambda: bridge.status()["open_menu_players"] == [0] and bridge.status()["paused"],
                 10, what="single-player pause menu")
     for count in range(2, 10):
-        bridge.call("exec", target="player_menu", local_player=0,
-                    code='imGUI.receiveMessage(IMMessage("debug_add_local_player"));')
+        execute("int extra_player = DebugAddLocalPlayer();")
         bridge.wait(lambda: bridge.status()["local_players"] == count, 20,
                     what=f"debug local player {count}")
         bridge.wait(lambda: bridge.status()["local_inputs"] == count, 10,
@@ -89,8 +88,7 @@ def local_splitscreen(ctx):
     # Adding another player after reload uses the same persistent roster.
     bridge.call("input", controller=0, hold={"quit": 1.0}, steps=1)
     bridge.wait(lambda: bridge.status()["open_menu_players"] == [0], 10, what="party pause menu after reload")
-    bridge.call("exec", target="player_menu", local_player=0,
-                code='imGUI.receiveMessage(IMMessage("debug_add_local_player"));')
+    execute("int extra_player = DebugAddLocalPlayer();")
     bridge.wait(lambda: bridge.status()["local_players"] == 10, 20,
                 what="tenth local player after reload")
     return {"passed": not fails, "metrics": m, "notes": fails}

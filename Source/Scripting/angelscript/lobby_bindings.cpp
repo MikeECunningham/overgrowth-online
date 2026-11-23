@@ -100,6 +100,7 @@ std::string Map() { return Online::Instance()->LobbyMap(); }
 bool Build() { return Online::Instance()->LobbyBuild(); }
 bool AllowAllPause() { return Online::Instance()->LobbyAllowAllPause(); }
 bool ForceTeams() { return Online::Instance()->LobbyForceTeams(); }
+std::string CampaignTeamAffiliation(int team) { return Online::Instance()->CampaignTeamAffiliation(team); }
 bool SetForceTeams(bool force) { return Online::Instance()->SetLobbyForceTeams(force, MenuPlayerID()); }
 bool HostControlsTeams() { return Online::Instance()->LobbyHostControlsTeams(); }
 bool SetHostControlsTeams(bool controls) { return Online::Instance()->SetLobbyHostControlsTeams(controls, MenuPlayerID()); }
@@ -458,6 +459,7 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("string LobbyGetMode()", Mode); LOBBY_FN("string LobbyGetCampaign()", Campaign); LOBBY_FN("string LobbyGetMap()", Map);
     LOBBY_FN("bool LobbyGetBuildMode()", Build); LOBBY_FN("bool LobbyGetAllowAllPause()", AllowAllPause);
     LOBBY_FN("bool LobbyGetForceTeams()", ForceTeams); LOBBY_FN("bool LobbySetForceTeams(bool)", SetForceTeams);
+    LOBBY_FN("string LobbyCampaignTeamAffiliation(int)", CampaignTeamAffiliation);
     LOBBY_FN("bool LobbyGetHostControlsTeams()", HostControlsTeams); LOBBY_FN("bool LobbySetHostControlsTeams(bool)", SetHostControlsTeams);
     LOBBY_FN("bool LobbyCanSetPlayerTeam(uint)", CanSetTeam);
     LOBBY_FN("bool LobbyCanPromoteHost(uint)", CanPromoteHost); LOBBY_FN("bool LobbyPromoteHost(uint)", PromoteHost);

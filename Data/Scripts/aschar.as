@@ -210,6 +210,7 @@ float campaign_vitality_mult = 1.0f;
 float campaign_damage_mult = 1.0f;
 float campaign_armor_mult = 1.0f;
 float campaign_ai_bonus = 0.0f;
+int campaign_ai_tweak = 0;  // 0: authored AI, 1/2/3: one small offensive variation
 bool campaign_authored_valid = false;
 float campaign_authored_resistance = 1.0f;
 float campaign_authored_damage = 1.0f;
@@ -10875,6 +10876,11 @@ float level_control_time = -10.0;
 bool enablePrototypeFirstPersonMode = false;
 
 void ApplyCameraControls(const Timestep &in ts) {
+    // A campaign retry can delete a generated enemy between Update and Draw.
+    if(target_id != -1 && !MovementObjectExists(target_id)) {
+        target_id = -1;
+        autocam.target_weight = 0.0f;
+    }
     if(!level.HasFocus()) {
         SetGrabMouse(true);
     }
@@ -15498,21 +15504,38 @@ void CampaignApplyAuthoredScaling() {
     if(!campaign_authored_valid) CampaignRememberAuthoredParameters();
     p_damage_multiplier = campaign_authored_resistance / campaign_vitality_mult;
     p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult;
-    // ai == 0 is exactly the authored value, including explicit zero skills.
-    p_aggression = campaign_authored_aggression + (1.0f - campaign_authored_aggression) * campaign_ai_bonus;
-    p_ground_aggression = campaign_authored_ground_aggression + (1.0f - campaign_authored_ground_aggression) * campaign_ai_bonus;
-    p_block_skill = campaign_authored_block_skill + (1.0f - campaign_authored_block_skill) * campaign_ai_bonus;
-    p_block_followup = campaign_authored_block_followup + (1.0f - campaign_authored_block_followup) * campaign_ai_bonus;
-    p_attack_speed_mult = min(2.0f, campaign_authored_attack_speed * (1.0f + campaign_ai_bonus * 0.3f));
-    g_throw_counter_probability = campaign_authored_throw_counter + (1.0f - campaign_authored_throw_counter) * campaign_ai_bonus;
-    g_weapon_catch_skill = campaign_authored_weapon_catch + (1.0f - campaign_authored_weapon_catch) * campaign_ai_bonus;
+    // Restore all authored values first. Nightmare no longer stacks defense,
+    // counters, catching and faster animations across the entire encounter.
+    p_aggression = campaign_authored_aggression;
+    p_ground_aggression = campaign_authored_ground_aggression;
+    p_block_skill = campaign_authored_block_skill;
+    p_block_followup = campaign_authored_block_followup;
+    p_attack_speed_mult = campaign_authored_attack_speed;
+    g_throw_counter_probability = campaign_authored_throw_counter;
+    g_weapon_catch_skill = campaign_authored_weapon_catch;
+    campaign_ai_tweak = 0;
+    if(campaign_ai_bonus <= 0.0f || Online_IsPlayerCharacter(this_mo.GetID())) return;
+    uint identity = uint(Online_ToSharedID(this_mo.GetID())) * uint(1664525) + uint(1013904223);
+    if((identity & uint(7)) != 0) return;  // only one in eight stable shared IDs
+    int trait = 1 + int((identity >> 3) % uint(3));
+    // An explicit authored zero/one remains exact, including training actors.
+    if(trait == 1 && p_aggression > 0.0f && p_aggression < 1.0f) {
+        p_aggression += (1.0f - p_aggression) * campaign_ai_bonus;
+        campaign_ai_tweak = trait;
+    } else if(trait == 2 && p_ground_aggression > 0.0f && p_ground_aggression < 1.0f) {
+        p_ground_aggression += (1.0f - p_ground_aggression) * campaign_ai_bonus;
+        campaign_ai_tweak = trait;
+    } else if(trait == 3 && p_block_followup > 0.0f && p_block_followup < 1.0f) {
+        p_block_followup += (1.0f - p_block_followup) * campaign_ai_bonus;
+        campaign_ai_tweak = trait;
+    }
 }
 
 void SetCampaignScaling(float vitality, float damage, float armor, float ai) {
     campaign_vitality_mult = max(1.0f, min(6.0f, vitality));
     campaign_damage_mult = max(1.0f, min(2.0f, damage));
     campaign_armor_mult = max(1.0f, min(2.0f, armor));
-    campaign_ai_bonus = max(0.0f, min(0.35f, ai));
+    campaign_ai_bonus = max(0.0f, min(0.03f, ai));
     CampaignApplyAuthoredScaling();
 }
 

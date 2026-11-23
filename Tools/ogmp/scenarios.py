@@ -1233,3 +1233,19 @@ def _campaign_scaling(ctx):
 
 
 SCENARIOS["campaign_scaling"] = _campaign_scaling
+
+
+def _campaign_teams(ctx):
+    from .campaign_teams_suite import campaign_teams
+    return campaign_teams(ctx)
+
+
+SCENARIOS["campaign_teams"] = _campaign_teams
+
+
+def _bot_escort_stealth(ctx):
+    from .bot_escort_suite import bot_escort_stealth
+    return bot_escort_stealth(ctx)
+
+
+SCENARIOS["bot_escort_stealth"] = _bot_escort_stealth

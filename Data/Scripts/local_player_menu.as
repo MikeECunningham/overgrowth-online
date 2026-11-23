@@ -127,10 +127,6 @@ void BuildPlayerPauseMenu() {
         AddButton("Invite friends", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("Invite friends"));
     }
-    if(primary) {
-        AddButton("Add player (debug)", buttons, "null", button_background_diamond, false, 650.0f,
-                  30.0f, mouseover_scale_button, IMMessage("debug_add_local_player"));
-    }
     if(host) {
         AddButton("Add bot", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("add_lobby_bot"));
@@ -283,6 +279,8 @@ void BuildPlayerTeamsMenu() {
         } else {
             PlayerTeamsNote("Team " + player.team, row_content);
         }
+        string affiliation = LobbyCampaignTeamAffiliation(player.lobby_team);
+        if(affiliation != "") PlayerTeamsNote(affiliation, row_content);
         if(player.bot) {
             if(LobbyIsHost()) {
                 IMDivider actions("bot_actions_" + player.id, DOHorizontal);
@@ -503,11 +501,6 @@ void Update() {
         } else if(message.name == "Media Mode") {
             if(LobbyCanManageLocal()) {
                 this_ui.SendCallback("media_mode");
-            }
-        } else if(message.name == "debug_add_local_player") {
-            if(LobbyCanManageLocal()) {
-                local_player_notice = DebugAddLocalPlayer() < 0 ? "Could not add player" : "";
-                BuildPlayerPauseMenu();
             }
         } else if(message.name == "add_lobby_bot") {
             if(LobbyIsHost()) {

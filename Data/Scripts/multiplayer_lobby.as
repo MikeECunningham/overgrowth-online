@@ -393,13 +393,6 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     ImGui_EndChild();
     MPWindowScale(scale);
     ImGui_Spacing();
-    ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
-    if(MPButton("Add local player (debug)", vec2(-1.0f, 36.0f * scale))) {
-        if(!LobbyAddLocalPlayer()) {
-            notice = "Couldn't add a local player.";
-        }
-    }
-    ImGui_EndDisabled();
     if(LobbyIsHost()) {
         ImGui_BeginDisabled(LobbyMigrationBusy());
         if(MPButton("Add bot", vec2(-1.0f, 36.0f * scale))) {
@@ -439,7 +432,10 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     }
     string team_hint = "Choose a mode to see its team rules.";
     if(force_teams) {
-        team_hint = "Lobby teams override the mode's teams.";
+        if(LobbyGetCampaign() != "com-wolfire-arena" && !LobbyGetBuildMode() && LobbyGetMode() != "sandbox" &&
+           LobbyGetCampaign() != "com-wolfire-sandbox-levels" && LobbyGetMode() != "")
+            team_hint = "Campaign teams ally with NPC factions; extras are hostile.";
+        else team_hint = "Lobby teams override the mode's teams.";
     } else if(LobbyGetCampaign() == "com-wolfire-arena") {
         team_hint = "Arena chooses team/FFA lineups each match.";
     } else if(LobbyGetBuildMode() || LobbyGetMode() == "sandbox" ||

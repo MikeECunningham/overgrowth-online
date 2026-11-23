@@ -16,6 +16,7 @@
 #include <Logging/logdata.h>
 #include <Scripting/angelscript/ascontext.h>
 #include <Math/vec3math.h>
+#include <Graphics/camera.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -34,6 +35,7 @@ struct Encounter {
     std::vector<ObjectID> originals;
     std::set<ObjectID> bosses;
     std::vector<Reinforcement> extras;
+    std::set<PlayerID> opposing_seats;
     int spawned = 0;  // dead reinforcements are never replaced
 };
 MovementObject* Actor(SceneGraph* graph, ObjectID id) {
@@ -53,20 +55,24 @@ int Strength(MovementObject* actor) {
         default: return CampaignDifficulty::Rabbit;
     }
 }
+bool OpposesMain(Online* online, SceneGraph* graph, MovementObject* actor) {
+    if (!actor) return false;
+    bool member = false;
+    for (const auto& player : online->GetPlayerStates()) {
+        if (!online->CampaignPlayerOnMainTeam(player.player_id)) continue;
+        MovementObject* avatar = Actor(graph, player.object_id);
+        if (!avatar) continue;
+        member = true;
+        if (actor->ASOnSameTeam(avatar)) return false;
+    }
+    return member;
+}
 bool Hostile(Online* online, SceneGraph* graph, MovementObject* actor) {
     if (!actor || actor->controlled || online->IsPlayerCharacter(actor->GetID()) ||
         !actor->HasFunction("void SetCampaignScaling(float, float, float, float)")) return false;
     ScriptParams* params = actor->GetScriptParams();
     if (params->HasParam("Campaign Scaling Exempt") && params->ASGetInt("Campaign Scaling Exempt") != 0) return false;
-    bool human = false;
-    for (const auto& player : online->GetPlayerStates()) {
-        if (player.is_bot) continue;
-        MovementObject* avatar = Actor(graph, player.object_id);
-        if (!avatar) continue;
-        human = true;
-        if (actor->ASOnSameTeam(avatar)) return false;
-    }
-    return human;
+    return OpposesMain(online, graph, actor);
 }
 bool ExplicitBoss(MovementObject* actor, bool inferred) {
     ScriptParams* params = actor->GetScriptParams();
@@ -80,7 +86,7 @@ bool Elite(MovementObject* actor) {
 float NearestHuman(Online* online, SceneGraph* graph, const vec3& position) {
     float nearest = 1e30f;
     for (const auto& player : online->GetPlayerStates()) {
-        if (player.is_bot) continue;
+        if (!online->CampaignPlayerOnMainTeam(player.player_id)) continue;
         if (MovementObject* actor = Actor(graph, player.object_id))
             if (Awake(actor)) nearest = std::min(nearest, distance(actor->position, position));
     }
@@ -184,25 +190,270 @@ Reinforcement Spawn(Online* online, SceneGraph* graph, MovementObject* source, i
 }
 
 struct CampaignDifficultyState {
+    struct Opponent {
+        ObjectID avatar = -1;
+        int team = 0;
+        uint64_t deployment = 0;
+        double notice_until = 0;
+        ObjectID target = -1;
+        bool placement_pending = false;
+        vec3 pending_position;
+        vec3 pending_facing;
+        double queued_at = 0;
+    };
     SceneGraph* graph = nullptr;
     std::map<std::pair<ObjectID, int>, Encounter> encounters;
     std::map<ObjectID, std::array<float, 4>> applied;
     bool reset = false;
     double next_update = 0;
     int spawned = 0;
+    std::map<PlayerID, Opponent> opponents;
+    std::set<std::pair<ObjectID, int>> engaged;
+    uint64_t deployment = 0;
+    ObjectID deployment_target = -1;
+    std::set<PlayerID> deployment_seats;
+    bool combat = false;
+    double last_combat = -100000;
+    double last_deployment = -100000;
+    std::map<ObjectID, double> member_combat;
+    std::pair<ObjectID, int> active_encounter = {-1, -1};
 };
+
+namespace {
+void EnableSeat(Online* online, MovementObject* actor, bool enabled) {
+    static_cast<Object*>(actor)->SetEnabled(enabled);  // authoritative native state, including physics and replication
+    for (const auto& attachment : actor->rigged_object()->attached_items.items) {
+        ItemObject* item = attachment.item.GetAttached();
+        if (item && item->enabled_ != enabled) {
+            item->SetEnabled(enabled);
+            online->Send<OnlineMessages::SetObjectEnabledMessage>(item->GetID(), enabled);
+        }
+    }
+}
+void StageOpponents(Online* online, SceneGraph* graph, CampaignDifficultyState& state) {
+    std::set<PlayerID> present;
+    for (const auto& player : online->GetPlayerStates()) {
+        MovementObject* actor = Actor(graph, player.object_id);
+        if (!actor) continue;
+        if (!online->LobbyForceTeams() || online->CampaignPlayerOnMainTeam(player.player_id)) {
+            if (state.opponents.erase(player.player_id)) EnableSeat(online, actor, true);
+            continue;
+        }
+        present.insert(player.player_id);
+        auto& opponent = state.opponents[player.player_id];
+        if (opponent.avatar != actor->GetID() || opponent.team != player.team) {
+            opponent = CampaignDifficultyState::Opponent();
+            opponent.avatar = actor->GetID(); opponent.team = player.team;
+        }
+        // A seat can be disabled before its first ordinary Update establishes
+        // ownership. Keep remote humans as proxies even while unlinked.
+        if (!actor->enabled_ || opponent.deployment == 0)
+            actor->SetNetworkProxy(!online->IsLocalAvatar(actor->GetID()));
+        if (opponent.deployment == 0) EnableSeat(online, actor, false);
+        if (opponent.placement_pending) {
+            vec3 observed = actor->position;
+            if (!online->IsLocalAvatar(actor->GetID())) {
+                uint32_t oldest = 0, newest = 0;
+                if (actor->net_buffer.SourceTimeRange(oldest, newest)) actor->net_buffer.PositionAt(newest, observed);
+            }
+            if (Awake(actor) && distance_squared(observed, opponent.pending_position) < 2.25f) {
+                EnableSeat(online, actor, true);
+                opponent.placement_pending = false;
+                opponent.notice_until = OnlineClockMs() + 1500.0;
+            } else if (OnlineClockMs() - opponent.queued_at > 5000.0) {
+                online->PlaceAvatar(actor->GetID(), opponent.pending_position, opponent.pending_facing, opponent.target);
+                opponent.queued_at = OnlineClockMs();
+            }
+        }
+    }
+    for (auto it = state.opponents.begin(); it != state.opponents.end();)
+        if (!present.count(it->first)) it = state.opponents.erase(it); else ++it;
+}
+std::vector<ObjectID> CombatParticipants(Online* online, SceneGraph* graph) {
+    std::vector<ObjectID> result;
+    for (const auto& player : online->GetPlayerStates()) {
+        if (!online->CampaignPlayerOnMainTeam(player.player_id)) continue;
+        MovementObject* member = Actor(graph, player.object_id);
+        if (!Awake(member) || !member->enabled_) continue;
+        for (Object* object : graph->movement_objects_) {
+            auto* foe = static_cast<MovementObject*>(object);
+            if (foe == member || !foe->enabled_ || !Awake(foe) || member->ASOnSameTeam(foe) ||
+                distance_squared(member->position, foe->position) > 35.0f * 35.0f) continue;
+            const bool foe_allowed = foe->controlled || !foe->ASHasVar("combat_allowed") || foe->ASGetBoolVar("combat_allowed");
+            const bool member_allowed = member->controlled || !member->ASHasVar("combat_allowed") || member->ASGetBoolVar("combat_allowed");
+            const bool member_attacks = member->ASHasVar("state") && member->ASGetIntVar("state") == 2 &&
+                member->ASHasVar("target_id") && member->ASGetIntVar("target_id") == foe->GetID();
+            const bool foe_attacks = foe_allowed && foe->ASHasVar("state") && foe->ASGetIntVar("state") == 2 &&
+                foe->ASHasVar("target_id") && foe->ASGetIntVar("target_id") == member->GetID();
+            const bool ai_chases = foe_allowed && !foe->controlled && foe->ASHasVar("goal") && foe->ASGetIntVar("goal") == 1 &&
+                foe->ASHasVar("chase_target_id") && foe->ASGetIntVar("chase_target_id") == member->GetID();
+            const bool member_chases = member_allowed && player.is_bot && member->ASHasVar("goal") && member->ASGetIntVar("goal") == 1 &&
+                member->ASHasVar("chase_target_id") && member->ASGetIntVar("chase_target_id") == foe->GetID();
+            if (member_attacks || foe_attacks || ai_chases || member_chases) { result.push_back(member->GetID()); break; }
+        }
+    }
+    return result;
+}
+bool OpponentSpot(Online* online, SceneGraph* graph, MovementObject* member, unsigned seat, vec3* spot) {
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        const float angle = 0.618034f * static_cast<float>(seat) * 6.283185f + attempt * 0.785398f;
+        const bool close = attempt >= 24;
+        const float radius = close ? (attempt < 32 ? 4.0f : 2.5f) : 11.0f + static_cast<float>(attempt / 8) * 4.0f;
+        const vec3 base = member->position + vec3(std::cos(angle) * radius, 0, std::sin(angle) * radius);
+        if (!online->FindSafeSpot(base, member->GetFacing(), 0, spot, member->GetID())) continue;
+        if (distance_squared(*spot, member->position) < (close ? 4.0f : 36.0f)) continue;
+        bool occupied = false;
+        for (Object* object : graph->movement_objects_) {
+            auto* actor = static_cast<MovementObject*>(object);
+            const vec3 offset = actor->position - *spot;
+            if (actor->enabled_ && std::fabs(offset.y()) < 1.8f && length_squared(offset) < 3.0f) { occupied = true; break; }
+        }
+        if (!occupied) return true;
+    }
+    return false;
+}
+void DeployOpponents(Online* online, SceneGraph* graph, CampaignDifficultyState& state, double now) {
+    if (!online->LobbyForceTeams() || online->CoopCutscene() || graph->level->DialogueCameraControl()) return;
+    const auto participants = CombatParticipants(online, graph);
+    if (participants.empty()) {
+        if (now - state.last_combat >= 8000.0) state.combat = false;
+    }
+    ObjectID trigger = participants.empty() ? state.deployment_target : participants.front();
+    bool entering = false;
+    for (ObjectID id : participants) {
+        const auto previous = state.member_combat.find(id);
+        if (previous == state.member_combat.end() || now - previous->second >= 8000.0) {
+            trigger = id; entering = true;
+        }
+        state.member_combat[id] = now;
+    }
+    MovementObject* member = Actor(graph, trigger);
+    if (participants.empty() && (!Awake(member) || !member->enabled_)) {
+        for (const auto& player : online->GetPlayerStates()) {
+            if (!online->CampaignPlayerOnMainTeam(player.player_id)) continue;
+            MovementObject* survivor = Actor(graph, player.object_id);
+            if (Awake(survivor) && survivor->enabled_) {
+                member = survivor; trigger = survivor->GetID(); break;
+            }
+        }
+    }
+    if (!Awake(member) || !member->enabled_) return;
+    if (!participants.empty()) { state.combat = true; state.last_combat = now; }
+    Encounter* encounter = nullptr;
+    float closest = 1e30f;
+    for (auto& entry : state.encounters) {
+        Object* object = graph->GetObjectFromID(entry.first.first);
+        if (!object || object->GetType() != _hotspot_object) continue;
+        auto* hotspot = static_cast<Hotspot*>(object);
+        if (hotspot->ASGetIntVar("progress") != entry.first.second) continue;
+        for (ObjectID id : entry.second.originals) {
+            MovementObject* source = Actor(graph, id);
+            if (!source || !source->enabled_ || !Awake(source)) continue;
+            const float d = distance_squared(source->position, member->position);
+            if (d < closest && d < 55.0f * 55.0f) { closest = d; encounter = &entry.second; }
+        }
+    }
+    if (encounter) state.active_encounter = {encounter->hotspot, encounter->goal};
+    else {
+        const auto old = state.encounters.find(state.active_encounter);
+        Object* object = old != state.encounters.end() ? graph->GetObjectFromID(old->first.first) : nullptr;
+        if (object && object->GetType() == _hotspot_object &&
+            static_cast<Hotspot*>(object)->ASGetIntVar("progress") == old->first.second) encounter = &old->second;
+    }
+    const bool new_encounter = !participants.empty() && encounter && state.engaged.insert({encounter->hotspot, encounter->goal}).second;
+    // Coalesce companions noticing the same fight over adjacent frames, while
+    // allowing another MC member to start a new fight while P1 is still busy.
+    if (new_encounter || (entering && now - state.last_deployment >= 2000.0)) {
+        ++state.deployment; state.last_deployment = now;
+        state.deployment_target = trigger;
+        state.deployment_seats.clear();
+    }
+    if (!participants.empty()) {
+        for (const auto& entry : state.opponents) {
+            state.deployment_seats.insert(entry.first);
+            if (encounter) encounter->opposing_seats.insert(entry.first);
+        }
+    }
+    int attempted = 0;
+    for (auto& entry : state.opponents) {
+        auto& opponent = entry.second;
+        MovementObject* actor = Actor(graph, opponent.avatar);
+        if (!actor) continue;
+        // Finish the captured event in bounded batches even if its authored
+        // enemy dies before the remaining seats can be placed.
+        if (state.deployment_seats.count(entry.first) && opponent.deployment != state.deployment && attempted < 4) {
+            ++attempted;
+            vec3 position;
+            if (!OpponentSpot(online, graph, member, entry.first, &position)) {
+                EnableSeat(online, actor, false);
+                opponent.placement_pending = false;
+                if (now - state.last_deployment >= 5000.0) {
+                    // A crowded or tiny platform must not permanently lock
+                    // the story. This seat retries at the next combat event.
+                    opponent.deployment = state.deployment;
+                    opponent.placement_pending = false;
+                    for (auto& goal : state.encounters) goal.second.opposing_seats.erase(entry.first);
+                    LOGI << "Campaign opposition: no safe ground for seat " << entry.first << ", deferred" << std::endl;
+                }
+                continue;
+            }
+            EnableSeat(online, actor, false);
+            const CommonObjectID common = online->GetOriginalID(actor->GetID());
+            if (online->owner_overrides.erase(common))
+                online->BroadcastOwnerOverride(common, 0, false, 0, 0, false);
+            actor->SetNetworkProxy(!online->IsLocalAvatar(actor->GetID()));
+            vec3 facing = member->position - position; facing.y() = 0;
+            if (length_squared(facing) > 0.01f) facing = normalize(facing);
+            online->PlaceAvatar(actor->GetID(), position, facing, member->GetID());
+            opponent.deployment = state.deployment;
+            opponent.target = trigger; opponent.notice_until = 0;
+            opponent.pending_position = position; opponent.pending_facing = facing;
+            opponent.placement_pending = true; opponent.queued_at = now;
+            if (encounter) encounter->opposing_seats.insert(entry.first);
+            LOGI << "Campaign opposition: seat " << entry.first << " enters combat " << state.deployment << std::endl;
+        }
+        if (!actor->controlled && !opponent.placement_pending && now < opponent.notice_until &&
+            (!actor->ASHasVar("goal") || actor->ASGetIntVar("goal") != 1))
+            actor->ReceiveScriptMessage("notice " + std::to_string(opponent.target));
+    }
+}
+}
 
 int Online::CampaignHumanCount() const {
     int humans = 0;
     SceneGraph* graph = Engine::Instance()->GetSceneGraph();
     if (online_session) for (const auto& entry : online_session->player_states)
-        if (!entry.second.is_bot && Actor(graph, entry.second.object_id)) ++humans;
+        if (!entry.second.is_bot && CampaignPlayerOnMainTeam(entry.first) && Actor(graph, entry.second.object_id)) ++humans;
     return std::max(1, humans);
+}
+
+int Online::CampaignPartySize() const {
+    int participants = 0;
+    SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    if (online_session) for (const auto& entry : online_session->player_states)
+        if (CampaignPlayerOnMainTeam(entry.first) && Actor(graph, entry.second.object_id)) ++participants;
+    return std::max(1, participants);
+}
+
+bool Online::CampaignCharacterOnMainTeam(ObjectID avatar) {
+    if (!IsActive() || !LobbyForceTeams() || !CoopCampaign()) return true;
+    for (const auto& player : GetPlayerStates()) if (player.object_id == avatar) return CampaignPlayerOnMainTeam(player.player_id);
+    return false;
+}
+
+std::string Online::CampaignWaitingText() {
+    if (!IsActive() || !LobbyForceTeams() || !CoopCampaign() || CoopCutscene() || RemoteCutsceneActive()) return "";
+    for (const auto& player : GetLocalPlayerStates()) {
+        MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), player.object_id);
+        if (actor && player.camera_id == ActiveCameras::GetID() && !CampaignPlayerOnMainTeam(player.player_id) && !actor->enabled_)
+            return "Waiting for the main character team to enter combat";
+    }
+    return "";
 }
 
 void Online::ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai) {
     if (!std::isfinite(vitality) || !std::isfinite(damage) || !std::isfinite(armor) || !std::isfinite(ai) ||
-        vitality < 1 || vitality > 6 || damage < 1 || damage > 2 || armor < 1 || armor > 2 || ai < 0 || ai > 0.5f) return;
+        vitality < 1 || vitality > 6 || damage < 1 || damage > 2 || armor < 1 || armor > 2 || ai < 0 || ai > 0.03f) return;
     MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), GetObjectID(character));
     if (!actor || !actor->HasFunction("void SetCampaignScaling(float, float, float, float)")) return;
     if (IsPlayerCharacter(actor->GetID()) && (vitality != 1 || damage != 1 || armor != 1 || ai != 0)) return;
@@ -222,6 +473,16 @@ bool Online::CampaignEncounterDefeated(ObjectID hotspot, int goal) const {
     if (it == campaign_difficulty_state->encounters.end()) return true;
     SceneGraph* graph = Engine::Instance()->GetSceneGraph();
     for (const auto& extra : it->second.extras) if (Awake(Actor(graph, extra.actor))) return false;
+    if (LobbyForceTeams() && online_session) for (PlayerID seat : it->second.opposing_seats) {
+        const auto player = online_session->player_states.find(seat);
+        if (player == online_session->player_states.end() || CampaignPlayerOnMainTeam(seat)) continue;
+        MovementObject* actor = Actor(graph, player->second.object_id);
+        const auto pending = campaign_difficulty_state->opponents.find(seat);
+        if (actor && pending != campaign_difficulty_state->opponents.end() &&
+            (pending->second.placement_pending || (campaign_difficulty_state->deployment_seats.count(seat) &&
+             pending->second.deployment != campaign_difficulty_state->deployment))) return false;
+        if (actor && actor->enabled_ && Awake(actor)) return false;
+    }
     return true;
 }
 
@@ -251,10 +512,14 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
             Send<OnlineMessages::CampaignScale>(GetOriginalID(previous.first), 1, 1, 1, 0);
         }
         state.encounters.clear(); state.applied.clear(); state.spawned = 0; state.reset = false; state.next_update = 0;
+        state.opponents.clear(); state.engaged.clear(); state.deployment = 0; state.combat = false; state.last_combat = -100000;
+        state.deployment_target = -1; state.deployment_seats.clear();
+        state.member_combat.clear(); state.active_encounter = {-1, -1}; state.last_deployment = -100000;
     }
+    StageOpponents(this, graph, state);
     if (now < state.next_update) return;
     state.next_update = now + 350.0;
-    const int humans = CampaignHumanCount();
+    const int humans = CampaignPartySize();
     const bool stats = config["campaign_mp_scaling"].toBool();
     const bool nightmare = config.GetDifficultyPreset() == "Nightmare";
     std::set<ObjectID> bosses;
@@ -290,7 +555,8 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
         }
     }
     auto apply = [&](MovementObject* actor, bool hostile, bool boss) {
-        const auto factors = hostile ? CampaignDifficulty::ForPlayers(humans, boss, Strength(actor), stats, nightmare) : CampaignDifficulty::Factors();
+        const auto factors = hostile ? CampaignDifficulty::ForPlayers(humans, boss, Strength(actor), stats, nightmare,
+                                                                     GetOriginalID(actor->GetID())) : CampaignDifficulty::Factors();
         const std::array<float, 4> values = {{factors.vitality, factors.damage, factors.armor, factors.ai}};
         auto old = state.applied.find(actor->GetID());
         const char* names[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
@@ -309,10 +575,11 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
     for (Object* object : graph->movement_objects_) {
         auto* actor = static_cast<MovementObject*>(object);
         const bool hostile = Hostile(this, graph, actor);
-        if (hostile && actor->enabled_ && Awake(actor)) ++active_hostiles;
+        if (!actor->controlled && OpposesMain(this, graph, actor) && actor->enabled_ && Awake(actor)) ++active_hostiles;
         if (actor->HasFunction("void SetCampaignScaling(float, float, float, float)"))
             apply(actor, hostile, bosses.count(actor->GetID()) != 0 || ExplicitBoss(actor, false));
     }
+    DeployOpponents(this, graph, state, now);
     if (!stats || humans <= 1 || coop_cutscene || graph->level->DialogueCameraControl()) return;
     for (auto& entry : state.encounters) {
         Encounter& encounter = entry.second;

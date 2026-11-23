@@ -62,7 +62,8 @@ defender/collision rollback.
 All peers need the same release and native protocol. Protocol 8 introduced
 the traffic lanes and correlated hit replies. Protocol 9 adds host-authoritative
 campaign scaling factors and shared match difficulty settings; older binaries
-are incompatible.
+are incompatible. Protocol 10 adds campaign faction/adversary behavior and the
+higher campaign durability limits; use matching updated binaries and scripts.
 
 ## Campaign and inventory consistency
 

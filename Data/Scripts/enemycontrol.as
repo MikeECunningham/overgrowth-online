@@ -144,6 +144,135 @@ int escort_id = -1;
 int chase_target_id = -1;
 int weapon_target_id = -1;
 
+// Native lobby assignment keeps this identity even while combat or a weapon
+// pickup temporarily replaces the escort goal. Ordinary level escorts retain
+// their authored, autonomous behavior.
+bool lobby_escort_bot = false;
+int lobby_escort_player_id = -1;
+float lobby_escort_combat_until = -1.0f;
+float lobby_escort_threat_check_time = -1.0f;
+int lobby_escort_last_player_id = -1;
+const float kLobbyEscortCombatGrace = 4.0f;
+const float kLobbyEscortThreatCheckInterval = 0.2f;
+
+MovementObject@ LobbyEscortPlayer() {
+    if(!lobby_escort_bot || !MovementObjectExists(lobby_escort_player_id)) {
+        return null;
+    }
+
+    MovementObject@ player = ReadCharacterID(lobby_escort_player_id);
+    if(!ReadObjectFromID(player.GetID()).GetEnabled() || !this_mo.OnSameTeam(player)) {
+        return null;
+    }
+    return player;
+}
+
+bool LobbyEscortRecentDamage(MovementObject@ character) {
+    float damage_time = character.GetFloatVar("last_damaged_time");
+    float age = character.GetFloatVar("time") - damage_time;
+    // Each actor (including remote proxies and newly spawned bots) has its own
+    // script clock. A zero timestamp is the undamaged initial state.
+    return damage_time > 0.0f && age >= 0.0f && age < 1.0f;
+}
+
+void UpdateLobbyEscortCombat() {
+    MovementObject@ player = LobbyEscortPlayer();
+    if(player is null) {
+        lobby_escort_last_player_id = -1;
+        lobby_escort_combat_until = -1.0f;
+        return;
+    }
+
+    if(lobby_escort_last_player_id != player.GetID()) {
+        lobby_escort_last_player_id = player.GetID();
+        lobby_escort_combat_until = -1.0f;
+        lobby_escort_threat_check_time = -1.0f;
+    }
+
+    if(time < lobby_escort_threat_check_time) {
+        return;
+    }
+    lobby_escort_threat_check_time = time + kLobbyEscortThreatCheckInterval;
+
+    bool fighting = LobbyEscortRecentDamage(player) || LobbyEscortRecentDamage(this_mo);
+    int response_target = -1;
+    int player_target = player.GetIntVar("target_id");
+    if(player.GetIntVar("state") == _attack_state && MovementObjectExists(player_target)) {
+        MovementObject@ enemy = ReadCharacterID(player_target);
+        if(ReadObjectFromID(player_target).GetEnabled() &&
+           enemy.GetIntVar("knocked_out") == _awake &&
+           !player.OnSameTeam(enemy) && !this_mo.OnSameTeam(enemy) &&
+           distance_squared(enemy.position, player.position) <= 1225.0f) {
+            fighting = true;
+            response_target = player_target;
+        }
+    }
+    for(int i = 0, count = GetNumCharacters(); i < count && response_target == -1; ++i) {
+        MovementObject@ enemy = ReadCharacter(i);
+        if(enemy.GetID() == this_mo.GetID() ||
+           !ReadObjectFromID(enemy.GetID()).GetEnabled() ||
+           enemy.GetIntVar("knocked_out") != _awake ||
+           this_mo.OnSameTeam(enemy) ||
+           (distance_squared(enemy.position, player.position) > 625.0f &&
+            distance_squared(enemy.position, this_mo.position) > 625.0f)) {
+            continue;
+        }
+
+        int target = enemy.GetIntVar("target_id");
+        bool incoming = enemy.GetIntVar("state") == _attack_state &&
+                        (target == player.GetID() || target == this_mo.GetID());
+        if(!incoming && enemy.HasVar("goal") && enemy.HasVar("chase_target_id")) {
+            target = enemy.GetIntVar("chase_target_id");
+            bool can_pursue = !enemy.HasVar("combat_allowed") || enemy.GetBoolVar("combat_allowed") ||
+                              (enemy.HasVar("chase_allowed") && enemy.GetBoolVar("chase_allowed"));
+            incoming = can_pursue && enemy.GetIntVar("goal") == _attack &&
+                       (target == player.GetID() || target == this_mo.GetID());
+        }
+        if(incoming) {
+            fighting = true;
+            response_target = enemy.GetID();
+        }
+    }
+
+    if(fighting) {
+        lobby_escort_combat_until = time + kLobbyEscortCombatGrace;
+        // A quiet escort may already remember this enemy while facing away.
+        // Assist the buddy's explicit target or an incoming attacker without
+        // requiring the vision system to rediscover it first.
+        if(response_target != -1) {
+            ReactToNoticedCharacter(response_target);
+        }
+    }
+}
+
+bool LobbyEscortHoldFire() {
+    return LobbyEscortPlayer() !is null && time >= lobby_escort_combat_until;
+}
+
+void UpdateLobbyEscortGoal() {
+    UpdateLobbyEscortCombat();
+    if(!LobbyEscortHoldFire()) {
+        return;
+    }
+
+    // Keep knowledge of nearby enemies without turning it into a first attack
+    // or a pursuit. Picking up a weapon still completes before returning.
+    enemy_seen = 0.0f;
+    ai_attacking = false;
+    SetChaseTarget(-1);
+    if(goal == _get_weapon) {
+        if(old_goal == _attack || old_goal == _get_help || old_goal == _flee ||
+           (old_goal == _investigate && old_sub_goal == _investigate_attack)) {
+            old_goal = _escort;
+            escort_id = lobby_escort_player_id;
+        }
+    } else if(goal == _attack || goal == _get_help || goal == _flee ||
+              (goal == _investigate && sub_goal == _investigate_attack)) {
+        escort_id = lobby_escort_player_id;
+        SetGoal(_escort);
+    }
+}
+
 float investigate_body_time;
 float patrol_wait_until = 0.0f;
 
@@ -313,6 +442,11 @@ bool WantsToDragBody() {
 
 void ResetMind() {
     goal = _patrol;
+    // Keep native lobby identity through recovery/retry; only combat memory
+    // belongs to this incarnation of the character.
+    lobby_escort_combat_until = -1.0f;
+    lobby_escort_threat_check_time = -1.0f;
+    lobby_escort_last_player_id = -1;
     situation.clear();
     got_hit_by_leg_cannon_count = 0;
     path_find_type = _pft_nav_mesh;
@@ -707,9 +841,19 @@ void Startle() {
 }
 
 void Notice(int character_id) {
+    UpdateLobbyEscortCombat();
+    ReactToNoticedCharacter(character_id);
+}
+
+void ReactToNoticedCharacter(int character_id) {
     MovementObject@ char = ReadCharacterID(character_id);
 
     if(char.static_char) {
+        return;
+    }
+
+    if(!this_mo.OnSameTeam(char) && LobbyEscortHoldFire()) {
+        situation.Notice(character_id);
         return;
     }
 
@@ -805,7 +949,9 @@ void NotifySound(int created_by_id, vec3 pos, SoundType type) {
 
             if(suspicious_amount >= 1.0f) {
                 if(goal == _patrol) {
-                    this_mo.PlaySoundGroupVoice("suspicious", 0.0f);
+                    if(!LobbyEscortHoldFire()) {
+                        this_mo.PlaySoundGroupVoice("suspicious", 0.0f);
+                    }
                     // AISound(this_mo.position, VERY_LOUD_SOUND_RADIUS, _sound_type_voice);
                     ai_look_target = pos;
                     ai_look_override_time = time + 2.0;
@@ -1485,6 +1631,7 @@ void UpdateBrain(const Timestep &in ts) {
         }
     }
 
+    UpdateLobbyEscortGoal();
     AllyInfo();
 
     suspicious_amount = max(0.0f, suspicious_amount - ts.step() * kSuspicionFadeSpeed);
@@ -1563,8 +1710,10 @@ void UpdateBrain(const Timestep &in ts) {
                         if(!already_known) {
                             // Investigate body of ally
                             Startle();
-                            this_mo.PlaySoundGroupVoice("suspicious", 0.0f);
-                            AISound(this_mo.position, VERY_LOUD_SOUND_RADIUS, _sound_type_voice);
+                            if(!LobbyEscortHoldFire()) {
+                                this_mo.PlaySoundGroupVoice("suspicious", 0.0f);
+                                AISound(this_mo.position, VERY_LOUD_SOUND_RADIUS, _sound_type_voice);
+                            }
                             random_look_delay = 1.0f;
                             random_look_dir = char.position - this_mo.position;
                             SetGoal(_investigate);
@@ -1575,7 +1724,7 @@ void UpdateBrain(const Timestep &in ts) {
 
                     Notice(id);
                 } else {
-                    if(char.GetIntVar("knocked_out") == _awake && (char.GetIntVar("invisible_when_stationary") == 0 || length_squared(char.velocity) > 0.1 || char.GetFloatVar("duck_amount") < 0.5 || distance_squared(this_mo.position, char.position) < 4.0)) {
+                    if(!LobbyEscortHoldFire() && char.GetIntVar("knocked_out") == _awake && (char.GetIntVar("invisible_when_stationary") == 0 || length_squared(char.velocity) > 0.1 || char.GetFloatVar("duck_amount") < 0.5 || distance_squared(this_mo.position, char.position) < 4.0)) {
                         ++num_enemies_visible;
 
                         if(goal == _patrol || goal == _investigate) {
@@ -2234,6 +2383,11 @@ bool WantsToCrouch() {
         return true;
     }
 
+    MovementObject@ player = LobbyEscortPlayer();
+    if(player !is null && goal != _get_weapon) {
+        return player.GetFloatVar("duck_amount") >= 0.5f;
+    }
+
     return false;
 }
 
@@ -2335,6 +2489,10 @@ bool WantsToJump() {
 }
 
 bool WantsToAttack() {
+    if(LobbyEscortHoldFire()) {
+        return false;
+    }
+
     if(species == _wolf && block_stunned > 0.5) {
         return false;
     }

@@ -348,7 +348,7 @@ void IncrementProgress() {
 void CoopHealOwnPlayers(){
     for(int i = 0, len = GetNumCharacters(); i < len; ++i){
         MovementObject@ char = ReadCharacter(i);
-        if(char.controlled && !char.remote && char.GetIntVar("knocked_out") == _awake){
+        if(char.controlled && !char.remote && Online_CampaignIsMainCharacter(char.GetID()) && char.GetIntVar("knocked_out") == _awake){
             char.QueueScriptMessage("restore_health");
         }
     }

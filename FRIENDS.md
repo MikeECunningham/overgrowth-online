@@ -13,11 +13,11 @@ cd overgrowth-online
 
 Use the same release tag or commit as the host. The inherited private Wolfire submodules are not required; clone without `--recurse-submodules`. Game assets are read from each player's installed game and are not included in the source.
 
-The current local-multiplayer prerelease is `0.42.0-alpha.6`. Once its tag has been
+The current local-multiplayer prerelease is `0.42.0-alpha.8`. Once its tag has been
 published, select that exact source revision before configuring:
 
 ```sh
-git switch --detach v0.42.0-alpha.6
+git switch --detach v0.42.0-alpha.8
 ```
 
 Until a tag is published, ask the host for the commit to use. The in-game version
@@ -69,7 +69,7 @@ Replace `$gamePath` with your own installation folder. Keep the executable in `B
 1. Launch the fork and open **Multiplayer**.
 2. One person chooses **Host**, then selects the mode and map in the lobby.
 3. Everyone else chooses **Connect** and enters the host's IP address.
-4. Add local players with their controllers, or use **Add local player (debug)** for testing. If a controller owns P1, **Enter** adds the keyboard/mouse as another player.
+4. Add local players by pressing a button on their controllers. If a controller owns P1, **Enter** adds the keyboard/mouse as another player.
 5. The host starts when everyone is present. The designated host can use **End game** to return everyone to the same lobby.
 
 On a LAN, use the host's LAN address. Across the internet, the host may need to allow and forward **UDP 25744** to their computer. The source builds above use direct-IP networking. Steam invitations, friends-list joining and Valve relays use a separate Steamworks build; see [RELEASE.md](RELEASE.md).
@@ -80,6 +80,8 @@ The host can use **Add bot** in the lobby or pause menu. Bots have roster entrie
 with names and teams, and the host can remove them. They do not add screens or
 use controllers. In Arena, newly added bots join the next round; its usual
 random team/FFA rules apply unless **Force lobby teams** is checked.
+Outside Arena, friendly bots spread across human teammates, follow their crouch
+and combat cues, and avoid starting fights while their assigned player is quiet.
 
 Joining an already-running single-player game creates a local party. Its roster,
 controller settings and screen assignments continue across campaign levels.

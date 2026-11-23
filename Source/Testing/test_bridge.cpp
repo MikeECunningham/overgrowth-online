@@ -483,6 +483,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 c["camera_id"] = mo->camera_id;
                 c["pos"] = Vec(mo->position);
                 c["visible"] = mo->visible;
+                c["enabled"] = mo->enabled_;
                 c["vel"] = Vec(mo->velocity);
                 c["proxy"] = mo->network_proxy;
                 c["bones"] = (int)mo->rigged_object()->skeleton_.physics_bones.size();
@@ -543,6 +544,14 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 if (mo->ASHasVar("state")) {
                     c["state"] = mo->ASGetIntVar("state");
                 }
+                for (const char* name : {"goal", "escort_id", "target_id", "attacked_by_id"}) {
+                    if (mo->ASHasVar(name)) c["ai_" + std::string(name)] = mo->ASGetIntVar(name);
+                }
+                for (const char* name : {"duck_amount", "target_duck_amount"}) {
+                    if (mo->ASHasVar(name)) c[name] = mo->ASGetFloatVar(name);
+                }
+                if (mo->ASHasVar("lobby_escort_bot")) c["lobby_escort_bot"] = mo->ASGetBoolVar("lobby_escort_bot");
+                if (mo->ASHasVar("lobby_escort_player_id")) c["lobby_escort_player_id"] = mo->ASGetIntVar("lobby_escort_player_id");
 
                 if (mo->ASHasVar("on_ground")) {
                     c["on_ground"] = mo->ASGetBoolVar("on_ground");
@@ -575,7 +584,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                                          "campaign_authored_attack_speed", "campaign_authored_throw_counter", "campaign_authored_weapon_catch"}) {
                     if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetFloatVar(name);
                 }
-                for (const char* name : {"species", "ko_shield", "max_ko_shield"}) {
+                for (const char* name : {"species", "ko_shield", "max_ko_shield", "campaign_ai_tweak"}) {
                     if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetIntVar(name);
                 }
                 if (mo->ASHasVar("g_wearing_metal_armor"))

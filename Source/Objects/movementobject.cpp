@@ -1813,6 +1813,12 @@ void MovementObject::Reset() {
     const char* campaign_names[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
     if (keep_campaign_scale) for (int i = 0; i < 4; ++i)
         if (ASHasVar(campaign_names[i])) campaign_scale[i] = ASGetFloatVar(campaign_names[i]);
+    // Lobby membership and the assigned human are match metadata too. A retry
+    // must not give a quiet companion an autonomous brain tick before the
+    // native escort assignment refreshes. Combat memory resets normally.
+    const bool keep_lobby_escort = ASHasVar("lobby_escort_bot") && ASGetBoolVar("lobby_escort_bot");
+    const int lobby_escort_player = keep_lobby_escort && ASHasVar("lobby_escort_player_id") ?
+        ASGetIntVar("lobby_escort_player_id") : -1;
     as_context->CallScriptFunction(as_funcs.reset);
     position = GetTranslation();
     char_sphere->SetPosition(position);
@@ -1822,6 +1828,10 @@ void MovementObject::Reset() {
     velocity = vec3(0.0f);
     no_grab = 0;
     as_context->ResetGlobals();
+    if (keep_lobby_escort && ASHasVar("lobby_escort_bot")) {
+        ASSetBoolVar("lobby_escort_bot", true);
+        if (ASHasVar("lobby_escort_player_id")) ASSetIntVar("lobby_escort_player_id", lobby_escort_player);
+    }
     as_context->CallScriptFunction(as_funcs.set_parameters);
     as_context->CallScriptFunction(as_funcs.post_reset);
     if (keep_campaign_scale) {

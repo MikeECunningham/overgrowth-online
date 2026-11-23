@@ -80,18 +80,28 @@ def player_menus(ctx):
         wait(lambda: status()["open_menu_players"] == [0] and status()["paused"], "single-player menu pauses")
         metrics["single_player_owner"] = probe(0, 'GetPlayerMenuInputID() + " " + GetPlayerMenuLocalIndex()')
         check(metrics["single_player_owner"] == "0 0", "single-player menu belongs to another input/profile")
+        window_width, window_height = map(int, probe(0, 'GetScreenWidth() + " " + GetScreenHeight()').split())
         metrics["single_player_cursor"] = status()["cursor_visible"]
         check(metrics["single_player_cursor"], "paused single player has no mouse cursor")
+        run('string actions="";for(uint i=0;i<controller_items.size();++i){'
+            'IMMessage@ m=controller_items[i].controllerItem.getMessage();'
+            'if(m !is null)actions+=m.name+"|";}'
+            'SetConfigValueString("player_menu_test_actions",actions);', 0)
+        metrics["pause_actions"] = probe(0, 'GetConfigValueString("player_menu_test_actions")').split("|")
+        check("Continue" in metrics["pause_actions"] and "debug_add_local_player" not in metrics["pause_actions"],
+              "pause UI exposes the internal synthetic-player command")
         shot("single_player")
         action(0, "Continue")
         wait(lambda: not status()["open_menu_players"] and not status()["paused"], "closing single-player menu resumes")
 
         start(0)
         wait(lambda: status()["paused"], "reopened single-player menu pauses")
-        action(0, "debug_add_local_player")
+        # Synthetic seats use the internal automation API. The debug spawn
+        # command is deliberately absent from the player-facing pause menu.
+        run("int extra_player = DebugAddLocalPlayer();")
         wait(lambda: status()["local_players"] == 2 and not status()["paused"], "second player clears automatic pause")
         metrics["two_view_size"] = probe(0, 'GetScreenWidth() + " " + GetScreenHeight()')
-        check(metrics["two_view_size"] == "640 720", "existing menu did not resize to its half-screen")
+        check(metrics["two_view_size"] == f"{window_width // 2} {window_height}", "existing menu did not resize to its half-screen")
         shot("two_views")
 
         run("int extra_player = DebugAddLocalPlayer();")
@@ -102,7 +112,8 @@ def player_menus(ctx):
         metrics["owners"] = [probe(p, 'GetPlayerMenuInputID() + " " + GetPlayerMenuLocalIndex()') for p in range(3)]
         metrics["three_view_sizes"] = [probe(p, 'GetScreenWidth() + " " + GetScreenHeight()') for p in range(3)]
         check(metrics["owners"] == ["0 0", "1 1", "2 2"], "menu contexts share an input owner or settings profile")
-        check(metrics["three_view_sizes"] == ["640 360"] * 3, "three-view menus use the full window")
+        check(metrics["three_view_sizes"] == [f"{window_width // 2} {window_height // 2}"] * 3,
+              "three-view menus use the full window")
         check(not status()["paused"], "local multiplayer menus paused the shared world")
         shot("three_menus")
 

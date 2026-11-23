@@ -34,7 +34,7 @@ array<array<string> > difficulty_description = {
 {"Experience the story of Overgrowth", " ", "Reduced enemy difficulty, 80% speed, countering attacks is easier"},
 {"Fight like a ninja rabbit", " ", "Normal enemy difficulty, 100% speed"},
 {"Prove your mastery of combat", " ", "Maximum enemy difficulty, 100% speed, countering attacks is harder"},
-{"Face the campaign as a coordinated party", " ", "Expert settings, with extra AI pressure as more human players join"}
+{"Face the campaign as a coordinated party", " ", "Expert settings, with rare, small AI variations in larger parties"}
 };
 
 array<string> difficulty_logos = {
@@ -186,7 +186,7 @@ void BuildMain() {
     scaling_options.appendSpacer(10.0f);
     FontSetup scaling_font("Cella", 28, HexColor("#CCCCCC"), true);
     scaling_options.append(IMText("Adjust enemy stats and add limited reinforcements for local and online parties.", scaling_font));
-    scaling_options.append(IMText("Solo encounters stay unchanged. Only Nightmare adds extra AI pressure.", scaling_font));
+    scaling_options.append(IMText("Solo encounters stay unchanged. Nightmare adds rare, small AI variations from four participants.", scaling_font));
     scaling_options.append(IMText("Existing reinforcements stay in the fight. Enemies keep damage already taken.", scaling_font));
     if(!CanEditDifficultySettings()) scaling_options.append(IMText("The host controls these match settings.", scaling_font));
     upperMainDiv.appendSpacer(30.0f);

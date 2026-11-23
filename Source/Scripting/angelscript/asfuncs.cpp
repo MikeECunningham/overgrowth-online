@@ -5972,6 +5972,9 @@ vec3 AS_Online_SafeSpotNear(const vec3& base, const vec3& facing, int index) {
 // ... and whether there is one (Online::FindSafeSpot; `spot` is set only then)
 bool AS_Online_CampaignEncounterDefeated(int hotspot, int goal) { return Online::Instance()->CampaignEncounterDefeated(hotspot, goal); }
 int AS_Online_CampaignHumanCount() { return Online::Instance()->CampaignHumanCount(); }
+int AS_Online_CampaignPartySize() { return Online::Instance()->CampaignPartySize(); }
+bool AS_Online_CampaignIsMainCharacter(int avatar) { return Online::Instance()->CampaignCharacterOnMainTeam(avatar); }
+std::string AS_Online_CampaignWaitingText() { return Online::Instance()->CampaignWaitingText(); }
 
 bool AS_Online_FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3& spot) {
     return Online::Instance()->FindSafeSpot(base, facing, index, &spot);
@@ -6215,6 +6218,9 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("vec3 Online_SafeSpotNear(const vec3 &in base, const vec3 &in facing, int index)", asFUNCTION(AS_Online_SafeSpotNear), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_CampaignEncounterDefeated(int hotspot, int goal)", asFUNCTION(AS_Online_CampaignEncounterDefeated), asCALL_CDECL);
     context->RegisterGlobalFunction("int Online_CampaignHumanCount()", asFUNCTION(AS_Online_CampaignHumanCount), asCALL_CDECL);
+    context->RegisterGlobalFunction("int Online_CampaignPartySize()", asFUNCTION(AS_Online_CampaignPartySize), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_CampaignIsMainCharacter(int avatar)", asFUNCTION(AS_Online_CampaignIsMainCharacter), asCALL_CDECL);
+    context->RegisterGlobalFunction("string Online_CampaignWaitingText()", asFUNCTION(AS_Online_CampaignWaitingText), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_FindSafeSpot(const vec3 &in base, const vec3 &in facing, int index, vec3 &out spot)", asFUNCTION(AS_Online_FindSafeSpot), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_ObjectFile(int id)", asFUNCTION(AS_Online_ObjectFile), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_Spectating()", asFUNCTION(AS_Online_Spectating), asCALL_CDECL);

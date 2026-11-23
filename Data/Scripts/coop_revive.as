@@ -327,7 +327,7 @@ void CoopReviveDraw() {
         return;
     }
     int me = ReviveOwnCharacter();
-    string label = "";
+    string label = Online_CampaignWaitingText();
     float fraction = -1.0f;
 
     if(revive_target != -1) {

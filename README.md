@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.6** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.8** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -40,8 +40,11 @@ and the remaining Steam friends/relay checks.
 - Mode-managed Arena team/FFA matchups and cooperative campaign teams, with an
   optional **Force lobby teams** override. End game returns the connected group
   to its lobby for another match.
+- Campaign faction teams: opposing lobby players and bots deploy at encounters,
+  with NPC faction affiliations and independent hostile wildcard teams. Friendly
+  bots count toward scaling and spread their escorts across teammates.
 - Optional campaign party scaling with capped same-species reinforcements, stronger bosses,
-  and a fourth **Nightmare** difficulty with additional co-op AI pressure. See
+  and a fourth **Nightmare** difficulty with rare, modest AI variations. See
   [Campaign difficulty](Docs/Markdown/Campaign%20Difficulty.md) for rules and limits.
 - Font rasterization, controller focus, GUI texture loading and Linux
   compatibility fixes. The lobby uses the game's menu artwork and fonts.
@@ -90,7 +93,7 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 | Who may change what | Any connected player could delete, spawn or move any object and rewrite player states and settings | The host checks every message: a player can only affect their own character; hits and grabs must be in reach |
 | Malformed packets | Could crash the game | Dropped unread; tested with forged attacks |
 
-See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **9** requires matching updated binaries on every computer.
+See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **10** requires matching updated binaries on every computer.
 
 ## Multiplayer lobby
 
@@ -98,7 +101,7 @@ Open **Multiplayer** and choose **Host** or **Connect**. Hosting opens the lobby
 
 The lobby has separate panels for the mode and map, the scrolling player list, and hosting options. **Build a level** is a mode card alongside the playable modes. The host chooses the mode, map, manual lobby teams, pause permissions and start time. **Force lobby teams** is off by default: campaigns retain their cooperative teams, Arena chooses randomized team/FFA matchups from its battle setups, and sandbox/build uses the lobby teams as a fallback. Checking it enforces the lobby's team dropdowns. Mode-assigned teams are synchronized separately, so random Arena matchups do not overwrite the saved lobby choices.
 
-Press a button on another controller to add a local player. If a controller owns P1, press **Enter** to join with the keyboard and mouse as another player. **Add local player (debug)** creates a seat without hardware. Each client's **local leader** can rename or remove its local players and assign their screens; the host can also remove remote players. **Promote to leader** transfers local authority without changing device assignments. After transferring both host and leader roles away from the initial keyboard/mouse player, that seat can be removed. Removing a remote leader disconnects that client's whole group. Screens are exclusive: choosing an occupied screen swaps the two players. Remote players have no screen on your client. Each client renders only its own screens, and every player's character uses the fork's existing local simulation and compact network streams.
+Press a button on another controller to add a local player. If a controller owns P1, press **Enter** to join with the keyboard and mouse as another player. Each client's **local leader** can rename or remove its local players and assign their screens; the host can also remove remote players. **Promote to leader** transfers local authority without changing device assignments. After transferring both host and leader roles away from the initial keyboard/mouse player, that seat can be removed. Removing a remote leader disconnects that client's whole group. Screens are exclusive: choosing an occupied screen swaps the two players. Remote players have no screen on your client. Each client renders only its own screens, and every player's character uses the fork's existing local simulation and compact network streams.
 
 **Promote to host** transfers lobby and match authority. Choosing a player on another computer also transfers the pregame network session, so the original hosting computer can leave after the handoff completes. Every client first checks that it can reach the new host; a failed reachability check leaves the original lobby running. Direct-IP hosts need a reachable UDP port, while Steamworks builds can use Steam P2P. Host transfer is available in the lobby; return there before handing off a running match.
 
@@ -162,13 +165,13 @@ while retaining control of that actor (`newcampaign_main_removal`). These use
 process-local virtual controllers through the opt-in test bridge. Retry during
 dialogue is checked separately with `newcampaign_cinematic_retry`.
 
-## Local split-screen debugging
+## Local split screen
 
-Open the pause menu as the local leader and select **Add player (debug)**. Each press adds another persistent party member and enables split screen. Players fill the grid from the top left: two use 2×1, three or four use 2×2, five or six use 3×2, and seven through nine use 3×3. Unused cells are black. Player, input and camera lists grow dynamically rather than stopping at four players.
+Press a button on an unassigned controller to join the local party and enable split screen. If a controller owns P1, press **Enter** to join with keyboard and mouse. Players fill the grid from the top left: two use 2×1, three or four use 2×2, five or six use 3×2, and seven through nine use 3×3. Unused cells are black. Player, input and camera lists grow dynamically rather than stopping at four players.
 
-Keyboard and mouse control P1 initially; controllers join or reconnect through the same local roster, and debug slots without a device stay idle. Added players spawn on checked ground near the group. Their runtime characters are excluded from level saves and are recreated for their retained roster entries when a level reloads.
+Keyboard and mouse control P1 initially; controllers join or reconnect through the same local roster. Added players spawn on checked ground near the group. Their runtime characters are excluded from level saves and are recreated for their retained roster entries when a level reloads.
 
-Run `python3 Tools/ogmp.py run local_splitscreen` to check the pause button, nine screens, independent P5 input and party persistence through a level reload. Set `OGMP_KEYS=renderer=vulkan` to check the Vulkan backend.
+Run `python3 Tools/ogmp.py run local_splitscreen` to check nine screens, independent P5 input and party persistence through a level reload. Set `OGMP_KEYS=renderer=vulkan` to check the Vulkan backend.
 
 ## Build a level
 
