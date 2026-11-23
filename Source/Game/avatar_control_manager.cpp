@@ -67,7 +67,7 @@ std::vector<Possession> AvatarControlManager::GeneratePossessionList() {
     int local_player_index = 0;
     if (online->IsActive()) {
         for (auto& player_state : online->GetPlayerStates()) {
-            if (player_state.object_id == -1) {
+            if (player_state.is_bot || player_state.object_id == -1) {
                 continue;
             }
 
@@ -191,7 +191,7 @@ void AvatarControlManager::Update() {
         // the character's, and the character still ran)
         if (online->IsActive()) {
             for (auto& player_state : online->GetPlayerStates()) {
-                if (player_state.object_id == -1 || !online->IsLocalAvatar(player_state.object_id)) {
+                if (player_state.is_bot || player_state.object_id == -1 || !online->IsLocalAvatar(player_state.object_id)) {
                     continue;
                 }
                 Object* obj = scenegraph_->GetObjectFromID(player_state.object_id);

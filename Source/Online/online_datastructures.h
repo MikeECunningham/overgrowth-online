@@ -81,6 +81,7 @@ struct PlayerState {
     int team = 1;
     int screen = 1;  // one-based screen in that peer's local context
     bool connected = true;
+    bool is_bot = false;  // roster AI; no local input, screen or peer admission
     std::string playername = "UNKNOWN";
     ObjectID object_id = 1;
     uint16_t ping = 0;

@@ -141,6 +141,10 @@ void Online::RegisterHostObjectID(CommonObjectID hostid, ObjectID clientid) {
 }
 
 void Online::DeRegisterHostClientIDTranslation(ObjectID clientid) {
+    // A removed party actor must not leave a cinematic hold behind if a new
+    // character later receives the same local object ID on this replica.
+    coop_cutscene_players.erase(clientid);
+    coop_hidden.erase(std::remove(coop_hidden.begin(), coop_hidden.end(), clientid), coop_hidden.end());
     // check if we need to remove a translation
     auto translation = GetOriginalID(clientid);
 
@@ -376,6 +380,136 @@ ObjectID Online::CreateCharacter() {
     return id;
 }
 
+ObjectID Online::CreateLobbyBot(PlayerID id) {
+    if (!IsHosting() || !online_session) return static_cast<ObjectID>(-1);
+    const auto player = online_session->player_states.find(id);
+    if (player == online_session->player_states.end() || !player->second.is_bot) return static_cast<ObjectID>(-1);
+    SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    if (!graph || !graph->level) return static_cast<ObjectID>(-1);
+    const ObjectID main = CampaignMainAvatarID();
+    Object* anchor_object = graph->GetObjectFromID(main != static_cast<ObjectID>(-1) ? main : HostAvatarID());
+    if (!anchor_object || anchor_object->GetType() != _movement_object) return static_cast<ObjectID>(-1);
+    auto* anchor = static_cast<MovementObject*>(anchor_object);
+    vec3 position = anchor->position;
+    bool placed = false;
+    for (const auto& entry : online_session->player_states) {
+        Object* object = graph->GetObjectFromID(entry.second.object_id);
+        if (!object || object->GetType() != _movement_object) continue;
+        auto* beside = static_cast<MovementObject*>(object);
+        for (int candidate = 1; candidate <= 8; ++candidate) {
+            vec3 spot;
+            if (!FindSafeSpot(beside->position, beside->GetFacing(), candidate, &spot)) continue;
+            bool occupied = false;
+            for (Object* character : graph->movement_objects_) {
+                const vec3 offset = static_cast<MovementObject*>(character)->position - spot;
+                if (std::fabs(offset.y()) < 1.5f && offset.x() * offset.x() + offset.z() * offset.z() < 1.0f) {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (!occupied) { position = spot; placed = true; break; }
+        }
+        if (placed) break;
+    }
+
+    const std::string path = "Data/Objects/IGF_Characters/IGF_GuardActor.xml";
+    EntityDescriptionList descriptions;
+    std::string file_type;
+    Path source;
+    ActorsEditor_LoadEntitiesFromFile(path, descriptions, &file_type, &source);
+    for (auto& description : descriptions) {
+        if (GetTypeFromDesc(description) != _movement_object) continue;
+        // Set position and NPC status before physics and script initialization.
+        description.fields.erase(std::remove_if(description.fields.begin(), description.fields.end(), [](const EntityDescriptionField& field) {
+            return field.type == EDF_TRANSLATION || field.type == EDF_IS_PLAYER;
+        }), description.fields.end());
+        description.AddVec3(EDF_TRANSLATION, position);
+        description.AddBool(EDF_IS_PLAYER, false);
+        Object* object = MapEditor::AddEntityFromDesc(graph, description, false);
+        if (!object || object->GetType() != _movement_object) return static_cast<ObjectID>(-1);
+        auto* bot = static_cast<MovementObject*>(object);
+        bot->is_player = false;
+        bot->controlled = false;
+        bot->controller_id = -1;
+        // NPC eye animation reads a valid view camera, as stock NPCs do.
+        // This references the existing camera; it allocates no player view.
+        bot->camera_id = 0;
+        bot->created_on_the_fly = true;
+        bot->exclude_from_save = true;
+        bot->exclude_from_undo = true;
+        bot->SetRotation(anchor->GetRotation());
+        bot->SetName(player->second.playername);
+        bot->ChangeControlScript(graph->level->GetNPCScript(bot));
+        // The ordinary host NPC stream owns its AI, combat, ragdolls and sound.
+        Send<OnlineMessages::CreateEntity>(path, position, bot->GetID());
+        ScriptParams* params = bot->GetScriptParams();
+        if (anchor->GetScriptParams()->HasParam("Teams"))
+            params->ASSetString("Teams", anchor->GetScriptParams()->GetStringVal("Teams"));
+        params->ASSetString("Bot Name", player->second.playername);
+        params->ASAddIntCheckbox("No Save", true);
+        bot->UpdateScriptParams();
+        if (lobby_mode_ == "com-wolfire-arena" || lobby_campaign_ == "com-wolfire-arena")
+            bot->ReceiveScriptMessage("set_combat_allowed false");
+        PossessAvatar(id, bot->GetID());  // roster association only; no possession/input slot
+        ApplyAssignedTeam(bot->GetID());
+        return bot->GetID();
+    }
+    return static_cast<ObjectID>(-1);
+}
+
+void Online::AssignLobbyBots() {
+    if (!IsHosting() || !online_session || loading || lobby_waiting_ || !Engine::Instance()->IsLevelLoaded()) return;
+    SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    if (!graph || !graph->level) return;
+    bool changed = false;
+    for (auto& entry : online_session->player_states) {
+        if (!entry.second.is_bot) continue;
+        Object* object = graph->GetObjectFromID(entry.second.object_id);
+        if (!object || object->GetType() != _movement_object) {
+            entry.second.object_id = static_cast<ObjectID>(-1);
+            changed = CreateLobbyBot(entry.first) != static_cast<ObjectID>(-1) || changed;
+        }
+    }
+    if (changed) BroadcastLobby();
+
+    // Reuse the game's escort/navigation behavior outside Arena, whose match
+    // controller decides when AI may fight. Resume following after combat,
+    // without interrupting an attack, investigation, weapon pickup or ragdoll.
+    static double next_escort_ms = 0.0;
+    const double now = OnlineClockMs();
+    if (!host_started_level || coop_cutscene || graph->level->DialogueCameraControl() ||
+        lobby_mode_ == "com-wolfire-arena" || lobby_campaign_ == "com-wolfire-arena" || now < next_escort_ms) return;
+    next_escort_ms = now + 500.0;
+    for (const auto& entry : online_session->player_states) {
+        if (!entry.second.is_bot) continue;
+        Object* object = graph->GetObjectFromID(entry.second.object_id);
+        if (!object || object->GetType() != _movement_object) continue;
+        auto* bot = static_cast<MovementObject*>(object);
+        if (!bot->ASHasVar("goal") || !bot->ASHasVar("escort_id") || !bot->ASHasVar("knocked_out") ||
+            bot->ASGetIntVar("knocked_out") != 0) continue;
+        MovementObject* leader = nullptr;
+        float nearest = 0.0f;
+        for (const auto& human : online_session->player_states) {
+            if (human.second.is_bot) continue;
+            Object* candidate = graph->GetObjectFromID(human.second.object_id);
+            if (!candidate || candidate->GetType() != _movement_object) continue;
+            auto* avatar = static_cast<MovementObject*>(candidate);
+            if (!bot->ASOnSameTeam(avatar) || !avatar->ASHasVar("knocked_out") || avatar->ASGetIntVar("knocked_out") != 0) continue;
+            const float distance = distance_squared(bot->position, avatar->position);
+            if (!leader || distance < nearest) { leader = avatar; nearest = distance; }
+        }
+        // enemycontrol.as AIGoal: _patrol=0, _escort=4. Other AI goals keep
+        // their normal priorities; an idle ally follows a living teammate.
+        const int goal = bot->ASGetIntVar("goal");
+        if (leader && (goal == 0 || (goal == 4 && bot->ASGetIntVar("escort_id") != leader->GetID())))
+            bot->ReceiveScriptMessage("escort_me " + to_string(leader->GetID()));
+        else if (!leader && goal == 4)
+            // A team change/removal must not leave a bot following an enemy or
+            // retaining a character ID that no longer exists.
+            bot->Execute("escort_id = -1; SetGoal(_patrol);");
+    }
+}
+
 void Online::SetNoDataInterpStepOverRide(float override) {
     no_data_interpstep_override = override;
 }
@@ -499,6 +633,7 @@ void Online::LateUpdate(SceneGraph* scenegraph) {
             }
         }
 
+        AssignLobbyBots();
         CoopUpdate(scenegraph);
         CoopSpectateUpdate(scenegraph);
         ResolveHeldHits();
@@ -3385,7 +3520,7 @@ PlayerState Online::GetOwnPlayerState() {
     // A couch's original primary may have left. Transport peer IDs remain
     // stable; they are not logical player IDs after removal or host migration.
     for (const auto& entry : online_session->player_states) {
-        if (entry.second.peer_id == own_peer) {
+        if (!entry.second.is_bot && entry.second.peer_id == own_peer) {
             own_state_missing_logged = false;
             return entry.second;
         }
@@ -3858,7 +3993,7 @@ ObjectID Online::HostAvatarID() const {
     const PlayerState* first = nullptr;
     for (const auto& entry : online_session->player_states) {
         const PlayerState& state = entry.second;
-        if (state.peer_id == 255 && state.object_id >= 0 &&
+        if (!state.is_bot && state.peer_id == 255 && state.object_id >= 0 &&
             (first == nullptr || state.local_index < first->local_index)) {
             first = &state;
         }
@@ -3948,9 +4083,9 @@ bool Online::AllowScriptReset() {
     if (!mine.empty() && AvatarUp(sg, mine[0])) {
         return true;  // the host stands: Retry or a script, on purpose
     }
-    for (ObjectID id : PlayerAvatarIDs()) {
-        if ((mine.empty() || id != mine[0]) && AvatarUp(sg, id)) {
-            LOGI << "Overgrowth Online: reset held, player character " << id << " is still up" << std::endl;
+    for (const auto& player : GetPlayerStates()) {
+        if (!player.is_bot && (mine.empty() || player.object_id != mine[0]) && AvatarUp(sg, player.object_id)) {
+            LOGI << "Overgrowth Online: reset held, player character " << player.object_id << " is still up" << std::endl;
             return false;
         }
     }
@@ -4021,9 +4156,12 @@ void Online::CoopUpdate(SceneGraph* sg) {
         return;
     }
 
-    vector<ObjectID> players = PlayerAvatarIDs();
+    vector<ObjectID> players;
+    for (const auto& player : GetPlayerStates())
+        if (!player.is_bot && player.object_id != static_cast<ObjectID>(-1)) players.push_back(player.object_id);
 
-    // Everyone down for 5 s in a story level: the level starts over for all
+    // Every human down for 5 s in a story level: restart for all. AI cannot
+    // revive humans and must not trap them watching a surviving escort bot.
     if (players.size() < 2 || !CoopCampaign()) {
         coop_all_down_ms = -1.0;
         return;

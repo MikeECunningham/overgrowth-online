@@ -202,6 +202,7 @@ void AttachASNetwork(ASContext* context) {
     context->RegisterObjectProperty("PlayerState", "uint id", asOFFSET(PlayerState, player_id));
     context->RegisterObjectProperty("PlayerState", "uint local_index", asOFFSET(PlayerState, local_index));
     context->RegisterObjectProperty("PlayerState", "int screen", asOFFSET(PlayerState, screen));
+    context->RegisterObjectProperty("PlayerState", "bool is_bot", asOFFSET(PlayerState, is_bot));
     context->RegisterObjectMethod("PlayerState", "int get_ping() const", asFUNCTION(PlayerStatePing), asCALL_CDECL_OBJLAST);
     context->RegisterObjectBehaviour("PlayerState", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(PlayerStateDefaultConstructor), asCALL_CDECL_OBJLAST);
     context->RegisterObjectBehaviour("PlayerState", asBEHAVE_CONSTRUCT, "void f(const PlayerState &in)", asFUNCTION(PlayerStateCopyConstructor), asCALL_CDECL_OBJLAST);

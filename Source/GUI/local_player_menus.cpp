@@ -107,7 +107,9 @@ bool LocalPlayerMenus::IsOpen(int input_id) const {
 bool LocalPlayerMenus::AnyOpen() const { return !menus_.empty(); }
 
 bool LocalPlayerMenus::PausesWorld() const {
-    return AnyOpen() && !Online::Instance()->IsActive() && Input::Instance()->GetNumLocalPlayers() <= 1;
+    const Online* online = Online::Instance();
+    return AnyOpen() && (!online->IsActive() || online->IsLocalOnlySession()) &&
+        Input::Instance()->GetNumLocalPlayers() <= 1;
 }
 
 void LocalPlayerMenus::Callback(void* instance, const std::string& message) {

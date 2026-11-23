@@ -9,7 +9,7 @@ import time
 import traceback
 
 def mode_teams(ctx):
-    h = ctx.instance('mode_team_host', width=1280, height=720, keys={'mp_port': '26844', 'playername': 'Host', 'gl_debug': '1', 'oo_arena_bots': '6'})
+    h = ctx.instance('mode_team_host', width=1280, height=720, keys={'mp_port': '26844', 'playername': 'Host', 'gl_debug': '1'})
     c = ctx.instance('mode_team_guest', width=1280, height=720, keys={'mp_port': '26844', 'playername': 'Guest', 'gl_debug': '1'})
     r = {}
 
@@ -102,11 +102,13 @@ def mode_teams(ctx):
         p = own or next((p for p in h.bridge.state() if p['common_id'] == common))
         code(machine, 'SetKnockedOut(_unconscious); Ragdoll(_RGDL_LIMP);', p['id'])
     try:
-        code(h, 'LobbyBeginHost(); LobbyAddLocalPlayer();', 'menu')
+        code(h, 'LobbyBeginHost(); LobbyAddLocalPlayer(); LobbyAddBot(); LobbyAddBot();', 'menu')
         code(c, 'LobbyAddLocalPlayer();', 'menu')
         c.bridge.call('connect', ip='127.0.0.1')
         for i in [h, c]:
-            wait(i, lambda i=i: len(rows(i)) == 4, 'four humans')
+            wait(i, lambda i=i: len(rows(i)) == 6, 'four humans and two explicit bots')
+        assert sum(p['bot'] for p in rows(h)) == 2
+        code(h, ''.join(f"LobbySetPlayerTeam({p['id']},1);" for p in rows(h)), 'menu')
         manual = {p['id']: p['team'] for p in rows(h)}
         assert set(manual.values()) == {1}
         code(c, 'LobbySetForceTeams(true);', 'menu')
@@ -164,9 +166,12 @@ def mode_teams(ctx):
         assert {p['id']: p['team'] for p in rows(h)} == manual, 'mode changed manual lobby plan'
         menu_input_mask()
         end()
+        code(h, ''.join(f"LobbyRemovePlayer({p['id']});" for p in rows(h) if p['bot']), 'menu')
+        for i in [h, c]:
+            wait(i, lambda i=i: len(rows(i)) == 4, 'human-only team-override phase')
         hp = [p for p in rows(h) if p['peer_id'] == 255]
         gp = [p for p in rows(h) if p['peer_id'] != 255]
-        code(h, 'SetConfigValueInt("oo_arena_bots",0); LobbySetForceTeams(true);' + ''.join((f"LobbySetPlayerTeam({p['id']},{(1 if p['peer_id'] == 255 else 2)});" for p in rows(h))), 'menu')
+        code(h, 'LobbySetForceTeams(true);' + ''.join((f"LobbySetPlayerTeam({p['id']},{(1 if p['peer_id'] == 255 else 2)});" for p in rows(h))), 'menu')
         code(c, 'LobbySetForceTeams(false);', 'menu')
         start()
         wait(h, lambda: len({p['teams'] for p in h.bridge.state()}) == 2, 'forced two teams', 40)

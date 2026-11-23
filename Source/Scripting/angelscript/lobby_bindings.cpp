@@ -26,6 +26,7 @@ struct LobbyPlayer {
     bool local = false;
     bool host = false;
     bool leader = false;
+    bool bot = false;
     int team = 1;
     int lobby_team = 1;
     int screen = 0;
@@ -65,6 +66,8 @@ bool AddLocal() {
     if (!CanManageLocal()) return false;
     return Online::Instance()->AddLocalLobbyPlayer("") != static_cast<PlayerID>(-1);
 }
+bool AddBot() { return Online::Instance()->AddLobbyBot("", MenuPlayerID()) != LobbyAuthority::InvalidPlayer; }
+bool CanRename(unsigned id) { return Online::Instance()->CanRenameLobbyPlayer(id, MenuPlayerID()); }
 bool CanStart() {
     Online* online = Online::Instance();
     if (!IsHost() || !online->LobbyWaiting() || online->LobbyMap().empty() || online->LobbyMigrationBusy()) return false;
@@ -112,7 +115,7 @@ bool SetSelection(const std::string& mode, const std::string& campaign, const st
     return Online::Instance()->SetLobbySelection(mode, campaign, map, build, MenuPlayerID());
 }
 bool SetName(unsigned id, const std::string& name) {
-    if (!CanManageLocal() || !Online::Instance()->RenameLobbyPlayer(id, name, MenuPlayerID())) return false;
+    if (!Online::Instance()->RenameLobbyPlayer(id, name, MenuPlayerID())) return false;
     for (const auto& p : Online::Instance()->GetLocalPlayerStates()) {
         if (p.player_id == id && p.local_index == 0) config.GetRef("playername") = name;
     }
@@ -153,6 +156,8 @@ bool SetPaused(bool paused) {
 std::vector<PlayerState> Players() {
     auto players = Online::Instance()->IsActive() ? Online::Instance()->GetPlayerStates() : Online::Instance()->GetLocalPlayerStates();
     std::sort(players.begin(), players.end(), [](const PlayerState& a, const PlayerState& b) {
+        if (a.is_bot != b.is_bot) return !a.is_bot;
+        if (a.is_bot) return a.player_id < b.player_id;
         if (a.peer_id != b.peer_id) return a.peer_id == 255 || (b.peer_id != 255 && a.peer_id < b.peer_id);
         return a.local_index < b.local_index;
     });
@@ -163,10 +168,11 @@ CScriptArray* PlayerArray() {
     CScriptArray* array = CScriptArray::Create(engine->GetTypeInfoByDecl("array<LobbyPlayer>"), static_cast<asUINT>(0));
     for (const auto& player : Players()) {
         LobbyPlayer row;
-        row.id = player.player_id; row.name = player.playername; row.local_index = static_cast<int>(player.local_index);
-        row.local = player.peer_id == Online::Instance()->LocalPeerID();
-        row.host = Online::Instance()->IsLobbyHost(player.player_id);
-        row.leader = Online::Instance()->IsLobbyLeader(player.player_id);
+        row.id = player.player_id; row.name = player.playername; row.local_index = player.is_bot ? -1 : static_cast<int>(player.local_index);
+        row.bot = player.is_bot;
+        row.local = !player.is_bot && player.peer_id == Online::Instance()->LocalPeerID();
+        row.host = !player.is_bot && Online::Instance()->IsLobbyHost(player.player_id);
+        row.leader = !player.is_bot && Online::Instance()->IsLobbyLeader(player.player_id);
         row.lobby_team = player.team;
         const int assigned = Online::Instance()->AssignedModeTeam(player.object_id);
         row.team = !Online::Instance()->LobbyWaiting() ? (assigned > 0 ? assigned : Online::Instance()->UsesLobbyTeams() ? player.team : 1) : player.team;
@@ -182,7 +188,7 @@ unsigned Revision() {
     for (const auto& player : Players()) {
         state << '|' << player.player_id << ':' << player.peer_id << ':' << player.local_index << ':' << player.playername
               << ':' << player.team << ':' << player.screen << ':' << player.connected << ':' << Online::Instance()->IsLobbyHost(player.player_id)
-              << ':' << Online::Instance()->IsLobbyLeader(player.player_id) << ':' << Online::Instance()->AssignedModeTeam(player.object_id);
+              << ':' << Online::Instance()->IsLobbyLeader(player.player_id) << ':' << Online::Instance()->AssignedModeTeam(player.object_id) << ':' << player.is_bot;
     }
     return static_cast<unsigned>(std::hash<std::string>()(state.str()));
 }
@@ -411,6 +417,7 @@ void AttachLobby(ASContext* context) {
     context->RegisterObjectProperty("LobbyPlayer", "bool local", asOFFSET(LobbyPlayer, local));
     context->RegisterObjectProperty("LobbyPlayer", "bool host", asOFFSET(LobbyPlayer, host));
     context->RegisterObjectProperty("LobbyPlayer", "bool leader", asOFFSET(LobbyPlayer, leader));
+    context->RegisterObjectProperty("LobbyPlayer", "bool bot", asOFFSET(LobbyPlayer, bot));
     context->RegisterObjectProperty("LobbyPlayer", "int team", asOFFSET(LobbyPlayer, team));
     context->RegisterObjectProperty("LobbyPlayer", "int lobby_team", asOFFSET(LobbyPlayer, lobby_team));
     context->RegisterObjectProperty("LobbyPlayer", "int screen", asOFFSET(LobbyPlayer, screen));
@@ -420,6 +427,7 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("bool LobbyIsLocalOnly()", LocalOnly); LOBBY_FN("bool LobbyOpenToNetwork()", OpenToNetwork);
     LOBBY_FN("bool LobbyCanManageLocal()", CanManageLocal); LOBBY_FN("bool LobbyBeginHost()", BeginHost);
     LOBBY_FN("bool LobbyAddLocalPlayer()", AddLocal); LOBBY_FN("bool LobbyCanStart()", CanStart);
+    LOBBY_FN("bool LobbyAddBot()", AddBot); LOBBY_FN("bool LobbyCanRenamePlayer(uint)", CanRename);
     LOBBY_FN("bool LobbyStart()", Start); LOBBY_FN("void LobbyLeave()", Leave);
     LOBBY_FN("void LobbyUpdate()", UpdateLocalLobbyInput); LOBBY_FN("uint LobbySnapshotRevision()", Revision);
     LOBBY_FN("array<LobbyPlayer>@ LobbyPlayers()", PlayerArray);

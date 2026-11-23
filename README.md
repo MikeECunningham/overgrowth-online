@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.3** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.4** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -100,6 +100,19 @@ Press a button on another controller to add a local player. If a controller owns
 **Host controls teams** defaults to on. When it is off, players can change their own teams in modes that permit manual teams; the host keeps team-management authority. Mode-managed campaign/Arena teams remain governed by the selected mode unless overridden. Explicit host edits during play override that player's current team; future matches still follow the mode unless **Force lobby teams** is enabled. The pause menu's **Teams** page shows the roster and team controls. Local leaders can also swap local screen assignments there during a match.
 
 The host's P1 starts as Turner. Other players start with their team's fur and clothing colors; the numbered team dropdowns include matching color swatches. The lobby uses the game's menu artwork and fonts, with native scrolling and controller navigation underneath.
+
+The host can choose **Add bot** in the lobby or pause menu. Bots appear in the
+same roster, with host-managed names, teams and removal, but have no controller
+or screen. They stay with the party between levels and when returning to the
+lobby. Arena uses these explicit bot entries instead of a separate autofill
+setting; new bots enter the next round. Elsewhere, bots use the existing combat
+AI and idle allies follow a living teammate using the game's navigation. This
+does not add new parkour or pathfinding abilities. Party bots are hidden and
+held during campaign dialogue alongside extra human players.
+
+Run `python3 Tools/ogmp.py run lobby_bots roster_bots_arena bot_migration` for
+bot permissions, live spawning, screen/input ownership, Arena rounds and server
+handoff checks.
 
 During multiplayer, Start opens a menu inside the requesting player's screen without stopping the world. Multiple players can open their own menus and settings simultaneously; navigating or closing one does not affect the others. Their controls, camera inversion and sensitivity belong to that local player; the local leader also controls the client's shared graphics and audio settings. Open settings pages refresh when those shared values change. By default only the designated host can explicitly pause the shared world. The host can allow all players to pause. Single-player still pauses when opening the menu. Reconnecting a controller restores its player and settings for that client session. New controllers can also join during play through the same roster used by the lobby.
 

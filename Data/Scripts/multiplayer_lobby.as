@@ -18,6 +18,7 @@ string map_filter;
 string notice;
 int editing_name = -1;
 string name_buffer;
+bool name_keyboard_open = false;
 int small_panel = 1;
 string preview_path;
 TextureAssetRef preview_texture;
@@ -31,11 +32,11 @@ bool CanGoBack() {
         RemovePopup();
         return false;
     }
-    if(!LobbyCanManageLocal()) {
-        return false;
-    }
     if(editing_name >= 0) {
         editing_name = -1;
+        return false;
+    }
+    if(!LobbyCanManageLocal()) {
         return false;
     }
     LobbyLeave();
@@ -86,7 +87,7 @@ void Update() {
     }
     UpdateKeyboardMouse();
     imGUI.update();
-    if(editing_name >= 0 && LobbyCanManageLocal() && GetInputPressed(controller_player, "menu_cancel")) {
+    if(editing_name >= 0 && GetInputPressed(controller_player, "menu_cancel")) {
         editing_name = -1;
     }
     uint revision = LobbySnapshotRevision();
@@ -111,7 +112,7 @@ void Init(string str) {}
 int LocalPlayers() {
     int count = 0;
     for(uint i = 0; i < lobby_players.length(); ++i) {
-        if(lobby_players[i].local) {
+        if(lobby_players[i].local && !lobby_players[i].bot) {
             ++count;
         }
     }
@@ -244,7 +245,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     ImGui_TextColored(kLobbyDim, "Unassigned controllers: press any button. Keyboard: press Enter to join.");
     ImGui_Spacing();
     int locals = LocalPlayers();
-    float footer_height = 92.0f * scale;
+    float footer_height = (LobbyIsHost() ? 136.0f : 92.0f) * scale;
     float list_height = max(100.0f, ImGui_GetContentRegionAvail().y - footer_height);
     ImGui_BeginChild("player_list", vec2(0.0f, list_height), true);
     MPWindowScale(1.0f);
@@ -275,24 +276,25 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         LobbyPlayer player = lobby_players[i];
         ImGui_PushID(int(player.id));
         ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), player.name);
-        string association = (player.local ? "This couch P" : "Remote P") + (player.local_index + 1);
+        string association = player.bot ? "Bot" : (player.local ? "This couch P" : "Remote P") + (player.local_index + 1);
         if(player.host) {
             association += " / lobby host";
         }
         if(player.leader) {
             association += " / local leader";
         }
-        if(!player.connected) {
+        if(!player.bot && !player.connected) {
             association += " / disconnected";
         }
         ImGui_TextColored(kLobbyDim, association);
-        if(player.local) {
-            ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
+        if(player.local || player.bot) {
+            ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanRenamePlayer(player.id));
             float action_width = ImGui_GetContentRegionAvailWidth();
             bool can_remove = !LobbyMigrationBusy() && LobbyCanRemovePlayer(player.id);
             if(MPButton("Rename", vec2(can_remove ? (action_width - 8.0f) * 0.5f : -1.0f, 30.0f * scale))) {
                 editing_name = int(player.id);
                 name_buffer = player.name;
+                name_keyboard_open = LobbyCurrentLocalPlayerIndex() != GetLocalKeyboardPlayerIndex();
             }
             if(focus_lobby_form && LobbyInitialForm() == "Players") {
                 ImGui_SetItemDefaultFocus();
@@ -312,10 +314,10 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
                 LobbyRemovePlayer(player.id);
             }
         }
-        if(!LobbyMigrationBusy() && LobbyCanPromoteHost(player.id)) {
+        if(!player.bot && !LobbyMigrationBusy() && LobbyCanPromoteHost(player.id)) {
             if(MPButton("Make host", vec2(-1.0f, 30.0f * scale))) LobbyPromoteHost(player.id);
         }
-        if(!LobbyMigrationBusy() && LobbyCanPromoteLeader(player.id)) {
+        if(!player.bot && !LobbyMigrationBusy() && LobbyCanPromoteLeader(player.id)) {
             if(MPButton("Make local leader", vec2(-1.0f, 30.0f * scale))) LobbyPromoteLeader(player.id);
         }
         ImGui_NextColumn();
@@ -332,7 +334,9 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         ImGui_EndDisabled();
         ImGui_NextColumn();
         ImGui_Dummy(vec2(0.0f, 2.0f * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
-        if(player.local) {
+        if(player.bot) {
+            ImGui_TextColored(kLobbyDim, "None");
+        } else if(player.local) {
             int screen = min(locals - 1, max(0, player.screen - 1));
             ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
             ImGui_PushItemWidth(-1.0f);
@@ -366,6 +370,14 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         }
     }
     ImGui_EndDisabled();
+    if(LobbyIsHost()) {
+        ImGui_BeginDisabled(LobbyMigrationBusy());
+        if(MPButton("Add bot", vec2(-1.0f, 36.0f * scale))) {
+            if(!LobbyAddBot()) notice = "Couldn't add a bot.";
+            else notice = "";
+        }
+        ImGui_EndDisabled();
+    }
     ImGui_TextColored(kLobbyDim, "The local leader assigns this couch's screens and names. Team permissions are set by the host.");
     LobbyEndForm();
 }
@@ -423,18 +435,6 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
             }
         }
         if(LobbyGetCampaign() == "com-wolfire-arena") {
-            int fighters = ConfigHasKey("oo_arena_bots") ? GetConfigValueInt("oo_arena_bots") : 2;
-            array<string> bot_names = {"Off", "Up to 2", "Up to 3", "Up to 4", "Up to 6", "Up to 8"};
-            array<int> bot_values = {0, 2, 3, 4, 6, 8};
-            int bots = bot_values.find(fighters);
-            if(bots < 0) { bots = 1; }
-            ImGui_Text("Arena bots");
-            ImGui_PushItemWidth(-1.0f);
-            if(ImGui_Combo("##arena_bots", bots, bot_names)) {
-                SetConfigValueInt("oo_arena_bots", bot_values[bots]);
-                SaveConfig();
-            }
-            ImGui_PopItemWidth();
             bool random = ConfigHasKey("oo_arena_random") && GetConfigValueBool("oo_arena_random");
             if(MPCheckbox("Arena randomizer", random)) {
                 SetConfigValueBool("oo_arena_random", random);
@@ -495,26 +495,45 @@ void DrawNameForm(float scale) {
     float width = min(440.0f * scale, float(GetScreenWidth()) - 48.0f);
     ImGui_SetNextWindowPos(vec2((float(GetScreenWidth()) - width) * 0.5f, float(GetScreenHeight()) * 0.30f), ImGuiSetCond_Always);
     ImGui_SetNextWindowSize(vec2(width, 0.0f), ImGuiSetCond_Always);
-    ImGui_Begin("Edit local player's name", ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+    bool bot_name = false;
+    for(uint i = 0; i < lobby_players.length(); ++i) if(lobby_players[i].id == uint(editing_name)) bot_name = lobby_players[i].bot;
+    string heading = bot_name ? "Edit bot name" : "Edit player's name";
+    ImGui_Begin("Edit player name", ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
     MPWindowScale(scale);
     MPPanelBackground();
-    MPHeading("Edit local player's name", 44.0f);
-    ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
+    MPHeading(heading, 44.0f);
+    ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanRenamePlayer(uint(editing_name)));
     ImGui_PushItemWidth(-1.0f);
-    if(ImGui_IsWindowAppearing()) {
+    bool appearing = ImGui_IsWindowAppearing();
+    if(appearing && !name_keyboard_open) {
         ImGui_SetKeyboardFocusHere();
     }
     bool enter = ImGui_InputText("##player_name", name_buffer, 64, ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui_PopItemWidth();
+    if(MPButton(name_keyboard_open ? "Hide keyboard" : "On-screen keyboard", vec2(-1.0f, 30.0f * scale))) name_keyboard_open = !name_keyboard_open;
+    if(name_keyboard_open) {
+        const string keys = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+        float key_width = (ImGui_GetContentRegionAvailWidth() - 7.0f * 6.0f) / 8.0f;
+        for(uint i = 0; i < keys.length(); ++i) {
+            if(i % 8 != 0) ImGui_SameLine(0.0f, 6.0f);
+            if(MPButton(keys.substr(i, 1), vec2(key_width, 27.0f * scale)) && name_buffer.length() < 64) name_buffer += keys.substr(i, 1);
+            if(i == 0 && appearing) { ImGui_SetItemDefaultFocus(); ImGui_SetKeyboardFocusHere(-1); }
+        }
+        float half = (ImGui_GetContentRegionAvailWidth() - 6.0f) * 0.5f;
+        if(MPButton("Space", vec2(half, 30.0f * scale)) && name_buffer.length() < 64) name_buffer += " ";
+        ImGui_SameLine(0.0f, 6.0f);
+        if(MPButton("Erase", vec2(half, 30.0f * scale)) && name_buffer.length() > 0) name_buffer.resize(name_buffer.length() - 1);
+    }
     if(MPButton("Save", vec2(130.0f * scale, 34.0f * scale)) || enter) {
-        if(LobbyCanManageLocal() && LobbySetPlayerName(uint(editing_name), name_buffer)) {
+        if(LobbyCanRenamePlayer(uint(editing_name)) && LobbySetPlayerName(uint(editing_name), name_buffer)) {
             editing_name = -1;
             notice = "";
         } else {
-            notice = "Use a valid player name. Only this couch's P1 may rename its players.";
+            notice = "Use a valid name. The local leader names humans; the host names bots.";
         }
     }
+    ImGui_EndDisabled();
     ImGui_SameLine();
     if(MPButton("Cancel", vec2(130.0f * scale, 34.0f * scale))) {
         editing_name = -1;
@@ -522,7 +541,6 @@ void DrawNameForm(float scale) {
     if(notice != "") {
         ImGui_TextWrapped(notice);
     }
-    ImGui_EndDisabled();
     ImGui_End();
 }
 

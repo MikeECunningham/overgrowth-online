@@ -423,6 +423,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 p["team"] = player.team;
                 p["screen"] = player.screen;
                 p["name"] = player.playername;
+                p["bot"] = player.is_bot;
                 p["host"] = online->IsLobbyHost(player.player_id);
                 p["leader"] = online->IsLobbyLeader(player.player_id);
                 p["avatar_id"] = player.object_id;

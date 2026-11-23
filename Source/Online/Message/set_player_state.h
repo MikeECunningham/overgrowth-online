@@ -41,6 +41,7 @@ class SetPlayerState : public OnlineMessageBase {
     uint32_t local_index;
     int32_t team;
     int32_t screen;
+    bool is_bot = false;
 
    public:
     SetPlayerState(PlayerID player_id, const PlayerState* player_state);

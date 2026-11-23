@@ -58,17 +58,17 @@ PeerID Online::LocalPeerID() const {
     return IsHosting() || online_session == nullptr ? 255 : static_cast<PeerID>(online_session->local_player_id);
 }
 
-std::vector<LobbyAuthority::Seat> Online::LobbySeats() const {
+std::vector<LobbyAuthority::Seat> Online::LobbySeats(bool include_bots) const {
     std::vector<LobbyAuthority::Seat> seats;
     if (online_session) for (const auto& entry : online_session->player_states)
-        seats.push_back({entry.first, entry.second.peer_id, entry.second.local_index});
+        if (include_bots || !entry.second.is_bot) seats.push_back({entry.first, entry.second.peer_id, entry.second.local_index});
     return seats;
 }
 
 PlayerID Online::LobbyPlayerIDForLocalIndex(unsigned index) const {
     if (online_session) {
         for (const auto& entry : online_session->player_states)
-            if (entry.second.peer_id == LocalPeerID() && entry.second.local_index == index) return entry.first;
+            if (!entry.second.is_bot && entry.second.peer_id == LocalPeerID() && entry.second.local_index == index) return entry.first;
         return LobbyAuthority::InvalidPlayer;
     }
     return 255 + index;
@@ -96,10 +96,12 @@ void Online::RefreshLobbyAuthorities() {
     const auto seats = LobbySeats();
     lobby_authority_.Refresh(seats);
     const bool reserved = LobbyMigrationBusy() && migration_saved_players_.count(campaign_main_player_id_) != 0;
-    if (!online_session->player_states.count(campaign_main_player_id_) && !reserved) {
+    const auto main = online_session->player_states.find(campaign_main_player_id_);
+    if ((main == online_session->player_states.end() || main->second.is_bot) && !reserved) {
         const PlayerState* replacement = nullptr;
         for (const auto& entry : online_session->player_states) {
             const auto& player = entry.second;
+            if (player.is_bot) continue;
             if (!replacement || (player.peer_id == 255 && replacement->peer_id != 255) ||
                 (player.peer_id == replacement->peer_id && player.local_index < replacement->local_index)) replacement = &player;
         }
@@ -148,7 +150,7 @@ unsigned Online::LocalLobbyPlayerCount() const {
     const unsigned profiles = std::max(1u, static_cast<unsigned>(local_lobby_profiles_.size()));
     if (IsActive() && !lobby_waiting_ && online_session != nullptr) {
         unsigned count = 0;
-        for (const auto& entry : online_session->player_states) if (entry.second.peer_id == LocalPeerID()) ++count;
+        for (const auto& entry : online_session->player_states) if (!entry.second.is_bot && entry.second.peer_id == LocalPeerID()) ++count;
         return std::max(profiles, count);
     }
     return profiles;
@@ -200,6 +202,7 @@ bool Online::EnsureLocalSession() {
         SeedLocalView(graph, adopted, campaign_main_avatar_id_);
     }
     if (loaded) AssignPeerAvatars(LocalPeerID());
+    engine->CommitPause();  // recompute after adopting the local-only session policy
     BroadcastLobby();
     return true;
 }
@@ -214,7 +217,7 @@ std::vector<PlayerState> Online::GetLocalPlayerStates() const {
     std::vector<PlayerState> result;
     if (online_session != nullptr) {
         for (const auto& entry : online_session->player_states) {
-            if (entry.second.peer_id == LocalPeerID()) {
+            if (!entry.second.is_bot && entry.second.peer_id == LocalPeerID()) {
                 result.push_back(entry.second);
                 result.back().player_id = entry.first;
                 result.back().controller_id = Input::Instance()->GetLocalPlayerInputID(entry.second.local_index);
@@ -292,6 +295,33 @@ PlayerID Online::AddLocalLobbyPlayer(const std::string& name) {
     return static_cast<PlayerID>(255 + local_lobby_profiles_.size() - 1);
 }
 
+PlayerID Online::AddLobbyBot(const std::string& name, PlayerID actor) {
+    actor = ResolveLobbyActor(actor);
+    if (LobbyMigrationBusy() || (!name.empty() && !OnlineUtility::IsValidPlayerName(name))) return LobbyAuthority::InvalidPlayer;
+    if (!IsActive() && !EnsureLocalSession()) return LobbyAuthority::InvalidPlayer;
+    if (!IsHosting() || !IsLobbyHost(actor) || !online_session) return LobbyAuthority::InvalidPlayer;
+    PlayerState bot;
+    bot.player_id = LobbyAuthority::AllocatePlayerID(LobbySeats(true), 255, 1, next_local_player_id_);
+    bot.peer_id = 255;
+    bot.local_index = std::numeric_limits<uint32_t>::max();
+    bot.is_bot = true;
+    bot.screen = 0; bot.controller_id = -1; bot.camera_id = -1; bot.object_id = -1;
+    bot.playername = name;
+    if (bot.playername.empty()) {
+        unsigned number = 1;
+        do { bot.playername = "Bot " + std::to_string(number++); }
+        while (std::any_of(online_session->player_states.begin(), online_session->player_states.end(), [&bot](const std::pair<const PlayerID, PlayerState>& seat) {
+            return seat.second.playername == bot.playername;
+        }));
+    }
+    bot.team = lobby_mode_ == "com-wolfire-arena" || lobby_campaign_ == "com-wolfire-arena" ?
+        static_cast<int>(online_session->player_states.size() + 1) : 1;
+    online_session->player_states[bot.player_id] = bot;
+    AssignLobbyBots();
+    BroadcastLobby();
+    return bot.player_id;
+}
+
 void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& names, const std::vector<int>& requested_screens) {
     if (!IsHosting() || online_session == nullptr) return;
     const size_t count = std::max<size_t>(1, names.size());
@@ -301,9 +331,9 @@ void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& n
         *unique_screens.begin() == 1 && *unique_screens.rbegin() == static_cast<int>(count);
     for (size_t index = 0; index < count; ++index) {
         auto found = std::find_if(online_session->player_states.begin(), online_session->player_states.end(),
-            [peer, index](const std::pair<const PlayerID, PlayerState>& p) { return p.second.peer_id == peer && p.second.local_index == index; });
+            [peer, index](const std::pair<const PlayerID, PlayerState>& p) { return !p.second.is_bot && p.second.peer_id == peer && p.second.local_index == index; });
         if (found != online_session->player_states.end()) continue;
-        const PlayerID id = LobbyAuthority::AllocatePlayerID(LobbySeats(), peer, static_cast<unsigned>(index), next_local_player_id_);
+        const PlayerID id = LobbyAuthority::AllocatePlayerID(LobbySeats(true), peer, static_cast<unsigned>(index), next_local_player_id_);
         PlayerState state;
         state.player_id = id;
         state.peer_id = peer;
@@ -327,7 +357,7 @@ void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& n
 void Online::AssignPeerAvatars(PeerID peer) {
     if (!IsHosting() || loading || lobby_waiting_ || !Engine::Instance()->IsLevelLoaded()) return;
     std::vector<PlayerID> ids;
-    for (const auto& entry : online_session->player_states) if (entry.second.peer_id == peer) ids.push_back(entry.first);
+    for (const auto& entry : online_session->player_states) if (!entry.second.is_bot && entry.second.peer_id == peer) ids.push_back(entry.first);
     std::sort(ids.begin(), ids.end(), [this](PlayerID a, PlayerID b) {
         if (a == campaign_main_player_id_) return b != campaign_main_player_id_;
         if (b == campaign_main_player_id_) return false;
@@ -362,6 +392,7 @@ void Online::AssignPeerAvatars(PeerID peer) {
         if (peer == LocalPeerID()) SeedLocalView(graph, state, CampaignMainAvatarID());
         ApplyAssignedTeam(avatar);
     }
+    AssignLobbyBots();
 }
 
 std::string Online::LobbyPayload() const {
@@ -395,6 +426,7 @@ std::string Online::LobbyPayload() const {
         Json::Value row;
         row["id"] = entry.first; row["peer"] = p.peer_id; row["local_index"] = p.local_index;
         row["name"] = p.playername; row["team"] = p.team; row["screen"] = p.screen; row["connected"] = p.connected;
+        row["bot"] = p.is_bot;
         row["object"] = static_cast<int>(GetOriginalID(p.object_id));
         row["controller"] = p.controller_id; row["camera"] = p.camera_id;
         message["players"].append(row);
@@ -443,11 +475,16 @@ bool Online::RestoreLobbyForMigration(const std::string& payload, PeerID origin_
         player.local_index = row.get("local_index", 0).asUInt(); player.playername = row.get("name", "UNKNOWN").asString();
         player.team = row.get("team", 1).asInt(); player.screen = row.get("screen", 1).asInt();
         player.connected = row.get("connected", true).asBool(); player.object_id = -1;
-        if (!OnlineUtility::IsValidPlayerName(player.playername) || player.team < 1 || player.screen < 1 || saved.count(player.player_id)) return false;
+        player.is_bot = row.get("bot", false).asBool();
+        if (player.is_bot) {
+            player.peer_id = 255; player.local_index = std::numeric_limits<uint32_t>::max();
+            player.screen = 0; player.controller_id = -1; player.camera_id = -1;
+        }
+        if (!OnlineUtility::IsValidPlayerName(player.playername) || player.team < 1 || (!player.is_bot && player.screen < 1) || saved.count(player.player_id)) return false;
         saved[player.player_id] = player;
     }
     const auto target = saved.find(target_host);
-    if (target == saved.end() || target->second.peer_id != origin_local_peer) return false;
+    if (target == saved.end() || target->second.is_bot || target->second.peer_id != origin_local_peer) return false;
     migration_saved_players_ = saved;
     campaign_main_player_id_ = message.get("campaign_main_player", target_host).asUInt();
     campaign_main_avatar_id_ = static_cast<ObjectID>(-1);
@@ -477,9 +514,10 @@ bool Online::RestoreLobbyForMigration(const std::string& payload, PeerID origin_
     mode_teams_.clear();
     next_local_player_id_ = 256;
     for (const auto& row : saved) if (row.first >= next_local_player_id_ && row.first != LobbyAuthority::InvalidPlayer) next_local_player_id_ = row.first + 1;
+    for (const auto& row : saved) if (row.second.is_bot) online_session->player_states[row.first] = row.second;
     local_lobby_profiles_.clear();
     std::vector<PlayerState> local;
-    for (const auto& row : saved) if (row.second.peer_id == origin_local_peer) local.push_back(row.second);
+    for (const auto& row : saved) if (!row.second.is_bot && row.second.peer_id == origin_local_peer) local.push_back(row.second);
     std::sort(local.begin(), local.end(), [](const PlayerState& a, const PlayerState& b) { return a.local_index < b.local_index; });
     for (const auto& player : local) {
         LocalLobbyProfile profile; profile.name = player.playername; profile.screen = player.screen;
@@ -493,7 +531,7 @@ bool Online::RestoreMigratedPeer(PeerID new_peer, PeerID old_peer) {
     if (!IsHosting() || !online_session) return false;
     bool restored = false;
     for (const auto& row : migration_saved_players_) {
-        if (row.second.peer_id != old_peer) continue;
+        if (row.second.is_bot || row.second.peer_id != old_peer) continue;
         PlayerState player = row.second; player.peer_id = new_peer;
         online_session->player_states[row.first] = player;
         if (new_peer == LocalPeerID()) {
@@ -514,19 +552,30 @@ void Online::SubmitLobbyRequest(const std::string& payload) {
     else if (IsClient()) Send<OnlineMessages::LobbyControl>(payload);
 }
 
-bool Online::RenameLobbyPlayer(PlayerID id, const std::string& name, PlayerID actor) {
-    if (LobbyMigrationBusy() || !IsActive() || !online_session || !OnlineUtility::IsValidPlayerName(name)) return false;
+bool Online::CanRenameLobbyPlayer(PlayerID id, PlayerID actor) const {
+    if (LobbyMigrationBusy() || !IsActive() || !online_session) return false;
     actor = ResolveLobbyActor(actor);
-    if (!IsLobbyLeader(actor)) return false;
+    const auto found = online_session->player_states.find(id);
+    const auto owner = online_session->player_states.find(actor);
+    if (found == online_session->player_states.end() || owner == online_session->player_states.end() || owner->second.is_bot) return false;
+    return found->second.is_bot ? IsLobbyHost(actor) : IsLobbyLeader(actor) && found->second.peer_id == owner->second.peer_id;
+}
+
+bool Online::RenameLobbyPlayer(PlayerID id, const std::string& name, PlayerID actor) {
+    if (!CanRenameLobbyPlayer(id, actor) || !OnlineUtility::IsValidPlayerName(name)) return false;
+    actor = ResolveLobbyActor(actor);
     auto found = online_session->player_states.find(id);
-    if (found == online_session->player_states.end() || found->second.peer_id != LocalPeerID()) return false;
     Json::Value request; request["action"] = "name"; request["actor"] = actor; request["id"] = id; request["name"] = name;
     const auto index = found->second.local_index;
-    if (index < local_lobby_profiles_.size()) local_lobby_profiles_[index].name = name;
+    if (!found->second.is_bot && found->second.peer_id == LocalPeerID() && index < local_lobby_profiles_.size()) local_lobby_profiles_[index].name = name;
     SubmitLobbyRequest(Encode(request)); return true;
 }
 
 bool Online::CanSetLobbyTeam(PlayerID id, PlayerID actor) const {
+    if (!online_session) return false;
+    const auto found = online_session->player_states.find(id);
+    if (found != online_session->player_states.end() && found->second.is_bot)
+        return !LobbyMigrationBusy() && IsActive() && IsLobbyHost(ResolveLobbyActor(actor));
     return !LobbyMigrationBusy() && IsActive() && lobby_authority_.CanSetTeam(LobbySeats(), ResolveLobbyActor(actor), id,
         lobby_host_controls_teams_, UsesLobbyTeams());
 }
@@ -543,7 +592,7 @@ bool Online::SetLobbyScreen(PlayerID id, int screen, PlayerID actor) {
     actor = ResolveLobbyActor(actor);
     if (!IsLobbyLeader(actor)) return false;
     auto found = online_session->player_states.find(id);
-    if (found == online_session->player_states.end() || found->second.peer_id != LocalPeerID()) return false;
+    if (found == online_session->player_states.end() || found->second.is_bot || found->second.peer_id != LocalPeerID()) return false;
     const auto count = GetLocalPlayerStates().size();
     if (screen < 1 || static_cast<size_t>(screen) > count) return false;
     Json::Value request; request["action"] = "screen"; request["actor"] = actor; request["id"] = id; request["screen"] = screen;
@@ -555,7 +604,7 @@ void Online::ApplyLocalLobbyScreens() {
     SceneGraph* graph = Engine::Instance()->GetSceneGraph();
     for (auto& entry : online_session->player_states) {
         PlayerState& player = entry.second;
-        if (player.peer_id != LocalPeerID()) continue;
+        if (player.is_bot || player.peer_id != LocalPeerID()) continue;
         player.camera_id = std::max(0, player.screen - 1);
         if (player.local_index < local_lobby_profiles_.size()) local_lobby_profiles_[player.local_index].screen = player.screen;
         Object* object = graph ? graph->GetObjectFromID(player.object_id) : nullptr;
@@ -565,6 +614,11 @@ void Online::ApplyLocalLobbyScreens() {
 }
 
 bool Online::CanRemoveLobbyPlayer(PlayerID id, PlayerID actor) const {
+    if (online_session) {
+        const auto found = online_session->player_states.find(id);
+        if (found != online_session->player_states.end() && found->second.is_bot)
+            return !LobbyMigrationBusy() && IsActive() && IsLobbyHost(ResolveLobbyActor(actor));
+    }
     return !LobbyMigrationBusy() && IsActive() && lobby_waiting_ && online_session &&
         lobby_authority_.CanRemove(LobbySeats(), ResolveLobbyActor(actor), id);
 }
@@ -587,6 +641,21 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
         return true;
     }
     const PlayerState removed = online_session->player_states.at(id);
+    if (removed.is_bot) {
+        const CommonObjectID common = GetOriginalID(removed.object_id);
+        coop_cutscene_players.erase(removed.object_id);
+        coop_hidden.erase(std::remove(coop_hidden.begin(), coop_hidden.end(), removed.object_id), coop_hidden.end());
+        mode_teams_.erase(common);
+        initialized_appearances.erase(id);
+        SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+        Object* object = graph && removed.object_id != static_cast<ObjectID>(-1) ? graph->GetObjectFromID(removed.object_id) : nullptr;
+        if (object) graph->map_editor->RemoveObject(object, graph);
+        online_session->player_states.erase(id);
+        online_session->player_inputs.erase(id);
+        Send<OnlineMessages::RemovePlayerState>(id);
+        BroadcastLobby();
+        return true;
+    }
     const auto actor_seat = online_session->player_states.find(actor);
     if (actor_seat == online_session->player_states.end()) return false;
     if (removed.peer_id != actor_seat->second.peer_id && IsLobbyLeader(id)) {
@@ -608,7 +677,7 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
     }
     online_session->player_states.erase(id);
     online_session->player_inputs.erase(id);
-    for (auto& entry : online_session->player_states) if (entry.second.peer_id == removed.peer_id) {
+    for (auto& entry : online_session->player_states) if (!entry.second.is_bot && entry.second.peer_id == removed.peer_id) {
         auto& player = entry.second;
         if (player.local_index > removed.local_index) --player.local_index;
         if (player.screen > removed.screen) --player.screen;
@@ -727,7 +796,7 @@ void Online::ApplyLobbyAppearances(SceneGraph* graph) {
         const bool preserve_authored = IsLocalOnlySession() && player.player_id == campaign_main_player_id_;
         const bool first_assignment = initialized_appearances.find(player.player_id) == initialized_appearances.end() ||
             initialized_appearances[player.player_id] != player.object_id;
-        if (!preserve_authored && first_assignment && avatar->character_path != turner) {
+        if (!player.is_bot && !preserve_authored && first_assignment && avatar->character_path != turner) {
             if (IsLocalAvatar(player.object_id) && avatar->HasFunction("void SwitchCharacter(string)"))
                 avatar->Execute("SwitchCharacter(\"" + turner + "\");");
             else avatar->ApplyNetworkCharacter(turner);
@@ -886,7 +955,7 @@ bool Online::StartLobbyGame(const std::string& level, const std::string& campaig
     // Every connected peer must have completed its roster handshake first.
     for (const auto& peer : online_session->connected_peers) {
         bool present = false;
-        for (const auto& p : online_session->player_states) present = present || p.second.peer_id == peer.peer_id;
+        for (const auto& p : online_session->player_states) present = present || (!p.second.is_bot && p.second.peer_id == peer.peer_id);
         if (!present) return false;
     }
     lobby_waiting_ = false;
@@ -923,7 +992,7 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         const bool returning = !lobby_waiting_ && message.get("waiting", false).asBool();
         if (returning) PrepareReturnToLobby();
         std::set<PlayerID> incoming_local;
-        for (const auto& row : message["players"]) if (row.get("peer", 0).asUInt() == LocalPeerID())
+        for (const auto& row : message["players"]) if (!row.get("bot", false).asBool() && row.get("peer", 0).asUInt() == LocalPeerID())
             incoming_local.insert(row.get("id", 0).asUInt());
         std::vector<unsigned> removed_local;
         for (const auto& previous : GetLocalPlayerStates()) if (!incoming_local.count(previous.player_id))
@@ -957,9 +1026,21 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
             state.player_id = row.get("id", 0).asUInt(); state.peer_id = static_cast<PeerID>(row.get("peer", 0).asUInt());
             state.local_index = row.get("local_index", 0).asUInt(); state.playername = row.get("name", "UNKNOWN").asString();
             state.team = row.get("team", 1).asInt(); state.screen = row.get("screen", 1).asInt(); state.connected = row.get("connected", true).asBool();
+            state.is_bot = row.get("bot", false).asBool();
             state.object_id = loading ? static_cast<ObjectID>(-1) : GetObjectID(row.get("object", -1).asInt());
             state.controller_id = row.get("controller", -1).asInt(); state.camera_id = row.get("camera", -1).asInt();
-            if (state.peer_id == LocalPeerID() && state.local_index < local_lobby_profiles_.size()) {
+            if (state.is_bot) {
+                state.peer_id = 255; state.local_index = std::numeric_limits<uint32_t>::max();
+                state.screen = 0; state.controller_id = -1; state.camera_id = -1;
+                SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+                Object* object = graph && state.object_id != static_cast<ObjectID>(-1) ? graph->GetObjectFromID(state.object_id) : nullptr;
+                if (object && object->GetType() == _movement_object) {
+                    auto* bot = static_cast<MovementObject*>(object);
+                    bot->is_player = false; bot->controlled = false; bot->controller_id = -1;
+                    bot->camera_id = 0;  // NPC eye queries reuse the existing main camera; no view is allocated.
+                }
+            }
+            if (!state.is_bot && state.peer_id == LocalPeerID() && state.local_index < local_lobby_profiles_.size()) {
                 local_lobby_profiles_[state.local_index].name = state.playername;
                 local_lobby_profiles_[state.local_index].screen = state.screen;
             }
@@ -975,7 +1056,7 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         // the next unacknowledged seat after each authoritative roster update.
         {
             size_t acknowledged = 0;
-            for (const auto& entry : online_session->player_states) if (entry.second.peer_id == LocalPeerID()) ++acknowledged;
+            for (const auto& entry : online_session->player_states) if (!entry.second.is_bot && entry.second.peer_id == LocalPeerID()) ++acknowledged;
             if (acknowledged > 0 && acknowledged < local_lobby_profiles_.size()) {
                 Json::Value request;
                 request["action"] = "join"; request["local_index"] = static_cast<Json::UInt>(acknowledged);
@@ -989,7 +1070,7 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     if (action == "device") {
         const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         auto player = online_session->player_states.find(id);
-        if (player == online_session->player_states.end() || player->second.peer_id != from) return;
+        if (player == online_session->player_states.end() || player->second.is_bot || player->second.peer_id != from) return;
         const bool connected = message.get("connected", false).asBool();
         if (player->second.connected != connected) {
             player->second.connected = connected;
@@ -1001,11 +1082,11 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     const auto acting_player = online_session->player_states.find(actor);
     // A reliable control message may act only for a logical player owned by
     // its sending machine. No role grant or fabricated ID bypasses this gate.
-    const bool valid_actor = acting_player != online_session->player_states.end() && acting_player->second.peer_id == from;
+    const bool valid_actor = acting_player != online_session->player_states.end() && !acting_player->second.is_bot && acting_player->second.peer_id == from;
     if (action == "pause") {
         const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         auto player = online_session->player_states.find(id);
-        if (player == online_session->player_states.end() || player->second.peer_id != from ||
+        if (player == online_session->player_states.end() || player->second.is_bot || player->second.peer_id != from ||
             (!lobby_allow_all_pause_ && !IsLobbyHost(id))) return;
         SetTimeFrozen(message.get("paused", false).asBool());
         BroadcastLobby();
@@ -1022,14 +1103,14 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     if (action == "screen") {
         const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         auto found = online_session->player_states.find(id);
-        if (!valid_actor || !IsLobbyLeader(actor) || found == online_session->player_states.end() || found->second.peer_id != from) return;
+        if (!valid_actor || !IsLobbyLeader(actor) || found == online_session->player_states.end() || found->second.is_bot || found->second.peer_id != from) return;
         const int screen = message.get("screen", 0).asInt();
         size_t count = 0;
-        for (const auto& seat : online_session->player_states) if (seat.second.peer_id == from) ++count;
+        for (const auto& seat : online_session->player_states) if (!seat.second.is_bot && seat.second.peer_id == from) ++count;
         if (screen < 1 || static_cast<size_t>(screen) > count) return;
         const int old = found->second.screen;
         for (auto& seat : online_session->player_states)
-            if (seat.second.peer_id == from && seat.first != id && seat.second.screen == screen) seat.second.screen = old;
+            if (!seat.second.is_bot && seat.second.peer_id == from && seat.first != id && seat.second.screen == screen) seat.second.screen = old;
         found->second.screen = screen;
         if (from == LocalPeerID()) ApplyLocalLobbyScreens();
         BroadcastLobby(); return;
@@ -1046,15 +1127,23 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         auto found = online_session->player_states.find(id);
         const std::string name = message.get("name", "").asString();
-        if (!valid_actor || !IsLobbyLeader(actor) || found == online_session->player_states.end() || found->second.peer_id != from ||
+        if (!valid_actor || !CanRenameLobbyPlayer(id, actor) || found == online_session->player_states.end() ||
             !OnlineUtility::IsValidPlayerName(name)) return;
         found->second.playername = name;
+        if (found->second.is_bot && found->second.object_id != static_cast<ObjectID>(-1)) {
+            SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+            Object* object = graph ? graph->GetObjectFromID(found->second.object_id) : nullptr;
+            if (object) {
+                object->GetScriptParams()->ASSetString("Bot Name", name);
+                if (object->GetType() == _movement_object) static_cast<MovementObject*>(object)->UpdateScriptParams();
+            }
+        }
         BroadcastLobby(); return;
     }
     if (action == "join") {
         bool admitted = false;
         std::vector<PlayerState> owned;
-        for (const auto& seat : online_session->player_states) if (seat.second.peer_id == from) {
+        for (const auto& seat : online_session->player_states) if (!seat.second.is_bot && seat.second.peer_id == from) {
             admitted = true; owned.push_back(seat.second);
         }
         if (!admitted) return;
@@ -1067,6 +1156,11 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         EstablishPeerPlayers(from, names);
         if (!loading && (from == LocalPeerID() || online_session->client_connection_manager.IsClientLoaded(from))) AssignPeerAvatars(from);
         BroadcastLobby(); return;
+    }
+    if (action == "remove") {
+        const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
+        if (valid_actor) RemoveLobbyPlayer(id, actor);
+        return;
     }
     if (!lobby_waiting_) return;
     if (action == "promote_host") {
@@ -1093,12 +1187,6 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         else if (action == "allow_pause") SetLobbyAllowAllPause(message.get("value", false).asBool(), actor);
         else if (action == "force_teams") SetLobbyForceTeams(message.get("value", false).asBool(), actor);
         else StartLobbyGame("", "", false, actor);
-        return;
-    }
-    if (action == "remove") {
-        const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
-        auto player = online_session->player_states.find(id);
-        if (valid_actor && player != online_session->player_states.end()) RemoveLobbyPlayer(id, actor);
         return;
     }
 }

@@ -1,11 +1,11 @@
 """arena_stress: the online arena with everything on, round after round.
 
-Waterfall Cave (weapon fights), the Overhaul mod, bots filling 8 fighters, the
+Waterfall Cave (weapon fights), the Overhaul mod, explicit bots making 8 fighters, the
 randomizer on. Every round is ended as soon as it starts (everyone knocked
 out), so each round runs the whole start again: hands and sheaths emptied, old
 weapons deleted, species switched, fighters placed, weapons and shields. A
-second guest joins mid-match (the replay of everything so far; a bot gives up
-its place) and leaves again (a bot comes back). Every round all games must
+second guest joins mid-match (the fixture removes a bot seat to make room)
+and leaves again (the fixture adds a bot seat back). Every round all games must
 still run and answer; at the end no script errors, no read of a deleted item.
 """
 
@@ -58,7 +58,7 @@ def arena_stress(ctx, profile="typical", rounds=30, fighters=8):
         host.bridge.call("host", level=WATERFALL, campaign=CAMPAIGN)
         wait_loaded(host)
         host.bridge.call("exec", target="level",
-                         code=f'SetConfigValueInt("oo_arena_bots", {fighters}); SetConfigValueBool("oo_arena_random", true);')
+                         code='SetConfigValueBool("oo_arena_random", true);' + 'LobbyAddBot();' * max(0, fighters - 2))
         client = ctx.instance("client1")
         _watch(client)
         client.bridge.call("net_sim", **PROFILES[profile])
@@ -94,10 +94,15 @@ def arena_stress(ctx, profile="typical", rounds=30, fighters=8):
                 late.bridge.call("net_sim", **PROFILES[profile])
                 join(ctx, host, late)
                 players["client2"] = late
+                bots = [p for p in host.bridge.status()["online"]["players"] if p.get("bot")]
+                if bots:
+                    host.bridge.call("exec", target="level", code=f'LobbyRemovePlayer({bots[-1]["id"]});')
             elif r == 14 and late is not None:
                 late.stop()
                 players.pop("client2", None)
                 late = None
+                if fighters >= 3:
+                    host.bridge.call("exec", target="level", code='LobbyAddBot();')
 
             # Everyone down: the round ends, the next one starts it all again
             host.bridge.call("exec", target="level", code=KO_OURS)

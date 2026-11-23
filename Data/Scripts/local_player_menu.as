@@ -7,6 +7,10 @@ IMGUI@ imGUI;
 bool capture_input = false;
 bool personal_settings = false;
 bool personal_teams = false;
+bool personal_bot_name = false;
+int editing_bot = -1;
+TextBox bot_name_editor;
+string bot_name_notice;
 bool world_paused = false;
 string local_player_notice;
 uint player_menu_revision = 0;
@@ -18,6 +22,11 @@ bool HasFocus() { return capture_input; }
 void MenuBack() {
     if(HasPopup()) {
         RemovePopup();
+    } else if(personal_bot_name) {
+        if(bot_name_editor.active) {
+            bot_name_editor.Deactivate();
+            capture_input = false;
+        } else BuildPlayerTeamsMenu();
     } else if(personal_settings) {
         ProcessSettingsMessage(IMMessage("back"));
     } else if(personal_teams) {
@@ -55,6 +64,7 @@ void BuildPlayerPauseMenu() {
     category_elements.resize(0);
     personal_settings = false;
     personal_teams = false;
+    personal_bot_name = false;
     capture_input = false;
     world_paused = GetPlayerMenuWorldPaused();
     player_menu_revision = LobbySnapshotRevision();
@@ -93,7 +103,7 @@ void BuildPlayerPauseMenu() {
         AddButton("Teams", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("Teams"));
     }
-    if((Online_IsActive() || GetLocalPlayerCount() > 1) && LobbyCanPause()) {
+    if(((Online_IsActive() && !LobbyIsLocalOnly()) || GetLocalPlayerCount() > 1) && LobbyCanPause()) {
         AddButton(world_paused ? "Resume world" : "Pause world", buttons, "null", button_background_diamond,
                   false, 650.0f, 30.0f, mouseover_scale_button, IMMessage("toggle_world_pause"));
     }
@@ -121,6 +131,10 @@ void BuildPlayerPauseMenu() {
         AddButton("Add player (debug)", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("debug_add_local_player"));
     }
+    if(host) {
+        AddButton("Add bot", buttons, "null", button_background_diamond, false, 650.0f,
+                  30.0f, mouseover_scale_button, IMMessage("add_lobby_bot"));
+    }
     if(primary && EditorEnabled()) {
         AddButton("Media mode", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("Media Mode"));
@@ -141,6 +155,7 @@ void BuildPlayerPauseMenu() {
 void OpenPersonalSettings() {
     ClearControllerItems();
     personal_teams = false;
+    personal_bot_name = false;
     personal_settings = true;
     capture_input = false;
     SetControllerPlayer(GetPlayerMenuInputID());
@@ -224,6 +239,7 @@ void BuildPlayerTeamsMenu() {
     active_slider = -1;
     personal_settings = false;
     personal_teams = true;
+    personal_bot_name = false;
     capture_input = false;
     player_menu_revision = LobbySnapshotRevision();
     array<LobbyPlayer> players = LobbyPlayers();
@@ -251,10 +267,11 @@ void BuildPlayerTeamsMenu() {
     rows.setAlignment(CALeft, CATop);
     list_and_scroll.append(rows);
     int local_count = 0;
-    for(uint i = 0; i < players.length(); ++i) if(players[i].local) ++local_count;
+    for(uint i = 0; i < players.length(); ++i) if(players[i].local && !players[i].bot) ++local_count;
     for(int row = team_scroll_offset; row < min(int(players.length()), team_scroll_offset + kVisibleTeamRows); ++row) {
         LobbyPlayer player = players[row];
         string name = player.name;
+        if(player.bot) name += " (bot)";
         if(player.host) name += " (host)";
         if(player.leader) name += " (local leader)";
         PlayerTeamsLabel(name, rows);
@@ -263,7 +280,18 @@ void BuildPlayerTeamsMenu() {
         } else {
             PlayerTeamsNote("Team " + player.team, rows);
         }
-        if(player.local && LobbyCanManageLocal()) {
+        if(player.bot) {
+            if(LobbyIsHost()) {
+                IMDivider actions("bot_actions_" + player.id, DOHorizontal);
+                if(LobbyCanRenamePlayer(player.id))
+                    AddButton("Rename", actions, "null", button_background_diamond, false, 300.0f,
+                              10.0f, mouseover_scale_button, IMMessage("rename_bot", int(player.id)));
+                if(LobbyCanRemovePlayer(player.id))
+                    AddButton("Remove", actions, "null", button_background_diamond, false, 300.0f,
+                              10.0f, mouseover_scale_button, IMMessage("remove_bot", int(player.id)));
+                rows.append(actions);
+            }
+        } else if(player.local && LobbyCanManageLocal()) {
             AddDropDown("Screen P" + (player.local_index + 1), rows,
                         DropdownConfiguration(PlayerScreenConfiguration(player.id, local_count)));
         } else {
@@ -281,6 +309,11 @@ void BuildPlayerTeamsMenu() {
 
 void ProcessPlayerTeamsMessage(IMMessage@ message) {
     if(message.name == "Back" || message.name == "back") MenuBack();
+    else if(message.name == "rename_bot") OpenBotNameMenu(uint(message.getInt(0)));
+    else if(message.name == "remove_bot") {
+        if(LobbyIsHost()) LobbyRemovePlayer(uint(message.getInt(0)));
+        BuildPlayerTeamsMenu();
+    }
     else if(message.name == "shift_menu") {
         team_scroll_offset += message.getInt(0);
         BuildPlayerTeamsMenu();
@@ -298,12 +331,122 @@ void ProcessPlayerTeamsMessage(IMMessage@ message) {
     } else if(message.name == "close_all_open_menus") CloseAllOptionMenus();
 }
 
+void OpenBotNameMenu(uint id) {
+    if(!LobbyCanRenamePlayer(id)) return;
+    array<LobbyPlayer> players = LobbyPlayers();
+    for(uint i = 0; i < players.length(); ++i) {
+        if(players[i].id == id && players[i].bot) {
+            editing_bot = int(id);
+            bot_name_editor.input_text = players[i].name;
+            bot_name_editor.cursor_offset = 0;
+            bot_name_notice = "";
+            BuildBotNameMenu();
+            return;
+        }
+    }
+}
+
+void BotNameCharacter(const string &in character) {
+    if(bot_name_editor.input_text.length() < 64) bot_name_editor.input_text += character;
+    bot_name_editor.cursor_offset = 0;
+    bot_name_editor.Deactivate();
+    capture_input = false;
+    bot_name_editor.UpdateText();
+}
+
+void BuildBotNameMenu() {
+    ClearControllerItems();
+    imGUI.clear();
+    imGUI.setup();
+    gui_elements.resize(0);
+    category_elements.resize(0);
+    active_slider = -1;
+    personal_settings = false;
+    personal_teams = false;
+    personal_bot_name = true;
+    capture_input = false;
+    bot_name_editor.Deactivate();
+    bot_name_editor.max_length = 64;
+    bot_name_editor.on_enter_message = "save_bot_name";
+    player_menu_revision = LobbySnapshotRevision();
+    IMContainer panel(1100.0f, 1200.0f);
+    panel.setAlignment(CACenter, CACenter);
+    IMImage background(white_background);
+    background.setSize(vec2(1100.0f, 1200.0f));
+    background.setColor(vec4(0, 0, 0, 0.95f));
+    background.setZOrdering(0);
+    panel.addFloatingElement(background, "bot_name_background", vec2(0), 0);
+    IMDivider content("bot_name_content", DOVertical);
+    content.setAlignment(CACenter, CACenter);
+    panel.setElement(content);
+    PlayerTeamsLabel("Name this bot", content, true);
+    AddTextInput(content, bot_name_editor, "activate_bot_name");
+    PlayerTeamsNote(MenuOwnsKeyboard() ? "Type a name or select letters below." : "Select letters with your controller.", content);
+    content.appendSpacer(25.0f);
+    const string letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
+    for(uint row = 0; row < (letters.length() + 7) / 8; ++row) {
+        IMDivider keys("name_keys_" + row, DOHorizontal);
+        for(uint column = 0; column < 8; ++column) {
+            uint index = row * 8 + column;
+            if(index >= letters.length()) break;
+            string letter = letters.substr(index, 1);
+            AddButton(letter, keys, "null", button_background_diamond, false, 90.0f,
+                      0.0f, mouseover_scale_button, IMMessage("bot_name_character", letter));
+        }
+        content.append(keys);
+    }
+    IMDivider edit_actions("bot_name_edit_actions", DOHorizontal);
+    AddButton("Space", edit_actions, "null", button_background_diamond, false, 300.0f,
+              10.0f, mouseover_scale_button, IMMessage("bot_name_space"));
+    AddButton("Erase", edit_actions, "null", button_background_diamond, false, 300.0f,
+              10.0f, mouseover_scale_button, IMMessage("bot_name_erase"));
+    content.append(edit_actions);
+    IMDivider actions("bot_name_actions", DOHorizontal);
+    AddButton("Save", actions, "null", button_background_diamond, false, 300.0f,
+              10.0f, mouseover_scale_button, IMMessage("save_bot_name"));
+    AddButton("Cancel", actions, "null", button_background_diamond, false, 300.0f,
+              10.0f, mouseover_scale_button, IMMessage("cancel_bot_name"));
+    content.append(actions);
+    if(bot_name_notice != "") PlayerTeamsNote(bot_name_notice, content);
+    imGUI.getMain().setElement(panel);
+    controller_wraparound = false;
+}
+
+void ProcessBotNameMessage(IMMessage@ message) {
+    if(message.name == "cancel_bot_name" || message.name == "Back") BuildPlayerTeamsMenu();
+    else if(message.name == "activate_bot_name") {
+        if(MenuOwnsKeyboard()) {
+            bot_name_editor.Activate();
+            capture_input = true;
+        }
+    } else if(message.name == "bot_name_character") BotNameCharacter(message.getString(0));
+    else if(message.name == "bot_name_space") BotNameCharacter(" ");
+    else if(message.name == "bot_name_erase") {
+        bot_name_editor.cursor_offset = 0;
+        bot_name_editor.InputBackspace();
+        bot_name_editor.Deactivate();
+        capture_input = false;
+    } else if(message.name == "save_bot_name") {
+        if(LobbyCanRenamePlayer(uint(editing_bot)) && LobbySetPlayerName(uint(editing_bot), bot_name_editor.GetText())) {
+            bot_name_editor.Deactivate();
+            BuildPlayerTeamsMenu();
+        } else {
+            bot_name_notice = "Enter a valid name; only the host may name bots.";
+            BuildBotNameMenu();
+        }
+    }
+}
+
 void Update() {
-    if(!personal_settings && !personal_teams &&
+    if(!personal_settings && !personal_teams && !personal_bot_name &&
        (world_paused != GetPlayerMenuWorldPaused() || player_menu_revision != LobbySnapshotRevision())) {
         BuildPlayerPauseMenu();
     }
     if(personal_settings) UpdateSettings(false);
+    if(personal_bot_name) {
+        if(editing_bot < 0 || !LobbyCanRenamePlayer(uint(editing_bot))) BuildPlayerTeamsMenu();
+        else bot_name_editor.Update();
+    }
     if(personal_teams) {
         if(player_menu_revision != LobbySnapshotRevision() && !OptionMenuOpen()) BuildPlayerTeamsMenu();
         UpdateMovingSlider();
@@ -316,6 +459,8 @@ void Update() {
             capture_input = true;
         } else if(message.name == "release_input") {
             capture_input = false;
+        } else if(personal_bot_name) {
+            ProcessBotNameMessage(message);
         } else if(personal_teams) {
             ProcessPlayerTeamsMessage(message);
         } else if(message.name == "Back") {
@@ -356,6 +501,11 @@ void Update() {
                 local_player_notice = DebugAddLocalPlayer() < 0 ? "Could not add player" : "";
                 BuildPlayerPauseMenu();
             }
+        } else if(message.name == "add_lobby_bot") {
+            if(LobbyIsHost()) {
+                local_player_notice = LobbyAddBot() ? "" : "Could not add bot";
+                BuildPlayerPauseMenu();
+            }
         }
     }
     imGUI.update();
@@ -369,6 +519,8 @@ void Resize() {
         string page = current_screen;
         ClearControllerItems();
         BuildUI(page);
+    } else if(personal_bot_name) {
+        BuildBotNameMenu();
     } else if(personal_teams) {
         BuildPlayerTeamsMenu();
     } else {

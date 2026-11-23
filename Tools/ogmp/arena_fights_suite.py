@@ -46,11 +46,15 @@ def arena_fights(ctx, profile="typical", seconds=240.0, fighters=6):
         host.bridge.call("host", level=STUCCO, campaign=CAMPAIGN)
         wait_loaded(host)
         host.bridge.call("exec", target="level",
-                         code=f'SetConfigValueInt("oo_arena_bots", {fighters}); SetConfigValueBool("oo_arena_random", true);')
+                         code='SetConfigValueBool("oo_arena_random", true);' + 'LobbyAddBot();' * max(0, fighters - 1))
         time.sleep(20.0)  # the bots fight a while before anyone joins (as the user's session)
         g = ctx.instance("client1")
         g.bridge.call("net_sim", **PROFILES[profile])
         join(ctx, host, g)
+        bots = [p for p in host.bridge.status()["online"]["players"] if p.get("bot")]
+        if bots:
+            # This fixture deliberately replaces an explicit AI seat with the guest.
+            host.bridge.call("exec", target="level", code=f'LobbyRemovePlayer({bots[-1]["id"]});')
         t1 = time.time()
         while time.time() - t1 < 60.0 and g.bridge.me() is None:
             time.sleep(1.0)  # (a joiner's character comes with the next round)
