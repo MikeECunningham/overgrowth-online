@@ -98,7 +98,20 @@ void VBORingContainer::SetHint(GLuint storage, char flags, bool ignore_multiplie
 }
 
 void VBORingContainer::Fill(GLuint size, void* data) {
-    if (size > 0 && frame_ring) {
+    if (frame_ring && size == 0) {
+        // A frame-ring allocation is only valid for the frame in which it was
+        // filled.  Leaving the previous allocation valid for an empty batch
+        // makes callers bind last frame's buffer (which may already have been
+        // retired) even though they have nothing to draw.
+        gl_VBO = -1;
+        current_offset = 0;
+        allocated_size = 0;
+        used_size = 0;
+        fill_frame = FrameRing::Frame();
+        warned_stale = false;
+        return;
+    }
+    if (frame_ring) {
         LOG_ASSERT(data);
         used_size = size;
         allocated_size = size;
@@ -113,6 +126,7 @@ void VBORingContainer::Fill(GLuint size, void* data) {
         gl_VBO = a.buffer;
         current_offset = a.offset;
         fill_frame = FrameRing::Frame();
+        warned_stale = false;
         return;
     }
     if (size > 0) {

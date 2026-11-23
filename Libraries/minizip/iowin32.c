@@ -27,7 +27,8 @@
 
 
 // see Include/shared/winapifamily.h in the Windows Kit
-#if defined(WINAPI_FAMILY_PARTITION) && (!(defined(IOWIN32_USING_WINRT_API)))
+// WINAPI_FAMILY_ONE_PARTITION was removed from recent Windows SDKs (VS 2026 / 10.0.28000).
+#if defined(WINAPI_FAMILY_ONE_PARTITION) && (!(defined(IOWIN32_USING_WINRT_API)))
 #if WINAPI_FAMILY_ONE_PARTITION(WINAPI_FAMILY, WINAPI_PARTITION_APP)
 #define IOWIN32_USING_WINRT_API 1
 #endif

@@ -1335,6 +1335,11 @@ IF(BUILD_OVERGROWTH)
             SET_TARGET_PROPERTIES(Overgrowth PROPERTIES 
                 COMPILE_FLAGS "${SSE_FLAGS} /DWIN32 /MP"
             )
+            # VS 2026 (MSVC 19.52) ICEs at /O2 in OVR_CAPIShim.c (p2 optimizer).
+            SET_SOURCE_FILES_PROPERTIES(
+                ${LIBDIR}/ovr_sdk_win_1.12.0_public/OculusSDK/LibOVR/Src/OVR_CAPIShim.c
+                PROPERTIES COMPILE_FLAGS "/Od"
+            )
             SET_TARGET_PROPERTIES(Overgrowth PROPERTIES
 	        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/.."
             )
