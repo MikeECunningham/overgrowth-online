@@ -966,6 +966,10 @@ void SceneGraph::Update(float timestep, float curr_game_time) {
         level->Message("post_reset");
     }
 
+    // Reapply after resets, before physics or character input can run. The
+    // late pass also catches newly assigned avatars before drawing them.
+    Online::Instance()->CoopCutsceneUpdate(this);
+
     // uint64_t start_count = SDL_GetPerformanceCounter();
     {
         PROFILER_ZONE(g_profiler_ctx, "Bullet world update");

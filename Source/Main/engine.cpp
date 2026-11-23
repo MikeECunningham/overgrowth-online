@@ -1959,7 +1959,7 @@ void Engine::Update() {
                 switch (final_state_pop.type) {
                     case kEngineLevelState:
                     case kEngineEditorLevelState:
-                        if (Online::Instance()->IsActive() && Online::Instance()->LobbyWaiting()) {
+                        if (Online::Instance()->IsActive()) {
                             Input::Instance()->SetUpForXPlayers(Online::Instance()->LocalLobbyPlayerCount(), true);
                         } else {
                             Input::Instance()->SetUpForXPlayers(0);
@@ -4291,9 +4291,10 @@ bool Engine::GetSplitScreen() const {
 }
 
 int Engine::DebugLocalPlayerCount() const {
-    if (!level_loaded_ || scenegraph_ == nullptr || Online::Instance()->IsActive()) {
+    if (!level_loaded_ || scenegraph_ == nullptr) {
         return 0;
     }
+    if (Online::Instance()->IsActive()) return static_cast<int>(Online::Instance()->LocalLobbyPlayerCount());
     std::vector<int> players;
     scenegraph_->GetPlayerCharacterIDs(players);
     return static_cast<int>(players.size());
@@ -4301,113 +4302,23 @@ int Engine::DebugLocalPlayerCount() const {
 
 int Engine::DebugAddLocalPlayer() {
     if (!level_loaded_ || scenegraph_ == nullptr || scenegraph_->level == nullptr ||
-        scenegraph_->map_editor->state_ != MapEditor::kInGame || Online::Instance()->IsActive()) {
-        return -1;
-    }
+        scenegraph_->map_editor->state_ != MapEditor::kInGame) return -1;
 
-    std::vector<int> players;
-    scenegraph_->GetPlayerCharacterIDs(players);
-    if (players.empty()) {
-        return -1;
+    // Debug seats use the same persistent party, device profiles and avatar
+    // assignment as controller joins. Offline play is promoted to a local-only
+    // session by AddLocalLobbyPlayer; no listen socket is opened implicitly.
+    Online* online = Online::Instance();
+    const unsigned index = online->IsActive() ? online->LocalLobbyPlayerCount() :
+        std::max(1u, Input::Instance()->GetNumLocalPlayers());
+    const PlayerID added = online->AddLocalLobbyPlayer("");
+    if (added == LobbyAuthority::InvalidPlayer) return -1;
+    for (const PlayerState& player : online->GetLocalPlayerStates()) {
+        if (player.local_index == index && player.object_id != static_cast<ObjectID>(-1))
+            return static_cast<int>(player.object_id);
     }
-
-    // Reuse the fork's ground/hazard checks. Try around existing players so a
-    // growing group can spread out, instead of reusing eight overlapping spots.
-    MovementObject* anchor = nullptr;
-    vec3 spawn;
-    for (int id : players) {
-        MovementObject* candidate_anchor = static_cast<MovementObject*>(scenegraph_->GetObjectFromID(id));
-        if (candidate_anchor == nullptr || candidate_anchor->network_proxy) {
-            continue;
-        }
-        for (int attempt = 0; attempt < 8; ++attempt) {
-            if (!Online::Instance()->FindSafeSpot(candidate_anchor->position, candidate_anchor->GetFacing(),
-                                                  1 + (static_cast<int>(players.size()) + attempt) % 8, &spawn)) {
-                continue;
-            }
-            bool occupied = false;
-            for (auto* character : scenegraph_->movement_objects_) {
-                vec3 offset = static_cast<MovementObject*>(character)->position - spawn;
-                if (std::fabs(offset.y()) < 1.5f && offset.x() * offset.x() + offset.z() * offset.z() < 1.0f) {
-                    occupied = true;
-                    break;
-                }
-            }
-            if (!occupied) {
-                anchor = candidate_anchor;
-                break;
-            }
-        }
-        if (anchor != nullptr) {
-            break;
-        }
-    }
-    if (anchor == nullptr) {
-        LOGW << "No safe unoccupied spot for a debug local player" << std::endl;
-        return -1;
-    }
-
-    EntityDescriptionList descriptions;
-    std::string file_type;
-    Path source;
-    ActorsEditor_LoadEntitiesFromFile(anchor->obj_file, descriptions, &file_type, &source);
-    for (auto& desc : descriptions) {
-        if (GetTypeFromDesc(desc) != _movement_object) {
-            continue;
-        }
-        // Set the initial position before the character's physics/script init.
-        desc.fields.erase(std::remove_if(desc.fields.begin(), desc.fields.end(), [](const EntityDescriptionField& field) {
-                              return field.type == EDF_TRANSLATION || field.type == EDF_IS_PLAYER;
-                          }), desc.fields.end());
-        desc.AddVec3(EDF_TRANSLATION, spawn);
-        desc.AddBool(EDF_IS_PLAYER, true);
-        Object* object = MapEditor::AddEntityFromDesc(scenegraph_, desc, false);
-        if (object == nullptr) {
-            return -1;
-        }
-        MovementObject* player = static_cast<MovementObject*>(object);
-        player->exclude_from_save = true;
-        player->exclude_from_undo = true;
-        player->created_on_the_fly = true;
-        player->permission_flags = 0;
-        player->is_player = true;
-        player->controller_id = static_cast<int>(players.size());
-        player->camera_id = player->controller_id;
-        player->SetName("Local player " + std::to_string(players.size() + 1) + " (debug)");
-        player->SetRotation(anchor->GetRotation());
-        player->SetScale(anchor->GetScale());
-        ScriptParams* team = anchor->GetScriptParams();
-        if (team->HasParam("Teams")) {
-            player->GetScriptParams()->ASSetString("Teams", team->GetStringVal("Teams"));
-        }
-        if (anchor->GetPalette() != nullptr) {
-            player->ApplyPalette(*anchor->GetPalette());
-        }
-        // This is a level-scoped debug override; graphics preferences stay intact.
-        debug_local_split_screen_ = true;
-        Input::Instance()->SetUpForXPlayers(static_cast<int>(players.size()) + 1);
-        // A player added from the pause menu hasn't run its chase-camera script
-        // yet. Seed its view near the spawn, so it never renders from the origin.
-        const int previous_camera = ActiveCameras::GetID();
-        Camera* anchor_camera = ActiveCameras::GetCamera(anchor->camera_id);
-        if (anchor_camera == nullptr) {
-            anchor_camera = ActiveCameras::GetCamera(0);
-        }
-        ActiveCameras::Set(player->camera_id);
-        Camera* new_camera = ActiveCameras::Get();
-        if (anchor_camera != nullptr) {
-            *new_camera = *anchor_camera;
-            new_camera->m_camera_object = nullptr;
-            new_camera->UnlockView();
-            new_camera->SetPos(anchor_camera->GetPos() + spawn - anchor->position);
-            new_camera->FixDiscontinuity();
-            new_camera->SetVelocity(vec3(0.0f));
-        }
-        ActiveCameras::Set(previous_camera);
-        LOGI << "Added debug local player " << players.size() + 1 << ": " << player->GetID() << std::endl;
-        return player->GetID();
-    }
-    return -1;
+    // A client or a player added during loading may not have its new world
+    // object yet; the accepted roster identity still signals a successful join.
+    return static_cast<int>(added);
 }
 
 static const int kCollisionNormalVersion = 2;
@@ -4674,6 +4585,10 @@ void Engine::Draw() {
         if (!Engine::Instance()->GetSplitScreen() || scenegraph_->map_editor->state_ != MapEditor::kInGame) {
             num_screens = 1;
         }
+        // Dialogue scripts animate camera zero. Present that authored camera
+        // once across the window without changing player/screen ownership.
+        if (scenegraph_->level->DialogueCameraControl() || Online::Instance()->RemoteCutsceneActive()) num_screens = 1;
+        rendered_view_count_ = num_screens;
         bool old_simple_water = g_simple_water;
         if (num_screens > 1) {
             g_simple_water = true;

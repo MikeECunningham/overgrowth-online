@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.1** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.3** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -31,6 +31,12 @@ and the remaining Steam friends/relay checks.
   and compact pose streams; controller settings survive reconnects and rejoining.
 - Independent pause/settings menus confined to each player's assigned screen,
   including simultaneous menus and private control editing.
+- Transferable lobby host and local leader roles, pregame server handoff,
+  host-controlled or personal team selection, and a pause menu for teams and
+  live local screen assignments.
+- Persistent local parties when joining an existing single-player game, with
+  shared roster/device handling across campaign levels. Campaign cinematics
+  fill the window and hold extra players hidden, including mid-scene joins.
 - Mode-managed Arena team/FFA matchups and cooperative campaign teams, with an
   optional **Force lobby teams** override. End game returns the connected group
   to its lobby for another match.
@@ -87,23 +93,54 @@ Open **Multiplayer** and choose **Host** or **Connect**. Hosting opens the lobby
 
 The lobby has separate panels for the mode and map, the scrolling player list, and hosting options. **Build a level** is a mode card alongside the playable modes. The host chooses the mode, map, manual lobby teams, pause permissions and start time. **Force lobby teams** is off by default: campaigns retain their cooperative teams, Arena chooses randomized team/FFA matchups from its battle setups, and sandbox/build uses the lobby teams as a fallback. Checking it enforces the lobby's team dropdowns. Mode-assigned teams are synchronized separately, so random Arena matchups do not overwrite the saved lobby choices.
 
-Press a button on another controller to add a local player. If a controller owns P1, press **Enter** to join with the keyboard and mouse as another player. **Add local player (debug)** creates a seat without hardware. Each client's P1 can edit or remove its added local players and assign their screens; the host can also remove remote players. Removing a remote P1 disconnects that client's whole group. Screens are exclusive: choosing an occupied screen swaps the two players. Remote players have no screen on your client. Each client renders only its own screens, and every player's character uses the fork's existing local simulation and compact network streams.
+Press a button on another controller to add a local player. If a controller owns P1, press **Enter** to join with the keyboard and mouse as another player. **Add local player (debug)** creates a seat without hardware. Each client's **local leader** can rename or remove its local players and assign their screens; the host can also remove remote players. **Promote to leader** transfers local authority without changing device assignments. After transferring both host and leader roles away from the initial keyboard/mouse player, that seat can be removed. Removing a remote leader disconnects that client's whole group. Screens are exclusive: choosing an occupied screen swaps the two players. Remote players have no screen on your client. Each client renders only its own screens, and every player's character uses the fork's existing local simulation and compact network streams.
+
+**Promote to host** transfers lobby and match authority. Choosing a player on another computer also transfers the pregame network session, so the original hosting computer can leave after the handoff completes. Every client first checks that it can reach the new host; a failed reachability check leaves the original lobby running. Direct-IP hosts need a reachable UDP port, while Steamworks builds can use Steam P2P. Host transfer is available in the lobby; return there before handing off a running match.
+
+**Host controls teams** defaults to on. When it is off, players can change their own teams in modes that permit manual teams; the host keeps team-management authority. Mode-managed campaign/Arena teams remain governed by the selected mode unless overridden. Explicit host edits during play override that player's current team; future matches still follow the mode unless **Force lobby teams** is enabled. The pause menu's **Teams** page shows the roster and team controls. Local leaders can also swap local screen assignments there during a match.
 
 The host's P1 starts as Turner. Other players start with their team's fur and clothing colors; the numbered team dropdowns include matching color swatches. The lobby uses the game's menu artwork and fonts, with native scrolling and controller navigation underneath.
 
-During multiplayer, Start opens a menu inside the requesting player's screen without stopping the world. Multiple players can open their own menus and settings simultaneously; navigating or closing one does not affect the others. Their controls, camera inversion and sensitivity belong to that local player; P1 also has graphics and audio settings. By default only the hosting client's P1 can explicitly pause the shared world. The host can allow all players to pause. Single-player still pauses when opening the menu. Reconnecting a controller restores its player and settings for that client session; adding new local players during gameplay is not supported yet.
+During multiplayer, Start opens a menu inside the requesting player's screen without stopping the world. Multiple players can open their own menus and settings simultaneously; navigating or closing one does not affect the others. Their controls, camera inversion and sensitivity belong to that local player; the local leader also controls the client's shared graphics and audio settings. Open settings pages refresh when those shared values change. By default only the designated host can explicitly pause the shared world. The host can allow all players to pause. Single-player still pauses when opening the menu. Reconnecting a controller restores its player and settings for that client session. New controllers can also join during play through the same roster used by the lobby.
 
-The hosting P1 can choose **End game** from the pause menu to bring everyone back to the same lobby. Connections, players, names and screen assignments stay in place for the next match. **Main menu** still leaves the multiplayer session.
+Adding a player to an existing single-player level creates a local party without
+restarting the world or opening an online listener. Names, teams, device profiles,
+roles and screen assignments survive subsequent campaign levels. The host can
+explicitly choose **Open to online players** from the pause menu or party lobby
+to accept remote connections.
+
+Campaign cutscenes and dialogue use one full-window view. The authored main
+character keeps its scripted choreography; extra human characters and their
+weapons are hidden and held still. This also applies to players joining during
+the scene. When it ends, split-screen assignments return and extra players are
+placed safely near the main character with their prior health/control state.
+
+The designated host can choose **End game** from the pause menu to bring everyone back to the same lobby. Connections, players, names and screen assignments stay in place for the next match. **Main menu** still leaves the multiplayer session.
 
 All clients need this build: the lobby and multiple-player protocol deliberately rejects older builds. Run `python3 Tools/ogmp.py run local_lobby lobby_lifecycle player_menus mode_teams` for the input, lobby lifecycle, independent menus and mode-owned team regressions. Set `OGMP_KEYS=renderer=vulkan` to check the Vulkan backend.
 
+Additional regressions cover host/leader transfer and live screens
+(`lobby_authority`), failed-handoff recovery (`lobby_rollback`), solo Stucco Courtyard (`stucco_solo`), repeated Rock Cave
+matches (`cave_spawns`), and loose weapon playback when the host's camera looks
+away (`loose_weapon_playback`). Run them with `python3 Tools/ogmp.py run` followed
+by the scenario names. The connection dialog remains cancellable while waiting
+for the version/mod handshake to finish.
+
+Campaign regressions cover joining an offline story with a controller, real
+chapter progression, and a remote party joining during authored dialogue
+(`newcampaign_local`). Separate checks move host/leader authority without
+changing the story actor (`newcampaign_roles`) and remove the original player
+while retaining control of that actor (`newcampaign_main_removal`). These use
+process-local virtual controllers through the opt-in test bridge. Retry during
+dialogue is checked separately with `newcampaign_cinematic_retry`.
+
 ## Local split-screen debugging
 
-During offline play, open the pause menu and select **Add player (debug)**. Each press creates another local player and enables split screen. Players fill the grid from the top left: two use 2×1, three or four use 2×2, five or six use 3×2, and seven through nine use 3×3. Unused cells are black. Player, input and camera lists grow dynamically rather than stopping at four players.
+Open the pause menu as the local leader and select **Add player (debug)**. Each press adds another persistent party member and enables split screen. Players fill the grid from the top left: two use 2×1, three or four use 2×2, five or six use 3×2, and seven through nine use 3×3. Unused cells are black. Player, input and camera lists grow dynamically rather than stopping at four players.
 
-Keyboard and mouse control P1; connected controllers use the local input slots, and slots without a device stay idle. Debug players spawn on checked ground near the group and copy a nearby player's character and team. They are excluded from level saves and disappear when the level reloads. The button is for offline testing; mode objectives and cutscenes retain their existing behavior.
+Keyboard and mouse control P1 initially; controllers join or reconnect through the same local roster, and debug slots without a device stay idle. Added players spawn on checked ground near the group. Their runtime characters are excluded from level saves and are recreated for their retained roster entries when a level reloads.
 
-Run `python3 Tools/ogmp.py run local_splitscreen` to check the pause button, nine screens, independent P5 input and level reloads. Set `OGMP_KEYS=renderer=vulkan` to check the Vulkan backend.
+Run `python3 Tools/ogmp.py run local_splitscreen` to check the pause button, nine screens, independent P5 input and party persistence through a level reload. Set `OGMP_KEYS=renderer=vulkan` to check the Vulkan backend.
 
 ## Build a level
 

@@ -77,6 +77,17 @@ class GNSNetFramework {
     static void OnStatusChangedStatic(SteamNetConnectionStatusChangedCallback_t* data);
     void OnStatusChanged(SteamNetConnectionStatusChangedCallback_t* data);
 
+    // Handoff probes run beside the current session. They are never game peers,
+    // and survive the short session restart when the candidate becomes host.
+    HSteamListenSocket migration_listener = k_HSteamListenSocket_Invalid;
+    HSteamListenSocket migration_p2p_listener = k_HSteamListenSocket_Invalid;
+    HSteamNetConnection migration_probe = k_HSteamNetConnection_Invalid;
+    std::map<HSteamNetConnection, bool> migration_incoming;
+    std::string migration_secret, migration_reply, migration_received, migration_error;
+    int64_t migration_last_reply = 0;
+    bool HandleMigrationStatus(SteamNetConnectionStatusChangedCallback_t* data);
+    void UpdateMigrationProbes();
+
    public:
     explicit GNSNetFramework(Online* online_callback);
 
@@ -106,5 +117,13 @@ class GNSNetFramework {
     bool AcceptConnection(NetConnectionID conn_id, int* result);
     std::string GetResultString(int result);
     void SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush);
+
+    bool RemoteAddress(NetConnectionID conn_id, std::string* ip, uint64_t* steam_id) const;
+    bool BeginMigrationListener(const std::string& secret);
+    bool BeginMigrationProbe(const std::string& ip, uint64_t steam_id, const std::string& secret);
+    void SetMigrationReply(const std::string& reply);
+    std::string MigrationReply() const;
+    std::string MigrationError() const;
+    void StopMigrationProbes();
 };
 #endif

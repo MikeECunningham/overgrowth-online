@@ -37,7 +37,7 @@ ItemUpdate::ItemUpdate() : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSI
 
 ItemUpdate::ItemUpdate(ItemObject* object) : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT),
                                              timestamp(game_timer.GetWallTime()),
-                                             transform(object->GetTransform()) {
+                                             transform(object->GetNetworkTransform()) {
     this->id = Online::Instance()->GetOriginalID(object->GetID());
 }
 
@@ -66,7 +66,8 @@ void ItemUpdate::Execute(const OnlineMessageRef& ref, void* object, PeerID peer)
     ObjectID object_id = Online::Instance()->GetObjectID(iu->id);
     SceneGraph* sg = Engine::Instance()->GetSceneGraph();
 
-    if (sg != nullptr) {
+    if (Online::Instance()->IsClient() && sg != nullptr &&
+        std::isfinite(iu->timestamp) && iu->timestamp >= 0.0f && iu->timestamp < 4294967.0f) {
         Object* obj = sg->GetObjectFromID(object_id);
         bool finite = true;
         for (int i = 0; i < 16; ++i) {
@@ -75,12 +76,7 @@ void ItemUpdate::Execute(const OnlineMessageRef& ref, void* object, PeerID peer)
         if (obj && obj->GetType() == _item_object && finite) {
             ItemObject* item = static_cast<ItemObject*>(obj);
 
-            ItemObjectFrame iof;
-
-            iof.host_walltime = iu->timestamp;
-            iof.transform = iu->transform;
-
-            item->incoming_online_item_frames.push_back(iof);
+            item->ReceiveNetworkTransform(iu->timestamp, iu->transform);
         }
     }
 }

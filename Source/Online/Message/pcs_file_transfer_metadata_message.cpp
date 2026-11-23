@@ -86,6 +86,7 @@ void PCSFileTransferMetadataMessage::Execute(const OnlineMessageRef& ref, void* 
     // into the level before the host had it (empty map, no character) instead
     // of waiting on its loading screen
     online->SessionStarted(false);
+    online->PerformLevelChangeCleanUp();
 
     Online::Instance()->level_name = t->map_name;
     // Overgrowth Online: the host's campaign, ours too (co-op rules: a guest knew
@@ -101,7 +102,15 @@ void PCSFileTransferMetadataMessage::Execute(const OnlineMessageRef& ref, void* 
         Online::Instance()->online_session->free_avatars.clear();
 
         Engine::Instance()->ScriptableUICallback("set_campaign " + t->campaign_id);
-        Engine::Instance()->ScriptableUICallback(load);
+        std::string level_id;
+        if (load == t->map_name) {
+            std::string lookup = t->campaign_id;
+            const auto campaign = ModLoading::Instance().GetCampaign(lookup);
+            const std::string relative = t->map_name.compare(0, 12, "Data/Levels/") == 0 ? t->map_name.substr(12) : t->map_name;
+            for (const auto& entry : campaign.levels)
+                if (entry.path.str() == relative || entry.path.str() == t->map_name) { level_id = entry.id.str(); break; }
+        }
+        Engine::Instance()->ScriptableUICallback(level_id.empty() ? load : "load_campaign_level " + level_id);
     } else if (FileExists(load, kAnyPath) || FileExists("Data/Levels/" + load, kAnyPath)) {
         Online::Instance()->online_session->free_avatars.clear();
         Engine::Instance()->ScriptableUICallback(load);

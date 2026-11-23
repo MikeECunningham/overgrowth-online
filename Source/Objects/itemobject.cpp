@@ -431,48 +431,51 @@ void ItemObject::UpdateGlint(float timestep) {
     }
 }
 
+void ItemObject::ReceiveNetworkTransform(float host_walltime, const mat4& model_transform) {
+    if (IsHeld() || StuckInWhom() != -1) {
+        network_item_buffer_.Clear();
+        have_network_item_frame_ = false;
+        return;
+    }
+    CharSnapshot::Frame frame;
+    frame.src_ms = static_cast<uint32_t>(host_walltime * 1000.0);
+    frame.position = model_transform.GetTranslationPart();
+    frame.velocity = vec3(0.0f);
+    if (have_network_item_frame_) {
+        if (frame.src_ms <= network_item_last_src_) return;
+        const double seconds = (frame.src_ms - network_item_last_src_) / 1000.0;
+        if (seconds < 1.0) {
+            frame.velocity = (frame.position - network_item_last_position_) / static_cast<float>(seconds);
+            if (length_squared(frame.velocity) > 120.0f * 120.0f) frame.velocity = vec3(0.0f);
+        }
+    }
+    frame.bones.resize(1);
+    frame.bones[0].translation = frame.position;
+    frame.bones[0].rotation = normalize(QuaternionFromMat4(model_transform.GetRotationPart()));
+    if (!CharSnapshot::Finite(frame)) return;
+    network_item_buffer_.Push(frame, game_timer.GetWallTime() * 1000.0);
+    network_item_last_src_ = frame.src_ms;
+    network_item_last_position_ = frame.position;
+    have_network_item_frame_ = true;
+}
+
 void ItemObject::Update(float timestep) {
     Online* online = Online::Instance();
     bool fetchedData = false;
     if (online->IsClient()) {
-        std::list<ItemObjectFrame>& frames = incoming_online_item_frames;
-
         // Overgrowth Online: held or stuck, it follows its character here
         // (its glint too: a flare left alone is a "distant" one, a sun in the sky)
         UpdateGlint(timestep);
         if (IsHeld() || StuckInWhom() != -1) {
-            frames.clear();
+            network_item_buffer_.Clear();
+            have_network_item_frame_ = false;
             return;
         }
 
-        while (frames.size() > 1) {
-            network_time_interpolator.timestamps.Clear();
-            for (const ItemObjectFrame& frame : frames) {
-                network_time_interpolator.timestamps.PushValue(frame.host_walltime);
-            }
-
-            int interpolator_result = network_time_interpolator.Update();
-
-            if (interpolator_result == 1) {
-                continue;
-            } else if (interpolator_result == 2) {
-                frames.pop_front();
-                continue;
-            } else if (interpolator_result == 3) {
-                break;
-            }
-
-            mat4& current_transform = frames.begin()->transform;
-            mat4& next_transform = std::next(frames.begin())->transform;
-
-            vec3 trans_current = current_transform.GetTranslationPart();
-            vec3 trans_next = next_transform.GetTranslationPart();
-
-            quaternion quat_from_current = QuaternionFromMat4(current_transform.GetRotationPart());
-            quaternion quat_from_next = QuaternionFromMat4(next_transform.GetRotationPart());
-
-            vec3 translation = lerp(trans_current, trans_next, network_time_interpolator.interpolation_step);
-            quaternion rotation = Slerp(quat_from_current, quat_from_next, network_time_interpolator.interpolation_step);
+        CharSnapshot::Frame frame;
+        if (network_item_buffer_.Sample(game_timer.GetWallTime() * 1000.0, frame)) {
+            const vec3& translation = frame.position;
+            const quaternion& rotation = frame.bones[0].rotation;
 
             transform.SetTranslationPart(translation);
             transform.SetRotationPart(Mat4FromQuaternion(rotation));
@@ -490,8 +493,6 @@ void ItemObject::Update(float timestep) {
                 bullet_object_->Sleep();
                 bullet_object_->UpdateTransform();
             }
-
-            break;
         }
 
         // Temp: Disable all updates for clients in regards to items, as we are not really sure what it means to run all of this code here.
@@ -1391,7 +1392,7 @@ void ItemObject::DrawItem(const mat4& proj_view_matrix, Object::DrawType type) {
     // Overgrowth Online: a client draws loose items where the host streams them, and
     // held or stuck ones where their character puts the body (no stream for those:
     // they were drawn where they lay before, out of sight)
-    if (!online->IsClient() || IsHeld() || StuckInWhom() != -1) {
+    if (!online->IsClient() || IsHeld() || StuckInWhom() != -1 || !have_network_item_frame_) {
         transform = bullet_object_->GetInterpRotationX(interp_period_, interp_period_ - interp_count_);
         vec3 pos = bullet_object_->GetInterpPositionX(interp_period_, interp_period_ - interp_count_);
         transform.SetTranslationPart(pos - transform * display_phys_offset_);
@@ -1433,6 +1434,15 @@ void ItemObject::RemoveConstraint(btTypedConstraint** constraint) {
 
 mat4 ItemObject::GetTransform() const {
     return transform;
+}
+
+mat4 ItemObject::GetNetworkTransform() const {
+    // DrawItem updates the render transform only when a camera sees the item.
+    // Stream simulation state even offscreen, with the same model-space offset
+    // as DrawItem; otherwise a flying weapon freezes until the host sees it.
+    mat4 model = bullet_object_->GetTransform();
+    model.AddTranslation(model.GetRotatedvec3(display_phys_offset_) * -1.0f);
+    return model;
 }
 
 void ItemObject::SleepPhysics() {

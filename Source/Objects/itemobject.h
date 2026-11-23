@@ -22,7 +22,7 @@
 //-----------------------------------------------------------------------------
 #pragma once
 
-#include <Online/time_interpolator.h>
+#include <Online/char_snapshot.h>
 #include <Online/online_datastructures.h>
 
 #include <Graphics/drawbatch.h>
@@ -120,6 +120,7 @@ class ItemObject : public Object {
     void RemoveConstraint(btTypedConstraint** constraint);
 
     mat4 GetTransform() const;  // Returns final transform matix, used in multiplayer
+    mat4 GetNetworkTransform() const;
 
     void Collided(const vec3& pos, float impulse, const CollideInfo& collide_info, BulletObject* object) override;
     void GetDesc(EntityDescription& desc) const override;
@@ -143,7 +144,7 @@ class ItemObject : public Object {
     vec3 GetTransformedVertex(int which);
     int last_held_char_id_;
 
-    std::list<ItemObjectFrame> incoming_online_item_frames;
+    void ReceiveNetworkTransform(float host_walltime, const mat4& model_transform);
 
    private:
     enum ThrownState {
@@ -225,7 +226,12 @@ class ItemObject : public Object {
     TextureAssetRef texture_spatterdecal_;
     std::string shader;
 
-    TimeInterpolator network_time_interpolator;
+    // Loose weapons use the same adaptive playback clock as character poses.
+    // A throw starts on its first record instead of waiting for ten records.
+    CharSnapshot::Buffer network_item_buffer_;
+    bool have_network_item_frame_ = false;
+    uint32_t network_item_last_src_ = 0;
+    vec3 network_item_last_position_;
 
     void DrawDepthMap(const mat4& proj_view_matrix, const vec4* cull_planes, int num_cull_planes, Object::DrawType draw_type) override;
     void HandleItemObjectMaterialEvent(const std::string& the_event, const vec3& normal, const vec3& event_pos, float gain = 1.0f, float pitch_shift = 1.0f);

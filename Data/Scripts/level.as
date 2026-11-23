@@ -467,30 +467,6 @@ void DrawGUI3() {
 
 
 bool capture_input = false;
-// Online co-op: a client's character stands still while a dialogue plays
-// (the dialogue freezes the level's characters, not the joined ones)
-bool coop_dialogue_frozen = false;
-
-void CoopDialogueFreeze() {
-    bool want = Online_IsClient() && level.DialogueCameraControl();
-    if(want == coop_dialogue_frozen){
-        return;
-    }
-    coop_dialogue_frozen = want;
-    int num = GetNumCharacters();
-    for(int i = 0; i < num; ++i){
-        MovementObject@ char = ReadCharacter(i);
-        if(char.controlled && !char.remote){
-            if(want){
-                // Dialogue control pins a character to its dialogue spot: here, where it stands
-                char.Execute("dialogue_position = this_mo.position; vec3 f = this_mo.GetFacing(); "
-                             "dialogue_rotation = atan2(-f.z, f.x) * 180.0f / 3.1415f;");
-            }
-            char.ReceiveScriptMessage(want ? "set_dialogue_control true" : "set_dialogue_control false");
-        }
-    }
-}
-
 void Update(int paused) {
     if(menu_paused && (Online_IsActive() || DebugLocalPlayerCount() > 1)) {
         menu_paused = false;
@@ -499,7 +475,6 @@ void Update(int paused) {
     bool changed_world_pause = menu_world_paused != (paused != 0);
     menu_world_paused = paused != 0;
     if(changed_world_pause && has_gui && !draw_settings) AddPauseMenu();
-    CoopDialogueFreeze();
     CoopReviveUpdate();
     CoopStoryUpdate();
     if(Online_Spectating() != "" && GetInputPressed(controller_id, "attack")){

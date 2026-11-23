@@ -16,7 +16,7 @@ from .scenarios import PROFILES, LEVEL, dist, join, wait_loaded
 def local_splitscreen(ctx):
     """The pause button adds nine local views, with independent P5 input.
 
-    A full level reload must discard the debug roster and its camera override.
+    A full level reload must retain the shared party and its screen assignments.
     Run with OGMP_KEYS=renderer=vulkan to exercise that backend too.
     """
     inst = ctx.instance("local_splitscreen", level=LEVEL, width=1280, height=720,
@@ -30,10 +30,12 @@ def local_splitscreen(ctx):
     def execute(code):
         bridge.call("exec", target="level", code=code)
 
-    execute('ReceiveMessage("open_menu");')
-    bridge.wait(lambda: bridge.status()["paused"], 10, what="pause menu")
+    bridge.call("input", controller=0, hold={"quit": 1.0}, steps=1)
+    bridge.wait(lambda: bridge.status()["open_menu_players"] == [0] and bridge.status()["paused"],
+                10, what="single-player pause menu")
     for count in range(2, 10):
-        execute('imGUI.receiveMessage(IMMessage("debug_add_local_player"));')
+        bridge.call("exec", target="player_menu", local_player=0,
+                    code='imGUI.receiveMessage(IMMessage("debug_add_local_player"));')
         bridge.wait(lambda: bridge.status()["local_players"] == count, 20,
                     what=f"debug local player {count}")
         bridge.wait(lambda: bridge.status()["local_inputs"] == count, 10,
@@ -46,8 +48,10 @@ def local_splitscreen(ctx):
             fails.append(f"{count} players: cameras are not unique contiguous slots")
     ctx.shot(inst, "pause_nine")
 
-    execute('ReceiveMessage("open_menu");')
-    bridge.wait(lambda: not bridge.status()["paused"], 10, what="continue local play")
+    bridge.call("exec", target="player_menu", local_player=0,
+                code='this_ui.SendCallback("close");')
+    bridge.wait(lambda: not bridge.status()["open_menu_players"] and not bridge.status()["paused"],
+                10, what="continue local play")
     time.sleep(0.5)
     start = {c["controller_id"]: c for c in bridge.state() if c["is_player"]}
     bridge.call("input", controller=4, hold={"up": 1.0}, steps=180)
@@ -71,19 +75,24 @@ def local_splitscreen(ctx):
     if m["render_problems"]:
         fails.append("renderer reported problems with nine screens")
 
+    roster_before = {p["id"]: (p["name"], p["team"], p["screen"], p["local_index"])
+                     for p in status["online"]["players"]}
     bridge.call("load_level", path="Data/Levels/" + LEVEL, discard=True)
-    bridge.wait(lambda: bridge.status()["level_loaded"] and bridge.status()["local_players"] == 1,
-                150, what="fresh single-player roster after reload")
+    bridge.wait(lambda: bridge.status()["level_loaded"] and bridge.status()["local_players"] == 9,
+                150, what="persistent nine-player party after reload")
     status = bridge.status()
     m["after_reload"] = {k: status[k] for k in ("local_players", "local_inputs", "split_screen")}
-    if status["local_inputs"] != 1 or status["split_screen"]:
-        fails.append("debug input/camera state survived the level reload")
-    # Reusing camera 1 after a reload exercises the camera-object lifetime too.
-    execute('ReceiveMessage("open_menu");')
-    bridge.wait(lambda: bridge.status()["paused"], 10, what="pause menu after reload")
-    execute('imGUI.receiveMessage(IMMessage("debug_add_local_player"));')
-    bridge.wait(lambda: bridge.status()["local_players"] == 2, 20,
-                what="second local player after reload")
+    roster_after = {p["id"]: (p["name"], p["team"], p["screen"], p["local_index"])
+                    for p in status["online"]["players"]}
+    if status["local_inputs"] != 9 or not status["split_screen"] or roster_before != roster_after:
+        fails.append("shared party identities, controls or screens changed during reload")
+    # Adding another player after reload uses the same persistent roster.
+    bridge.call("input", controller=0, hold={"quit": 1.0}, steps=1)
+    bridge.wait(lambda: bridge.status()["open_menu_players"] == [0], 10, what="party pause menu after reload")
+    bridge.call("exec", target="player_menu", local_player=0,
+                code='imGUI.receiveMessage(IMMessage("debug_add_local_player"));')
+    bridge.wait(lambda: bridge.status()["local_players"] == 10, 20,
+                what="tenth local player after reload")
     return {"passed": not fails, "metrics": m, "notes": fails}
 
 

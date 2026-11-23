@@ -1061,6 +1061,72 @@ def _player_menus(ctx):
 
 SCENARIOS["player_menus"] = _player_menus
 
+
+def _lobby_authority(ctx):
+    from .lobby_authority_suite import lobby_authority
+    return lobby_authority(ctx)
+
+
+SCENARIOS["lobby_authority"] = _lobby_authority
+
+
+def _lobby_rollback(ctx):
+    from .lobby_rollback_suite import lobby_rollback
+    return lobby_rollback(ctx)
+
+
+SCENARIOS["lobby_rollback"] = _lobby_rollback
+
+
+def _newcampaign_local(ctx):
+    from .newcampaign_local_suite import newcampaign_local
+    return newcampaign_local(ctx)
+
+
+def _newcampaign_roles(ctx):
+    from .newcampaign_local_suite import newcampaign_roles
+    return newcampaign_roles(ctx)
+
+
+SCENARIOS["newcampaign_local"] = _newcampaign_local
+SCENARIOS["newcampaign_roles"] = _newcampaign_roles
+
+
+def _newcampaign_main_removal(ctx):
+    from .newcampaign_local_suite import newcampaign_main_removal
+    return newcampaign_main_removal(ctx)
+
+
+SCENARIOS["newcampaign_main_removal"] = _newcampaign_main_removal
+
+
+def _newcampaign_cinematic_retry(ctx):
+    from .newcampaign_local_suite import newcampaign_cinematic_retry
+    return newcampaign_cinematic_retry(ctx)
+
+
+SCENARIOS["newcampaign_cinematic_retry"] = _newcampaign_cinematic_retry
+
+
+def _stucco_solo(ctx):
+    from .arena_spawn_suite import stucco_solo
+    return stucco_solo(ctx)
+
+
+def _cave_spawns(ctx):
+    from .arena_spawn_suite import cave_spawns
+    return cave_spawns(ctx)
+
+
+def _loose_weapon_playback(ctx):
+    from .arena_spawn_suite import loose_weapon_playback
+    return loose_weapon_playback(ctx)
+
+
+SCENARIOS["stucco_solo"] = _stucco_solo
+SCENARIOS["cave_spawns"] = _cave_spawns
+SCENARIOS["loose_weapon_playback"] = _loose_weapon_playback
+
 SUITES = {
     "smoke": ["boot", "move", "connect"],
     "baseline": ["connect", "connect_typical", "connect_bad", "bot_duel"],

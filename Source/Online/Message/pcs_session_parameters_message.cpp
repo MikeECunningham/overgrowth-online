@@ -75,8 +75,8 @@ void PCSSessionParametersMessage::Execute(const OnlineMessageRef& ref, void* obj
         return;
     }
 
-    // We should forget about certain things here!
-    Online::Instance()->online_session->player_states.clear();
+    // Membership is session state. A map/version handshake must not discard
+    // local identities, screen choices, or input mappings before its snapshot.
     Online::Instance()->SessionStarted(false);
 
     Online::Instance()->online_session->binding_id_map_ = t->bind_id_map;

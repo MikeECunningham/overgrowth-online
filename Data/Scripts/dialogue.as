@@ -1072,7 +1072,7 @@ class Dialogue {
         if(!ready_to_skip || queue_skip){
             return false;
         }
-        if(GetInputDown(controller_id, "skip_dialogue") || GetInputDown(controller_id, "keypadenter")){
+        if(GetInputDown(GetCampaignDialogueControllerID(), "skip_dialogue") || GetInputDown(GetCampaignDialogueControllerID(), "keypadenter")){
             return true;
         } else {
             return false;
@@ -1211,8 +1211,8 @@ class Dialogue {
     }
 
     // Overgrowth Online, the host: a player's character that appears while a
-    // dialogue plays (a guest who joined during it) gets it, a moment later
-    // (their level is up by then)
+    // dialogue plays gets its current line immediately. Avatar admission means
+    // that client's level scripts have finished loading.
     void SyncLateJoiners() {
         if(!Online_IsHosting() || index == 0 || dialogue_obj_id == -1 || online_name == "") {
             return;
@@ -1223,15 +1223,9 @@ class Dialogue {
             if(id < 0 || online_synced_ids.find(id) >= 0) {
                 continue;
             }
-            int seen = online_seen_ids.find(id);
-            if(seen < 0) {
-                online_seen_ids.insertLast(id);
-                online_seen_times.insertLast(the_time);
-            } else if(the_time - online_seen_times[seen] > 1.0f) {
-                online_synced_ids.insertLast(id);
-                Log(info, "Overgrowth Online: player character " + id + " joined during the dialogue \"" + online_name + "\": sent at line " + index);
-                SendSyncState(online_name, index);
-            }
+            online_synced_ids.insertLast(id);
+            Log(info, "Overgrowth Online: player character " + id + " joined during the dialogue \"" + online_name + "\": sent at line " + index);
+            SendSyncState(online_name, index);
         }
     }
 
@@ -1283,7 +1277,7 @@ class Dialogue {
             speak_sound_time = the_time + 0.1f;
             line_start_time = 0.0f;
             ready_to_skip = false; 
-        } else if(the_time - start_time > 0.1f && !GetInputDown(controller_id, "skip_dialogue") && !GetInputDown(controller_id, "keypadenter")){
+        } else if(the_time - start_time > 0.1f && !GetInputDown(GetCampaignDialogueControllerID(), "skip_dialogue") && !GetInputDown(GetCampaignDialogueControllerID(), "keypadenter")){
             ready_to_skip = true;
         }
 
@@ -1291,7 +1285,7 @@ class Dialogue {
         if(waiting_for_dialogue && index != 0){
             float step = time_step * 40.0f / GetConfigValueFloat("global_time_scale_mult");
             dialogue_text_disp_chars += step;
-            if(GetInputDown(controller_id, "attack")){
+            if(GetInputDown(GetCampaignDialogueControllerID(), "attack")){
                 dialogue_text_disp_chars += step;                
             }
             // Continue dialogue script if we have displayed all the text that we are waiting for
@@ -1313,7 +1307,7 @@ class Dialogue {
         // Continue dialogue script if waiting time has completed
         if(is_waiting_time){
             wait_time -= time_step;
-            if(GetInputDown(controller_id, "attack")){
+            if(GetInputDown(GetCampaignDialogueControllerID(), "attack")){
                 wait_time -= time_step;
             }
             if(wait_time <= 0.0f){
@@ -1335,7 +1329,7 @@ class Dialogue {
                 SendSkipState();
                 PlayLineStartSound();
             }
-            if(GetInputPressed(controller_id, "attack") && start_time != the_time){
+            if(GetInputPressed(GetCampaignDialogueControllerID(), "attack") && start_time != the_time){
                 if(index != 0){
                     if(waiting_for_dialogue || is_waiting_time){
                         while(waiting_for_dialogue || is_waiting_time){

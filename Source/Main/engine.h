@@ -303,6 +303,8 @@ class Engine : public ModLoadingCallback {
     // Reuse these vectors across frames without imposing a player-count ceiling.
    public:
     int num_avatars;
+    unsigned RenderedViewCount() const { return rendered_view_count_; }
+    unsigned rendered_view_count_ = 1;
     int num_npc_avatars;
     std::vector<int> avatar_ids;
     std::vector<int> npc_avatar_ids;

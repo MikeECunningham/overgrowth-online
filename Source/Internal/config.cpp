@@ -153,7 +153,7 @@ int Config::GetMonitorCount() {
 }
 
 std::vector<Resolution> Config::GetPossibleResolutions() {
-    int targetMonitor = GetRef("target_monitor").toNumber<int>();
+    int targetMonitor = (*this)["target_monitor"].toNumber<int>();
     int displayModeCount = SDL_GetNumDisplayModes(targetMonitor);
 
     // Populate resolution list
@@ -304,7 +304,7 @@ void Config::SetSettingsToPreset(std::string preset_name) {
     }
     Config::Map& map = GetPresets()[index].map_;
     for (auto& iter : map) {
-        config.GetRef(iter.first) = iter.second.data;
+        if (config[iter.first] != iter.second.data) config.GetRef(iter.first) = iter.second.data;
     }
 }
 
@@ -315,7 +315,7 @@ std::string Config::GetSettingsPreset() {
     for (int i = 0; i < 4; ++i) {
         Config::Map& map = GetPresets()[i].map_;
         for (auto& iter : map) {
-            if (config.GetRef(iter.first) != iter.second.data) {
+            if (config[iter.first] != iter.second.data) {
                 preset = i + 1;
                 break;
             }
@@ -387,10 +387,10 @@ std::vector<std::string> Config::GetDifficultyPresets() {
 
 std::string Config::GetDifficultyPreset() {
     for (int i = 0; difficulty_presets[i] != NULL; ++i) {
-        if (GetRef("game_difficulty").toNumber<float>() == difficulty_preset_values[i * 2] &&
-            GetRef("global_time_scale_mult").toNumber<float>() == difficulty_preset_values[i * 2 + 1] &&
-            GetRef("tutorial").toBool() == difficulty_tutorials_preset_values[i] &&
-            GetRef("auto_ledge_grab").toBool() == difficulty_ledge_grab_preset_values[i]) {
+        if ((*this)["game_difficulty"].toNumber<float>() == difficulty_preset_values[i * 2] &&
+            (*this)["global_time_scale_mult"].toNumber<float>() == difficulty_preset_values[i * 2 + 1] &&
+            (*this)["tutorials"].toBool() == difficulty_tutorials_preset_values[i] &&
+            (*this)["auto_ledge_grab"].toBool() == difficulty_ledge_grab_preset_values[i]) {
             return difficulty_presets[i];
         }
     }
@@ -401,8 +401,8 @@ std::string Config::GetDifficultyPreset() {
 std::string Config::GetClosestDifficulty() {
     std::string difficulty = "Custom";
     for (int i = 0; difficulty_presets[i] != NULL; ++i) {
-        if (GetRef("game_difficulty").toNumber<float>() >= difficulty_preset_values[i * 2] &&
-            GetRef("global_time_scale_mult").toNumber<float>() >= difficulty_preset_values[i * 2 + 1]) {
+        if ((*this)["game_difficulty"].toNumber<float>() >= difficulty_preset_values[i * 2] &&
+            (*this)["global_time_scale_mult"].toNumber<float>() >= difficulty_preset_values[i * 2 + 1]) {
             difficulty = difficulty_presets[i];
         } else {
             break;
@@ -424,8 +424,8 @@ void Config::SetDifficultyPreset(std::string name) {
 
 void Config::ReloadDynamicSettings() {
     Engine::Instance()->SetGameSpeed(config["global_time_scale_mult"].toNumber<float>(), true);
-    Engine::Instance()->GetSound()->SetMusicVolume(config.GetRef("music_volume").toNumber<float>());
-    Engine::Instance()->GetSound()->SetMasterVolume(config.GetRef("master_volume").toNumber<float>());
+    Engine::Instance()->GetSound()->SetMusicVolume(config["music_volume"].toNumber<float>());
+    Engine::Instance()->GetSound()->SetMasterVolume(config["master_volume"].toNumber<float>());
     Graphics::Instance()->config_.motion_blur_amount_ = (float)config["motion_blur_amount"].toNumber<int>();
     Input::Instance()->SetMouseSensitivity(config["mouse_sensitivity"].toNumber<float>());
     Input::Instance()->UpdateGamepadLookSensitivity();
@@ -459,7 +459,7 @@ void Config::ReloadStaticSettings() {
     // the_scenegraph->light_probe_collection.light_volume_enabled = config["light_volume_lighting"].toBool();
     Graphics::Instance()->SetFullscreen(static_cast<FullscreenMode::Mode>(config["fullscreen"].toNumber<int>()));
     Graphics::Instance()->SetVsync(config["vsync"].toBool());
-    Graphics::Instance()->config_.SetBlood(config.GetRef("blood").toNumber<int>());
+    Graphics::Instance()->config_.SetBlood(config["blood"].toNumber<int>());
     Graphics::Instance()->config_.SetBloodColor(GraphicsConfig::BloodColorFromString(config["blood_color"].str()));
     Graphics::Instance()->config_.SetSplitScreen(config["split_screen"].toNumber<bool>());
     Graphics::Instance()->SetSeamlessCubemaps(config["seamless_cubemaps"].toNumber<bool>());

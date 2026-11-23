@@ -31,6 +31,7 @@ MusicLoad ml("Data/Music/menu.xml");
 IMGUI@ imGUI;
 
 bool back_event_queued = false;
+bool cancel_requested = false;
 float dot_counter = 0;
 IMText@ connecting_text;
 
@@ -47,13 +48,16 @@ bool HasFocus() {
 }
 
 void Initialize() {
+    ClearControllerItems();
+    SetControllerPlayer(0);
+    back_event_queued = false;
+    cancel_requested = false;
+    waited = 0.0f;
+    leave_at = -1.0f;
     @imGUI = CreateIMGUI();
 
-    // We're going to want a 100 'gui space' pixel header/footer
-    imGUI.setHeaderHeight(200);
-    imGUI.setFooterHeight(200);
-
-    imGUI.setFooterPanels(200.0f, 1400.0f);
+    imGUI.setHeaderHeight(0);
+    imGUI.setFooterHeight(0);
     imGUI.setup();
 
     BuildUI();
@@ -61,51 +65,89 @@ void Initialize() {
 }
 
 void BuildUI() {
-    IMDivider header_divider("header_div", DOHorizontal);
-    header_divider.setAlignment(CACenter, CACenter);
-    AddTitleHeader("Connecting", header_divider);
-    imGUI.getHeader().setElement(header_divider);
+    IMImage dim(white_background);
+    dim.setSize(imGUI.getMain().getSize());
+    dim.setColor(vec4(0, 0, 0, 0.65f));
+    dim.setZOrdering(0);
+    imGUI.getMain().addFloatingElement(dim, "connecting_backdrop", vec2(0), 0);
 
+    IMContainer panel(1400.0f, 650.0f);
+    panel.setAlignment(CACenter, CACenter);
+    IMImage background(white_background);
+    background.setSize(vec2(1400.0f, 650.0f));
+    background.setColor(vec4(0.025f, 0.025f, 0.025f, 0.98f));
+    background.setZOrdering(0);
+    panel.addFloatingElement(background, "connecting_panel_background", vec2(0), 0);
     IMDivider column("column", DOVertical);
-    column.setAlignment(CALeft, CACenter);
+    column.setAlignment(CACenter, CACenter);
+    panel.setElement(column);
+    IMContainer heading(1200.0f, 128.0f);
+    heading.setAlignment(CACenter, CACenter);
+    IMImage brush(brushstroke_background);
+    brush.setSize(vec2(1200.0f, 128.0f));
+    heading.addFloatingElement(brush, "connecting_brush", vec2(0), 1);
+    IMText title("Connecting", button_font);
+    title.setZOrdering(2);
+    heading.setElement(title);
+    column.append(heading);
+    column.appendSpacer(35.0f);
 
-    @connecting_text = IMText("Waiting for the host...", button_font);
-    IMDivider text_row(DOHorizontal);
-    text_row.append(IMSpacer(DOHorizontal, 40));
-    text_row.append(connecting_text);
+    @connecting_text = IMText("Waiting for the host...", button_font_small);
+    connecting_text.setZOrdering(4);
+    IMContainer text_row(1250.0f, 80.0f);
+    text_row.setAlignment(CACenter, CACenter);
+    text_row.setElement(connecting_text);
     column.append(text_row);
 
     @reason_text = IMText("", reason_font);
-    IMDivider reason_row(DOHorizontal);
-    reason_row.append(IMSpacer(DOHorizontal, 40));
-    reason_row.append(reason_text);
+    reason_text.setZOrdering(4);
+    IMContainer reason_row(1250.0f, 120.0f);
+    reason_row.setAlignment(CACenter, CACenter);
+    reason_row.setElement(reason_text);
     column.append(reason_row);
     column.append(IMSpacer(DOVertical, 40));
 
     // (Overgrowth Online: closing a connection still being made works now)
-    AddButton("Cancel", column, exit_icon);
-
-    IMDivider mainDiv( "mainDiv", DOHorizontal );
-    mainDiv.append(column);
-    imGUI.getMain().setElement( @mainDiv );
+    AddButton("Cancel", column, exit_icon, button_background_diamond, true, 650.0f);
+    imGUI.getMain().addFloatingElement(panel, "connecting_dialog", vec2(UNDEFINEDSIZE, UNDEFINEDSIZE), 1);
 }
 
 void Dispose() {
+    ClearControllerItems();
     imGUI.clear();
 }
 
 bool CanGoBack() {
-    return back_event_queued;
+    CancelConnection();
+    return true;
+}
+
+void CancelConnection() {
+    if(!back_event_queued) Online_Close();
+    cancel_requested = true;
+    back_event_queued = true;
 }
 
 void Update() {
+    UpdateController();
+    UpdateKeyboardMouse();
+    imGUI.update();
+    // Handle cancellation before checking handshake completion. A Cancel that
+    // was clicked this frame must not disappear behind a menu transition.
+    while(imGUI.getMessageQueueSize() > 0) {
+        IMMessage@ message = imGUI.getNextMessage();
+        if(message.name == "Cancel") CancelConnection();
+    }
+    if(GetInputPressed(controller_player, "menu_cancel")) CancelConnection();
+    if(cancel_requested || (back_event_queued && !HasPopup())) {
+        this_ui.SendCallback("back");
+        return;
+    }
     LobbyUpdate();
-    if(LobbyActive()) {
+    if(LobbyActive() && leave_at < 0.0f && !back_event_queued) {
         this_ui.SendCallback("multiplayer_lobby.as");
         return;
     }
-    UpdateController();
-    UpdateKeyboardMouse();
 
     // Animate connecting text
     if(leave_at < 0.0f) {
@@ -117,7 +159,7 @@ void Update() {
     if(leave_at < 0.0f && waited > kGiveUpSeconds && !back_event_queued) {
         Online_Close();
         connecting_text.setText("No answer");
-        reason_text.setText("The host didn't answer. Check the address, or that their game is open.");
+        reason_text.setText("The host didn't answer.\nCheck the address and that their game is open.");
         leave_at = waited + 3.0f;
     }
     if(leave_at >= 0.0f && waited > leave_at) {
@@ -133,18 +175,6 @@ void Update() {
         this_ui.SendCallback("back");
     }
 
-    // process any messages produced from the update
-    while(imGUI.getMessageQueueSize() > 0) {
-        IMMessage@ message = imGUI.getNextMessage();
-
-        if(message.name == "Cancel") {
-            Online_Close();  // (the connection still being made closes too: Online::StopMultiplayer)
-            back_event_queued = true;
-        }
-    }
-
-    // Do the general GUI updating
-    imGUI.update();
 }
 
 void UpdateConnectingText() {

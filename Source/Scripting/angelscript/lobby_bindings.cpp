@@ -25,7 +25,9 @@ struct LobbyPlayer {
     int local_index = 0;
     bool local = false;
     bool host = false;
+    bool leader = false;
     int team = 1;
+    int lobby_team = 1;
     int screen = 0;
     bool connected = true;
 };
@@ -33,12 +35,25 @@ void ConstructPlayer(void* memory) { new (memory) LobbyPlayer(); }
 void CopyPlayer(const LobbyPlayer& source, void* memory) { new (memory) LobbyPlayer(source); }
 void DestroyPlayer(void* memory) { static_cast<LobbyPlayer*>(memory)->~LobbyPlayer(); }
 
-bool CanManageLocal() {
-    const auto* menu = PlayerMenuUI::Current();
-    return menu ? menu->local_index == 0 : config["controller_menu_owner"].toNumber<int>() == 0;
+unsigned MenuLocalPlayer();
+unsigned MenuPlayerID() { return Online::Instance()->LobbyPlayerIDForLocalIndex(MenuLocalPlayer()); }
+int CurrentLocalPlayerIndex() { return static_cast<int>(MenuLocalPlayer()); }
+int LeaderInputID() {
+    Online* online = Online::Instance();
+    const PlayerID leader = online->LocalLobbyLeaderPlayerID();
+    for (const auto& player : online->GetLocalPlayerStates())
+        if (player.player_id == leader) return Input::Instance()->GetLocalPlayerInputID(player.local_index);
+    return Input::Instance()->GetLocalPlayerInputID(0);
 }
-bool Active() { return Online::Instance()->IsActive() && Online::Instance()->LobbyWaiting(); }
-bool IsHost() { return Online::Instance()->IsHosting(); }
+bool CanManageLocal() { return Online::Instance()->IsLobbyLeader(MenuPlayerID()); }
+bool Active() {
+    Online* online = Online::Instance();
+    return online->IsActive() && online->LobbyWaiting() &&
+        (!online->IsClient() || online->LobbyPlayerIDForLocalIndex(0) != LobbyAuthority::InvalidPlayer);
+}
+bool LocalOnly() { return Online::Instance()->IsLocalOnlySession(); }
+bool OpenToNetwork() { return Online::Instance()->OpenLobbyToNetwork(MenuPlayerID()); }
+bool IsHost() { return Online::Instance()->IsLobbyHost(MenuPlayerID()); }
 unsigned LocalCount() { return std::max(1u, Input::Instance()->GetNumLocalPlayers()); }
 int LocalIndex(int actual) { return Input::Instance()->LocalPlayerIndexForInputID(actual); }
 bool BeginHost() {
@@ -52,7 +67,7 @@ bool AddLocal() {
 }
 bool CanStart() {
     Online* online = Online::Instance();
-    if (!CanManageLocal() || !online->IsHosting() || !online->LobbyWaiting() || online->LobbyMap().empty()) return false;
+    if (!IsHost() || !online->LobbyWaiting() || online->LobbyMap().empty() || online->LobbyMigrationBusy()) return false;
     const auto players = online->GetPlayerStates();
     for (const auto& peer : online->GetPeers()) {
         bool found = false;
@@ -61,15 +76,30 @@ bool CanStart() {
     }
     return true;
 }
-bool Start() { return CanStart() && Online::Instance()->StartLobbyGame(); }
-void Leave() { if (CanManageLocal()) Online::Instance()->QueueStopMultiplayer(); }
+bool Start() { return CanStart() && Online::Instance()->StartLobbyGame("", "", false, MenuPlayerID()); }
+void Leave() {
+    Online* online = Online::Instance();
+    // Admission has not assigned a leader yet. The person trying to connect
+    // must still be able to cancel instead of waiting for transport timeout.
+    if (CanManageLocal() || (online->IsClient() && online->LobbyPlayerIDForLocalIndex(0) == LobbyAuthority::InvalidPlayer))
+        online->QueueStopMultiplayer();
+}
 std::string Mode() { return Online::Instance()->LobbyMode(); }
 std::string Campaign() { return Online::Instance()->LobbyCampaign(); }
 std::string Map() { return Online::Instance()->LobbyMap(); }
 bool Build() { return Online::Instance()->LobbyBuild(); }
 bool AllowAllPause() { return Online::Instance()->LobbyAllowAllPause(); }
 bool ForceTeams() { return Online::Instance()->LobbyForceTeams(); }
-bool SetForceTeams(bool force) { return CanManageLocal() && Online::Instance()->SetLobbyForceTeams(force); }
+bool SetForceTeams(bool force) { return Online::Instance()->SetLobbyForceTeams(force, MenuPlayerID()); }
+bool HostControlsTeams() { return Online::Instance()->LobbyHostControlsTeams(); }
+bool SetHostControlsTeams(bool controls) { return Online::Instance()->SetLobbyHostControlsTeams(controls, MenuPlayerID()); }
+bool CanSetTeam(unsigned id) { return Online::Instance()->CanSetLobbyTeam(id, MenuPlayerID()); }
+bool CanPromoteHost(unsigned id) { return Online::Instance()->CanPromoteLobbyHost(id, MenuPlayerID()); }
+bool PromoteHost(unsigned id) { return Online::Instance()->PromoteLobbyHost(id, MenuPlayerID()); }
+bool CanPromoteLeader(unsigned id) { return Online::Instance()->CanPromoteLobbyLeader(id, MenuPlayerID()); }
+bool PromoteLeader(unsigned id) { return Online::Instance()->PromoteLobbyLeader(id, MenuPlayerID()); }
+std::string MigrationStatus() { return Online::Instance()->LobbyMigrationStatus(); }
+bool MigrationBusy() { return Online::Instance()->LobbyMigrationBusy(); }
 int AssignedTeam(int avatar) { return Online::Instance()->AssignedModeTeam(avatar); }
 bool AssignTeams(const CScriptArray& avatars, const CScriptArray& teams) {
     if (!Online::Instance()->IsHosting() || avatars.GetSize() != teams.GetSize()) return false;
@@ -79,35 +109,38 @@ bool AssignTeams(const CScriptArray& avatars, const CScriptArray& teams) {
     return Online::Instance()->AssignModeTeams(assignments);
 }
 bool SetSelection(const std::string& mode, const std::string& campaign, const std::string& map, bool build) {
-    return CanManageLocal() && Online::Instance()->SetLobbySelection(mode, campaign, map, build);
+    return Online::Instance()->SetLobbySelection(mode, campaign, map, build, MenuPlayerID());
 }
 bool SetName(unsigned id, const std::string& name) {
-    if (!CanManageLocal() || !Online::Instance()->RenameLobbyPlayer(id, name)) return false;
+    if (!CanManageLocal() || !Online::Instance()->RenameLobbyPlayer(id, name, MenuPlayerID())) return false;
     for (const auto& p : Online::Instance()->GetLocalPlayerStates()) {
         if (p.player_id == id && p.local_index == 0) config.GetRef("playername") = name;
     }
     return true;
 }
-bool SetTeam(unsigned id, int team) { return CanManageLocal() && Online::Instance()->SetLobbyTeam(id, team); }
-bool SetScreen(unsigned id, int screen) { return CanManageLocal() && Online::Instance()->SetLobbyScreen(id, screen); }
-bool SetAllowAllPause(bool allowed) { return CanManageLocal() && Online::Instance()->SetLobbyAllowAllPause(allowed); }
-bool CanRemove(unsigned id) { return CanManageLocal() && Online::Instance()->CanRemoveLobbyPlayer(id); }
-bool Remove(unsigned id) { return CanRemove(id) && Online::Instance()->RemoveLobbyPlayer(id); }
-bool EndGame() { return CanManageLocal() && Online::Instance()->EndLobbyGame(); }
+bool SetTeam(unsigned id, int team) { return Online::Instance()->SetLobbyTeam(id, team, MenuPlayerID()); }
+bool SetScreen(unsigned id, int screen) { return CanManageLocal() && Online::Instance()->SetLobbyScreen(id, screen, MenuPlayerID()); }
+bool SetAllowAllPause(bool allowed) { return Online::Instance()->SetLobbyAllowAllPause(allowed, MenuPlayerID()); }
+bool CanRemove(unsigned id) { return Online::Instance()->CanRemoveLobbyPlayer(id, MenuPlayerID()); }
+bool Remove(unsigned id) { return CanRemove(id) && Online::Instance()->RemoveLobbyPlayer(id, MenuPlayerID()); }
+bool EndGame() { return Online::Instance()->EndLobbyGame(MenuPlayerID()); }
 bool join_input_enabled = true;
 void SetJoinInputEnabled(bool enabled) { join_input_enabled = enabled; }
 
 unsigned MenuLocalPlayer() {
     if (const auto* menu = PlayerMenuUI::Current()) return static_cast<unsigned>(std::max(0, menu->local_index));
-    const int actual = Engine::Instance()->current_menu_player >= 0 ? Engine::Instance()->current_menu_player :
-        config["controller_menu_owner"].toNumber<int>();
-    const int logical = Input::Instance()->LocalPlayerIndexForInputID(actual);
-    return static_cast<unsigned>(std::max(0, logical));
+    if (Engine::Instance()->current_menu_player >= 0) {
+        const int logical = Input::Instance()->LocalPlayerIndexForInputID(Engine::Instance()->current_menu_player);
+        return static_cast<unsigned>(std::max(0, logical));
+    }
+    // controller.as stores the logical owner, unlike the engine's actual
+    // input ID. These differ after removing a seat or allocating remote slots.
+    return static_cast<unsigned>(std::max(0, config["controller_menu_owner"].toNumber<int>()));
 }
 bool CanPause() {
     const unsigned local = MenuLocalPlayer();
     Online* online = Online::Instance();
-    return online->IsActive() ? (online->LobbyAllowAllPause() || (online->IsHosting() && local == 0)) : local == 0;
+    return online->IsActive() ? (online->LobbyAllowAllPause() || online->IsLobbyHost(online->LobbyPlayerIDForLocalIndex(local))) : local == 0;
 }
 bool SetPaused(bool paused) {
     if (!CanPause()) return false;
@@ -132,18 +165,24 @@ CScriptArray* PlayerArray() {
         LobbyPlayer row;
         row.id = player.player_id; row.name = player.playername; row.local_index = static_cast<int>(player.local_index);
         row.local = player.peer_id == Online::Instance()->LocalPeerID();
-        row.host = player.peer_id == 255 && player.local_index == 0;
-        row.team = player.team; row.screen = row.local ? player.screen : 0; row.connected = player.connected;
+        row.host = Online::Instance()->IsLobbyHost(player.player_id);
+        row.leader = Online::Instance()->IsLobbyLeader(player.player_id);
+        row.lobby_team = player.team;
+        const int assigned = Online::Instance()->AssignedModeTeam(player.object_id);
+        row.team = !Online::Instance()->LobbyWaiting() ? (assigned > 0 ? assigned : Online::Instance()->UsesLobbyTeams() ? player.team : 1) : player.team;
+        row.screen = row.local ? player.screen : 0; row.connected = player.connected;
         array->InsertLast(&row);
     }
     return array;
 }
 unsigned Revision() {
     std::ostringstream state;
-    state << Mode() << '|' << Campaign() << '|' << Map() << '|' << Build() << '|' << AllowAllPause() << '|' << ForceTeams() << '|' << CanManageLocal();
+    state << Mode() << '|' << Campaign() << '|' << Map() << '|' << Build() << '|' << AllowAllPause() << '|' << ForceTeams()
+          << '|' << HostControlsTeams() << '|' << MigrationStatus() << '|' << MigrationBusy();
     for (const auto& player : Players()) {
         state << '|' << player.player_id << ':' << player.peer_id << ':' << player.local_index << ':' << player.playername
-              << ':' << player.team << ':' << player.screen << ':' << player.connected;
+              << ':' << player.team << ':' << player.screen << ':' << player.connected << ':' << Online::Instance()->IsLobbyHost(player.player_id)
+              << ':' << Online::Instance()->IsLobbyLeader(player.player_id) << ':' << Online::Instance()->AssignedModeTeam(player.object_id);
     }
     return static_cast<unsigned>(std::hash<std::string>()(state.str()));
 }
@@ -195,6 +234,10 @@ std::map<int, bool> held_buttons;
 struct DeviceProfile { std::string name; std::map<std::string, std::string> settings; };
 std::map<std::string, DeviceProfile> removed_device_profiles;
 bool was_lobby = false;
+bool was_world = false;
+int world_primary_device = -1;
+int previous_button_instance = -1;
+float previous_button_time = 0.0f;
 bool used_lobby_context = false;
 void NotifyDevice(unsigned local_index, bool connected) {
     Online* online = Online::Instance();
@@ -258,8 +301,18 @@ void UpdateLocalLobbyInput() {
     Online* online = Online::Instance();
     Input* input = Input::Instance();
     const bool lobby = online->IsActive() && online->LobbyWaiting();
+    Engine* engine = Engine::Instance();
+    const bool world = engine->IsLevelLoaded() || engine->current_engine_state_.type == kEngineLevelState ||
+        engine->current_engine_state_.type == kEngineEditorLevelState;
+    if (world && !was_world) {
+        world_primary_device = previous_button_time > input->last_keyboard_event_time &&
+            previous_button_time > input->last_mouse_event_time ? previous_button_instance : -1;
+    }
+    was_world = world;
+    previous_button_instance = input->LastControllerButtonInstance();
+    previous_button_time = input->LastControllerButtonTime();
     const bool keyboard_join = input->KeyboardJoinPressed();  // consume stale menu presses too
-    if (!online->IsActive() && input->GetNumLocalPlayers() <= 1) { was_lobby = false; return; }
+    if (!online->IsActive() && !world) { was_lobby = false; return; }
     const unsigned local_count = online->IsActive() ? online->LocalLobbyPlayerCount() : std::max(1u, input->GetNumLocalPlayers());
     auto& joysticks = input->GetOpenJoysticks();
     // A pad remembered from an earlier offline/local context can already be
@@ -305,11 +358,11 @@ void UpdateLocalLobbyInput() {
                 slot = 0;
                 if (input->LocalKeyboardPlayerIndex() == 0) input->BindLocalKeyboard(-1);
             }
-            if (slot < 0 && !online->IsActive()) {
+            if (slot < 0 && !online->IsActive() && instance == world_primary_device) {
                 const int assigned = input->LocalPlayerIndexForInputID(entry.second->player_input);
                 if (assigned >= 0 && !occupied.count(assigned)) slot = assigned;
             }
-            if (slot < 0 && lobby && rising) {
+            if (slot < 0 && (lobby || world) && rising) {
                 slot = static_cast<int>(online->LocalLobbyPlayerCount());
                 const auto saved = removed_device_profiles.find(identity);
                 const std::string name = saved != removed_device_profiles.end() ? saved->second.name : "";
@@ -322,13 +375,13 @@ void UpdateLocalLobbyInput() {
                 if (std::find(memory.begin(), memory.end(), slot) == memory.end()) memory.push_back(slot);
                 occupied.insert(slot);
                 NotifyDevice(static_cast<unsigned>(slot), true);
-            } else if (lobby || (online->IsActive() && used_lobby_context)) input->BindLocalJoystick(instance, -1);
+            } else if (lobby || world || (online->IsActive() && used_lobby_context)) input->BindLocalJoystick(instance, -1);
         }
         joined = joined_devices.find(instance);
         if (joined != joined_devices.end()) input->BindLocalJoystick(instance, joined->second.local);
     }
     const bool text_input = ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
-    if (lobby && keyboard_join && join_input_enabled && !text_input && input->LocalKeyboardPlayerIndex() < 0) {
+    if ((lobby || world) && keyboard_join && (!lobby || join_input_enabled) && !text_input && input->LocalKeyboardPlayerIndex() < 0) {
         const unsigned index = online->LocalLobbyPlayerCount();
         if (online->AddLocalLobbyPlayer("Keyboard player") != static_cast<PlayerID>(-1)) {
             input->BindLocalKeyboard(static_cast<int>(index));
@@ -357,11 +410,14 @@ void AttachLobby(ASContext* context) {
     context->RegisterObjectProperty("LobbyPlayer", "int local_index", asOFFSET(LobbyPlayer, local_index));
     context->RegisterObjectProperty("LobbyPlayer", "bool local", asOFFSET(LobbyPlayer, local));
     context->RegisterObjectProperty("LobbyPlayer", "bool host", asOFFSET(LobbyPlayer, host));
+    context->RegisterObjectProperty("LobbyPlayer", "bool leader", asOFFSET(LobbyPlayer, leader));
     context->RegisterObjectProperty("LobbyPlayer", "int team", asOFFSET(LobbyPlayer, team));
+    context->RegisterObjectProperty("LobbyPlayer", "int lobby_team", asOFFSET(LobbyPlayer, lobby_team));
     context->RegisterObjectProperty("LobbyPlayer", "int screen", asOFFSET(LobbyPlayer, screen));
     context->RegisterObjectProperty("LobbyPlayer", "bool connected", asOFFSET(LobbyPlayer, connected));
 #define LOBBY_FN(declaration, function) context->RegisterGlobalFunction(declaration, asFUNCTION(function), asCALL_CDECL)
     LOBBY_FN("bool LobbyActive()", Active); LOBBY_FN("bool LobbyIsHost()", IsHost);
+    LOBBY_FN("bool LobbyIsLocalOnly()", LocalOnly); LOBBY_FN("bool LobbyOpenToNetwork()", OpenToNetwork);
     LOBBY_FN("bool LobbyCanManageLocal()", CanManageLocal); LOBBY_FN("bool LobbyBeginHost()", BeginHost);
     LOBBY_FN("bool LobbyAddLocalPlayer()", AddLocal); LOBBY_FN("bool LobbyCanStart()", CanStart);
     LOBBY_FN("bool LobbyStart()", Start); LOBBY_FN("void LobbyLeave()", Leave);
@@ -370,6 +426,14 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("string LobbyGetMode()", Mode); LOBBY_FN("string LobbyGetCampaign()", Campaign); LOBBY_FN("string LobbyGetMap()", Map);
     LOBBY_FN("bool LobbyGetBuildMode()", Build); LOBBY_FN("bool LobbyGetAllowAllPause()", AllowAllPause);
     LOBBY_FN("bool LobbyGetForceTeams()", ForceTeams); LOBBY_FN("bool LobbySetForceTeams(bool)", SetForceTeams);
+    LOBBY_FN("bool LobbyGetHostControlsTeams()", HostControlsTeams); LOBBY_FN("bool LobbySetHostControlsTeams(bool)", SetHostControlsTeams);
+    LOBBY_FN("bool LobbyCanSetPlayerTeam(uint)", CanSetTeam);
+    LOBBY_FN("bool LobbyCanPromoteHost(uint)", CanPromoteHost); LOBBY_FN("bool LobbyPromoteHost(uint)", PromoteHost);
+    LOBBY_FN("bool LobbyCanPromoteLeader(uint)", CanPromoteLeader); LOBBY_FN("bool LobbyPromoteLeader(uint)", PromoteLeader);
+    LOBBY_FN("uint LobbyCurrentPlayerID()", MenuPlayerID); LOBBY_FN("int LobbyCurrentLocalPlayerIndex()", CurrentLocalPlayerIndex);
+    LOBBY_FN("int LobbyGetLocalLeaderInputID()", LeaderInputID);
+    LOBBY_FN("bool LobbyCurrentPlayerIsLeader()", CanManageLocal);
+    LOBBY_FN("string LobbyGetMigrationStatus()", MigrationStatus); LOBBY_FN("bool LobbyMigrationBusy()", MigrationBusy);
     LOBBY_FN("int LobbyGetAssignedTeam(int)", AssignedTeam);
     LOBBY_FN("bool LobbyAssignModeTeams(const array<int> &in, const array<int> &in)", AssignTeams);
     LOBBY_FN("bool LobbySetSelection(const string &in, const string &in, const string &in, bool)", SetSelection);

@@ -38,6 +38,7 @@
 #include <Graphics/frame_timers.h>
 #include <Testing/sampler.h>
 #include <Threading/job_system.h>
+#include <Threading/sdl_wrapper.h>
 #include <Graphics/render_backend.h>
 #include <Graphics/Vulkan/vk_backend.h>
 #include <Graphics/Vulkan/vk_gl.h>
@@ -50,14 +51,43 @@
 #include <SDL_net.h>
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <exception>
+#include <map>
 #include <stdexcept>
 
 extern Timer game_timer;
 extern Config config;
 
 namespace {
+
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+// SDL virtual devices live in this process only. They exercise the real input
+// event/ownership path without sending input to the desktop or a user's game.
+std::map<int, SDL_Joystick*> virtual_pads;
+
+int VirtualPadDeviceIndex(SDL_JoystickID instance) {
+    for (int i = 0; i < SDL_NumJoysticks(); ++i)
+        if (SDL_JoystickGetDeviceInstanceID(i) == instance) return i;
+    return -1;
+}
+
+void DetachVirtualPad(int slot) {
+    const auto found = virtual_pads.find(slot);
+    if (found == virtual_pads.end()) return;
+    const SDL_JoystickID instance = SDL_JoystickInstanceID(found->second);
+    SDL_JoystickClose(found->second);
+    virtual_pads.erase(found);
+    const int device = VirtualPadDeviceIndex(instance);
+    if (device >= 0) SDL_JoystickDetachVirtual(device);
+}
+
+void ClearVirtualPads() {
+    if (!(SDL_WasInit(SDL_INIT_JOYSTICK) & SDL_INIT_JOYSTICK)) { virtual_pads.clear(); return; }
+    while (!virtual_pads.empty()) DetachVirtualPad(virtual_pads.begin()->first);
+}
+#endif
 
 double EpochMs() {
     using namespace std::chrono;
@@ -127,6 +157,9 @@ void TestBridge::Stop() {
     if (thread_.joinable()) {
         thread_.join();
     }
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    ClearVirtualPads();
+#endif
 }
 
 void TestBridge::ThreadMain() {
@@ -304,6 +337,10 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             if (engine->PlayerHasMenu(Input::Instance()->GetLocalPlayerInputID(i))) out["open_menu_players"].append(i);
         }
         out["split_screen"] = engine->GetSplitScreen();
+        out["dialogue_camera_control"] = loaded && sg->level != nullptr && sg->level->DialogueCameraControl();
+        out["coop_cutscene"] = online->CoopCutscene();
+        out["campaign_main_avatar"] = loaded ? online->CampaignMainAvatarID() : -1;
+        out["render_views"] = engine->RenderedViewCount();
         if (UseVulkan()) {
             out["vk_problems"] = VkBackend::ValidationProblems();  // validation layer warnings and errors ("vk_validation")
             out["vk_frames"] = (Json::UInt64)VkBackend::FramesPresented();
@@ -318,11 +355,16 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         o["hosting"] = online->IsHosting();
         o["client"] = online->IsClient();
         o["lobby_waiting"] = online->LobbyWaiting();
+        o["local_only"] = online->IsLocalOnlySession();
         o["lobby_mode"] = online->LobbyMode();
         o["lobby_campaign"] = online->LobbyCampaign();
         o["lobby_map"] = online->LobbyMap();
         o["lobby_build"] = online->LobbyBuild();
         o["allow_all_pause"] = online->LobbyAllowAllPause();
+        o["decision_host"] = online->LobbyHostPlayerID();
+        o["host_controls_teams"] = online->LobbyHostControlsTeams();
+        o["migration_busy"] = online->LobbyMigrationBusy();
+        o["migration_status"] = online->LobbyMigrationStatus();
         o["bytes_out"] = (Json::UInt64)online->net_bytes_out.load();
         o["bytes_in"] = (Json::UInt64)online->net_bytes_in.load();
         o["msgs_out"] = (Json::UInt64)online->net_msgs_out.load();
@@ -381,6 +423,8 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 p["team"] = player.team;
                 p["screen"] = player.screen;
                 p["name"] = player.playername;
+                p["host"] = online->IsLobbyHost(player.player_id);
+                p["leader"] = online->IsLobbyLeader(player.player_id);
                 p["avatar_id"] = player.object_id;
                 o["players"].append(p);
             }
@@ -435,6 +479,12 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 if (mo->ASHasVar("on_ground")) {
                     c["on_ground"] = mo->ASGetBoolVar("on_ground");
                 }
+                if (mo->ASHasVar("dialogue_control")) {
+                    c["dialogue_control"] = mo->ASGetBoolVar("dialogue_control");
+                }
+                if (mo->ASHasVar("coop_cutscene_hold")) {
+                    c["coop_cutscene_hold"] = mo->ASGetBoolVar("coop_cutscene_hold");
+                }
 
                 if (mo->ASHasVar("temp_health")) {
                     c["temp_health"] = mo->ASGetFloatVar("temp_health");
@@ -442,6 +492,9 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
 
                 if (mo->ASHasVar("blood_health")) {
                     c["blood_health"] = mo->ASGetFloatVar("blood_health");
+                }
+                if (mo->ASHasVar("permanent_health")) {
+                    c["permanent_health"] = mo->ASGetFloatVar("permanent_health");
                 }
 
                 out["characters"].append(c);
@@ -466,6 +519,64 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 out["items"].append(it);
             }
         }
+    } else if (cmd == "virtual_pad") {
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+        const std::string action = req.get("action", "status").asString();
+        int slot = req.get("slot", -1).asInt();
+        if (action == "attach") {
+            if (slot < 0) { slot = 0; while (virtual_pads.count(slot)) ++slot; }
+            if (slot > 255 || virtual_pads.count(slot)) throw std::runtime_error("invalid or occupied virtual pad slot");
+            SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+            const int device = SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 6, 15, 1);
+            if (device < 0) throw std::runtime_error(SDL_GetError());
+            char guid[64];
+            SDL_JoystickGetGUIDString(SDL_JoystickGetDeviceGUID(device), guid, sizeof(guid));
+            const std::string mapping = std::string(guid) + ",OGMP virtual controller,"
+                "a:b0,b:b1,x:b2,y:b3,back:b4,guide:b5,start:b6,leftstick:b7,rightstick:b8,"
+                "leftshoulder:b9,rightshoulder:b10,dpup:b11,dpdown:b12,dpleft:b13,dpright:b14,"
+                "leftx:a0,lefty:a1,rightx:a2,righty:a3,lefttrigger:a4,righttrigger:a5,";
+            SDL_GameControllerAddMapping(mapping.c_str());
+            SDL_Joystick* joystick = SDL_JoystickOpen(device);
+            if (joystick == nullptr) { SDL_JoystickDetachVirtual(device); throw std::runtime_error(SDL_GetError()); }
+            virtual_pads[slot] = joystick;
+            SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_TRIGGERLEFT, -32768);
+            SDL_JoystickSetVirtualAxis(joystick, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, -32768);
+            out["slot"] = slot;
+            out["device_index"] = device;
+            out["instance_id"] = SDL_JoystickInstanceID(joystick);
+        } else if (action == "detach") {
+            DetachVirtualPad(slot);
+        } else if (action == "clear") {
+            ClearVirtualPads();
+        } else if (action == "button" || action == "axis") {
+            const auto found = virtual_pads.find(slot);
+            if (found == virtual_pads.end()) throw std::runtime_error("no such virtual pad");
+            const int index = req.get(action, -1).asInt();
+            const int count = action == "button" ? SDL_JoystickNumButtons(found->second) : SDL_JoystickNumAxes(found->second);
+            if (index < 0 || index >= count) throw std::runtime_error("virtual pad input index out of range");
+            const int result = action == "button" ?
+                SDL_JoystickSetVirtualButton(found->second, index, req.get("down", false).asBool() ? 1 : 0) :
+                SDL_JoystickSetVirtualAxis(found->second, index, static_cast<Sint16>(std::max(-32768, std::min(32767, req.get("value", 0).asInt()))));
+            if (result < 0) throw std::runtime_error(SDL_GetError());
+            SDL_JoystickUpdate();
+        } else if (action != "status") throw std::runtime_error("unknown virtual pad action");
+        out["pads"] = Json::Value(Json::arrayValue);
+        for (const auto& pad : virtual_pads) {
+            const SDL_JoystickID instance = SDL_JoystickInstanceID(pad.second);
+            Json::Value row;
+            row["slot"] = pad.first; row["instance_id"] = instance;
+            row["device_index"] = VirtualPadDeviceIndex(instance);
+            const auto input = Input::Instance()->GetOpenJoysticks().find(instance);
+            if (input != Input::Instance()->GetOpenJoysticks().end()) {
+                row["input_id"] = input->second->player_input;
+                row["local_index"] = Input::Instance()->LocalPlayerIndexForInputID(input->second->player_input);
+                row["sensitivity"] = input->second->joystick.look_sensitivity_;
+            }
+            out["pads"].append(row);
+        }
+#else
+        throw std::runtime_error("virtual pads require SDL 2.0.14 or newer");
+#endif
     } else if (cmd == "exec") {
         if (req["target"].isString() && req["target"].asString() == "player_menu") {
             if (!engine->ExecutePlayerMenuCode(req.get("local_player", 0).asInt(), req.get("code", "").asString())) {

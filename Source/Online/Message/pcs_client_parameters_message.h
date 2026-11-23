@@ -31,6 +31,8 @@ class PCSClientParametersMessage : public OnlineMessageBase {
     std::string enabled_mods_string;
     std::vector<std::string> local_names;
     std::vector<int> local_screens;
+    std::string migration_token;
+    PeerID migration_origin_peer = 0;
 
    public:
     PCSClientParametersMessage(const std::string& player_name, const std::string& enabled_mods_string);

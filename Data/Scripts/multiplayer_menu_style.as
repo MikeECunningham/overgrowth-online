@@ -11,8 +11,9 @@ TextureAssetRef mp_checkbox;
 TextureAssetRef mp_checkmark;
 float mp_window_scale = 1.0f;
 bool mp_style_loaded = false;
-string mp_last_hover;
-string mp_frame_hover;
+uint mp_last_hover = 0;
+uint mp_frame_hover = 0;
+uint mp_frame_focus = 0;
 
 void MPStyleLoad() {
     if(mp_style_loaded) { return; }
@@ -27,7 +28,8 @@ void MPStyleLoad() {
 
 void MPStyleBegin() {
     MPStyleLoad();
-    mp_frame_hover = "";
+    mp_frame_hover = 0;
+    mp_frame_focus = 0;
     ImGui_PushMenuFont(false);
     ImGui_PushStyleColor(ImGuiCol_Text, vec4(0.82f, 0.82f, 0.82f, 1.0f));
     ImGui_PushStyleColor(ImGuiCol_TextDisabled, vec4(0.39f, 0.39f, 0.39f, 1.0f));
@@ -58,7 +60,12 @@ void MPStyleBegin() {
 }
 
 void MPStyleEnd() {
-    mp_last_hover = mp_frame_hover;
+    // Mouse hover and keyboard focus may belong to different buttons. Select
+    // one feedback target after the whole frame, instead of letting those two
+    // widgets repeatedly announce each other on every draw.
+    uint target = mp_frame_hover != 0 ? mp_frame_hover : mp_frame_focus;
+    if(target != 0 && target != mp_last_hover) PlaySoundGroup("Data/Sounds/footstep_mud.xml");
+    mp_last_hover = target;
     ImGui_PopStyleVar(5);
     ImGui_PopStyleColor(21);
     ImGui_PopFont();
@@ -118,12 +125,8 @@ bool MPButton(const string &in label, const vec2 &in size = vec2(0), bool promin
     vec2 a = ImGui_GetItemRectMin();
     vec2 b = ImGui_GetItemRectMax();
     bool hovered = ImGui_IsItemHovered() || ImGui_IsItemFocused();
-    if(hovered) {
-        mp_frame_hover = label + "@" + int(a.x) + ":" + int(a.y);
-        if(mp_last_hover != mp_frame_hover) {
-            PlaySoundGroup("Data/Sounds/footstep_mud.xml");
-        }
-    }
+    if(ImGui_IsItemHovered()) mp_frame_hover = ImGui_GetID(label);
+    if(ImGui_IsItemFocused()) mp_frame_focus = ImGui_GetID(label);
     if(pressed) { PlaySoundGroup("Data/Sounds/hit/hit_hard.xml"); }
     float offset = hovered ? min(4.0f, (b.x - a.x) * 0.01f) : 0.0f;
     vec2 move(offset, 0);

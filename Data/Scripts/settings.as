@@ -55,6 +55,8 @@ const float background_width = 1600;
 IMContainer@ main_container;
 
 bool controller_connected = false;
+uint settings_revision = 0;
+bool settings_personal_only = false;
 
 bool popup_open = false;
 const string popup_name = "popup";
@@ -98,7 +100,7 @@ int SettingsOwnerPlayer() {
 }
 
 bool PersonalSettingsOnly() {
-    return SettingsOwnerPlayer() > 0;
+    return !LobbyCanManageLocal();
 }
 
 bool MenuOwnsKeyboard() {
@@ -226,6 +228,8 @@ void BuildUI(string landing_screen){
         landing_screen_override = "";
     }
     controller_wraparound = false;
+    settings_revision = GetSettingsRevision();
+    settings_personal_only = PersonalSettingsOnly();
 }
 
 void RestoreCategoryButtons(){
@@ -773,7 +777,9 @@ void ProcessSettingsMessage(IMMessage@ message){
                     gui_elements[i].SwitchOption(message.getString(1));
                 }
             }
-            SwitchSettingsScreen(current_screen); // Possible resolutions may have changed
+            // Only these pages have sections whose presence depends on other
+            // options. RefreshAllOptions already updates the remaining widgets.
+            if(current_screen == "Screen" || current_screen == "Ray Tracing") SwitchSettingsScreen(current_screen);
         }
         else if( message.name == "close_all_open_menus" ){
             DiscardUnsavedChanges();
@@ -892,6 +898,7 @@ void ProcessSettingsMessage(IMMessage@ message){
             Log( info, "Unknown processMessage " + message.getString(0) );
         }
     }
+    settings_revision = GetSettingsRevision();
 }
 
 void ApplyBind() {
@@ -920,6 +927,28 @@ void ApplyBind() {
 }
 
 void UpdateSettings(bool auto_exit_rebind = false){
+    if(settings_personal_only != PersonalSettingsOnly()) {
+        // A promoted leader gains client settings; the former leader loses
+        // them immediately, even when both settings menus were already open.
+        ExitRebindMode(false);
+        DiscardUnsavedChanges();
+        CloseAllOptionMenus();
+        settings_personal_only = PersonalSettingsOnly();
+        imGUI.receiveMessage(IMMessage("rebuild_settings"));
+        return;
+    }
+    if(settings_revision != GetSettingsRevision() && active_rebind == -1 && active_slider == -1 &&
+       !popup_open && !OptionMenuOpen()) {
+        // Each personal menu owns its widgets, while configuration belongs to
+        // the client. Observe changes without writing any cached values back.
+        bool editing = false;
+        for(uint i = 0; i < gui_elements.size(); ++i) editing = editing || gui_elements[i].unsaved_values;
+        if(!editing) {
+            if(current_screen == "Screen" || current_screen == "Ray Tracing") SwitchSettingsScreen(current_screen);
+            else RefreshAllOptions();
+            settings_revision = GetSettingsRevision();
+        }
+    }
     if(!allow_rebind) {
         allow_rebind = !GetInputDown(controller_player, "menu_return");
         if(controller_active) {
@@ -940,10 +969,12 @@ void UpdateSettings(bool auto_exit_rebind = false){
         } else if(MenuOwnsKeyboard() && GetInputDown(controller_player, "mousescrolldown")){
             imGUI.receiveMessage(IMMessage( "shift_menu", 1));
         }
+        uint revision_before_updates = GetSettingsRevision();
         UpdateMovingSlider();
         for(uint i = 0; i < gui_elements.size(); i++) {
             gui_elements[i].Update();
         }
+        if(revision_before_updates != GetSettingsRevision()) settings_revision = GetSettingsRevision();
     }
     if(controller_connected != ControllerSettingsAvailable()) {
         if(current_screen == "Gamepad") {

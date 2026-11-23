@@ -42,6 +42,7 @@
 #include <imgui-1.85/implot.h>
 #include <imgui-1.85/implot_internal.h>
 
+#include <Online/online.h>
 #include <SDL.h>
 #include <SDL_syswm.h>
 #include <Graphics/graphics.h>
@@ -53,11 +54,23 @@
 #include <Graphics/vboringcontainer.h>
 #include <UserInput/input.h>
 #include <Internal/filesystem.h>
+#include <Internal/config.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 #include <cstddef>
+#include <map>
+
+static bool g_KeyboardLobbyClaim = false;
+static void ClaimKeyboardLobbyOwner() {
+    Online* online = Online::Instance();
+    const int keyboard = Input::Instance()->LocalKeyboardPlayerIndex();
+    if (online->IsActive() && online->LobbyWaiting() && keyboard >= 0) {
+        config.GetRef("controller_menu_owner") = keyboard;
+        g_KeyboardLobbyClaim = true;
+    }
+}
 
 // Data
 static double g_Time = 0.0f;
@@ -204,6 +217,7 @@ bool ImGui_ImplSdlGL3_ProcessEvent(SDL_Event* event) {
             return true;
         }
         case SDL_MOUSEBUTTONDOWN: {
+            ClaimKeyboardLobbyOwner();
             if (event->button.button == SDL_BUTTON_LEFT) g_MousePressed[0] = true;
             if (event->button.button == SDL_BUTTON_RIGHT) g_MousePressed[1] = true;
             if (event->button.button == SDL_BUTTON_MIDDLE) g_MousePressed[2] = true;
@@ -215,6 +229,7 @@ bool ImGui_ImplSdlGL3_ProcessEvent(SDL_Event* event) {
         }
         case SDL_KEYDOWN:
         case SDL_KEYUP: {
+            if (event->type == SDL_KEYDOWN && !event->key.repeat && !io.WantTextInput) ClaimKeyboardLobbyOwner();
             int key = KeyRemap(event->key.keysym.sym);
             if (key >= 0 && key < 512) {
                 io.KeysDown[key] = (event->type == SDL_KEYDOWN);
@@ -332,9 +347,31 @@ static float MenuInputDepth(const PlayerInput& input, const char* binding) {
 static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
     for (int i = 0; i < ImGuiNavInput_COUNT; ++i) io.NavInputs[i] = 0.0f;
     io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
-    // Use the local P1 slot, not whichever SDL pad was connected first. A pad
-    // that joined as P2 must not navigate the hosting options for everyone.
-    const PlayerInput* input = Input::Instance()->GetController(0);
+    Input* devices = Input::Instance();
+    Online* online = Online::Instance();
+    int actual = devices->GetLocalPlayerInputID(0);
+    if (online->IsActive() && online->LobbyWaiting()) {
+        // Everyone can navigate their own permitted lobby controls. Record the
+        // controller that actually acted so script/native permission checks
+        // apply to that player, independently of the designated local leader.
+        static std::map<int, bool> was_active;
+        static const char* actions[] = {"menu_return", "menu_cancel", "menu_input", "menu_window",
+            "menu_left", "menu_right", "menu_up", "menu_down", "menu_prev_tab", "menu_next_tab",
+            "left", "right", "up", "down"};
+        for (unsigned local = 0; local < devices->GetNumLocalPlayers(); ++local) {
+            const int candidate = devices->GetLocalPlayerInputID(local);
+            const PlayerInput* player = devices->GetController(candidate);
+            bool active = false;
+            if (player && player->enabled && !player->remote_controlled)
+                for (const char* action : actions) active = active || MenuInputDepth(*player, action) > 0.2f;
+            if (active && !was_active[candidate] && !g_KeyboardLobbyClaim && !ignore_input)
+                config.GetRef("controller_menu_owner") = static_cast<int>(local);
+            was_active[candidate] = active;
+        }
+        actual = devices->GetLocalPlayerInputID(config["controller_menu_owner"].toNumber<int>());
+    }
+    g_KeyboardLobbyClaim = false;
+    const PlayerInput* input = devices->GetController(actual);
     if (ignore_input || input == nullptr || !input->enabled || input->remote_controlled) return;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.NavInputs[ImGuiNavInput_Activate] = MenuInputDepth(*input, "menu_return");

@@ -39,8 +39,10 @@ Scope::Scope(const Context& context) : saved_(new Saved()), context_(context) {
     context_.width = std::max(1, context_.width);
     context_.height = std::max(1, context_.height);
     current = &context_;
-    config.GetRef("controller_menu_owner") = context_.local_index;
-    config.GetRef("menu_player_config") = context_.local_index;
+    // These are temporary call metadata, not persistent settings edits. GetRef
+    // would mark the config dirty on every Update/Draw of every open menu.
+    config.map_["controller_menu_owner"].data = context_.local_index;
+    config.map_["menu_player_config"].data = context_.local_index;
     screenMetrics.computeFactors();
     screenMetrics.mainSize = screenMetrics.GUISpace;
 }

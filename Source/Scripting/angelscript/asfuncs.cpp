@@ -86,6 +86,7 @@
 #include <GUI/IMUI/im_image.h>
 #include <GUI/gui.h>
 #include <GUI/player_menu_context.h>
+#include <Internal/settings_changes.h>
 
 #include <Utility/strings.h>
 #include <Utility/assert.h>
@@ -238,10 +239,19 @@ static bool AS_PlayerMenuHasFocus(int controller_id) {
            (engine->current_menu_player < 0 || engine->current_menu_player == controller_id);
 }
 
+static bool AS_CutsceneCharacterInputBlocked() {
+    if (PlayerMenuUI::Current() || !Online::Instance()->CoopCutscene()) return false;
+    asIScriptContext* active = asGetActiveContext();
+    ASContext* context = active ? static_cast<ASContext*>(active->GetUserData(0)) : nullptr;
+    // Character scripts consume gameplay bindings; the level's dialogue
+    // controller must still receive attack/skip to advance the scene.
+    return context != nullptr && context->GetVarPtr("dialogue_control") != nullptr;
+}
+
 float AS_GetMoveXAxis(int controller_id) {
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
-    if (controller == NULL || AS_PlayerMenuHasFocus(controller_id)) {
+    if (controller == NULL || AS_PlayerMenuHasFocus(controller_id) || AS_CutsceneCharacterInputBlocked()) {
         return 0.0f;
     }
 
@@ -253,7 +263,7 @@ float AS_GetMoveXAxis(int controller_id) {
 float AS_GetMoveYAxis(int controller_id) {
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
-    if (controller == NULL || AS_PlayerMenuHasFocus(controller_id)) {
+    if (controller == NULL || AS_PlayerMenuHasFocus(controller_id) || AS_CutsceneCharacterInputBlocked()) {
         return 0.0f;
     }
 
@@ -267,7 +277,7 @@ static bool AS_GetInputDownFiltered(int controller_id, const std::string& which_
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
     if (controller == NULL || (filter == KIMF_PLAYING && which_key != "quit" &&
-        which_key.compare(0, 5, "menu_") != 0 && AS_PlayerMenuHasFocus(controller_id))) {
+        which_key.compare(0, 5, "menu_") != 0 && (AS_PlayerMenuHasFocus(controller_id) || AS_CutsceneCharacterInputBlocked()))) {
         return false;
     }
 
@@ -317,7 +327,7 @@ static bool AS_GetInputPressedFiltered(int controller_id, const std::string& whi
     PlayerInput* controller = Input::Instance()->GetController(controller_id);
 
     if (controller == NULL || (filter == KIMF_PLAYING && which_key != "quit" &&
-        which_key.compare(0, 5, "menu_") != 0 && AS_PlayerMenuHasFocus(controller_id))) {
+        which_key.compare(0, 5, "menu_") != 0 && (AS_PlayerMenuHasFocus(controller_id) || AS_CutsceneCharacterInputBlocked()))) {
         return false;
     }
 
@@ -5822,6 +5832,17 @@ static bool AS_IsPlayerMenuContext() { return PlayerMenuUI::Current() != nullptr
 static int AS_PlayerMenuInputID() { const auto* menu = PlayerMenuUI::Current(); return menu ? menu->input_id : 0; }
 static int AS_PlayerMenuLocalIndex() { const auto* menu = PlayerMenuUI::Current(); return menu ? menu->local_index : 0; }
 static bool AS_PlayerMenuWorldPaused() { return Engine::Instance()->paused; }
+static int AS_CampaignDialogueControllerID() {
+    SceneGraph* scene = Engine::Instance()->GetSceneGraph();
+    const ObjectID main = Online::Instance()->CampaignMainAvatarID();
+    Object* object = scene != nullptr && main != static_cast<ObjectID>(-1) ? scene->GetObjectFromID(main) : nullptr;
+    if (object != nullptr && object->GetType() == _movement_object) {
+        const int input = static_cast<MovementObject*>(object)->controller_id;
+        const PlayerInput* controller = input >= 0 ? Input::Instance()->GetController(input) : nullptr;
+        if (controller != nullptr && controller->enabled) return input;
+    }
+    return std::max(0, Input::Instance()->GetLocalPlayerInputID(0));
+}
 
 void AttachEngine(ASContext* context) {
     AttachLobby(context);
@@ -5830,6 +5851,7 @@ void AttachEngine(ASContext* context) {
     context->RegisterGlobalFunction("int GetPlayerMenuInputID()", asFUNCTION(AS_PlayerMenuInputID), asCALL_CDECL);
     context->RegisterGlobalFunction("int GetPlayerMenuLocalIndex()", asFUNCTION(AS_PlayerMenuLocalIndex), asCALL_CDECL);
     context->RegisterGlobalFunction("bool GetPlayerMenuWorldPaused()", asFUNCTION(AS_PlayerMenuWorldPaused), asCALL_CDECL);
+    context->RegisterGlobalFunction("int GetCampaignDialogueControllerID()", asFUNCTION(AS_CampaignDialogueControllerID), asCALL_CDECL);
     context->RegisterGlobalFunction("bool PlayerMenuHasFocus(int controller_id)", asFUNCTION(AS_PlayerMenuHasFocus), asCALL_CDECL);
     context->RegisterEnum("EngineState");
     context->RegisterEnumValue("EngineState", "kEngineNoState", kEngineNoState);
@@ -6683,28 +6705,66 @@ bool AS_GetConfigValueBool(const std::string& string) {
     return value.flag;
 }
 
+namespace {
+SettingsChanges::Pending settings_changes;
+
+bool CanEditClientSetting(const std::string& key) {
+    const PlayerMenuUI::Context* menu = PlayerMenuUI::Current();
+    if (!menu || !SettingsChanges::SharedClientSetting(key)) return true;
+    Online* online = Online::Instance();
+    return online->IsLobbyLeader(online->LobbyPlayerIDForLocalIndex(menu->local_index));
+}
+
+template <typename T>
+bool SetScriptSetting(const std::string& key, const T& value) {
+    if (!CanEditClientSetting(key) || config[key] == StringVariant(value)) return false;
+    config.GetRef(key) = value;
+    settings_changes.Changed(key);
+    config.ReloadDynamicSettings();
+    // Mouse ownership follows the keyboard player, and changing controls must
+    // not rebuild the renderer merely to apply these three input flags.
+    if (key == "invert_x_mouse_look") Input::Instance()->SetInvertXMouseLook(config[key].toBool());
+    if (key == "invert_y_mouse_look") Input::Instance()->SetInvertYMouseLook(config[key].toBool());
+    if (key == "use_raw_input") Input::Instance()->UseRawInput(config[key].toBool());
+    if (key == "auto_camera") {
+        for (int camera = 0; camera < ActiveCameras::NumCameras(); ++camera)
+            ActiveCameras::GetCamera(camera)->SetAutoCamera(config[key].toBool());
+    }
+    return true;
+}
+
+uint32_t AS_GetSettingsRevision() { return settings_changes.Revision(); }
+}
+
 void AS_SetConfigValueString(std::string key, std::string value) {
+    if (!CanEditClientSetting(key)) return;
     if (key == "overall") {
+        const Config before = config;
         config.SetSettingsToPreset(value);
-        config.ReloadStaticSettings();
-        config.ReloadDynamicSettings();
+        if (config != before) {
+            settings_changes.Changed(key);
+            settings_changes.TakeGraphicsReload();
+            config.ReloadStaticSettings();
+            config.ReloadDynamicSettings();
+        }
     } else if (key == "difficulty_preset") {
+        const Config before = config;
         config.SetDifficultyPreset(value);
-        config.ReloadDynamicSettings();
+        if (config != before) {
+            settings_changes.Changed(key);
+            config.ReloadDynamicSettings();
+        }
     } else {
-        config.GetRef(key) = value;
-        config.ReloadDynamicSettings();
+        SetScriptSetting(key, value);
     }
 }
 
 void AS_SetConfigValueBool(std::string key, bool value) {
-    config.GetRef(key) = value;
-    config.ReloadDynamicSettings();
+    SetScriptSetting(key, value);
 }
 
 void AS_SetConfigValueInt(std::string key, int value) {
-    config.GetRef(key) = value;
-    config.ReloadDynamicSettings();
+    SetScriptSetting(key, value);
 }
 
 int AS_GetConfigValueInt(std::string string) {
@@ -6712,8 +6772,7 @@ int AS_GetConfigValueInt(std::string string) {
 }
 
 void AS_SetConfigValueFloat(std::string key, float value) {
-    config.GetRef(key) = value;
-    config.ReloadDynamicSettings();
+    SetScriptSetting(key, value);
 }
 
 int AS_GetMonitorCount() {
@@ -6752,7 +6811,7 @@ static CScriptArray* AS_GetPossibleResolutions() {
 }
 
 void AS_ReloadStaticValues() {
-    config.ReloadStaticSettings();
+    if (settings_changes.TakeGraphicsReload()) config.ReloadStaticSettings();
 }
 
 static CScriptArray* ASGetAvailableBindingCategories() {
@@ -6836,10 +6895,12 @@ static void ASResetBinding(std::string category, std::string binding) {
     } else {
         config.GetRef(config_value) = default_config.GetRef(config_value);
     }
-    config.ReloadStaticSettings();
+    Input::Instance()->SetFromConfig(config);
+    settings_changes.Changed(config_value);
 }
 
 void AttachConfig(ASContext* context) {
+    context->RegisterGlobalFunction("uint GetSettingsRevision()", asFUNCTION(AS_GetSettingsRevision), asCALL_CDECL);
     context->RegisterGlobalFunction("string GetConfigValueString(string index)",
                                     asFUNCTION(AS_GetConfigValueString),
                                     asCALL_CDECL);

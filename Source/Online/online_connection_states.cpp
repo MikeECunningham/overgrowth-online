@@ -91,7 +91,21 @@ BaseState<PendingConnection>* StateHandshake::OnUpdate() {
         if (peer == nullptr) return nullptr;
         actor->player_id = peer->peer_id;
         Online::Instance()->SendTo<OnlineMessages::PCSAssignPlayerID>(actor->net_connection_id, actor->player_id);
-        Online::Instance()->EstablishPeerPlayers(peer->peer_id, actor->local_names.empty() ? std::vector<std::string>{actor->player_name} : actor->local_names, actor->local_screens);
+        if (!actor->migration_token.empty()) {
+            if (!Online::Instance()->AdmitMigratingPeer(peer->peer_id, actor->migration_token, actor->migration_origin_peer)) {
+                Online::Instance()->CloseConnection(actor->net_connection_id, ConnectionClosedReason::DISCONNECTED);
+                return new StateSuspended();
+            }
+        } else {
+            // The captured migration roster reserves logical identities until
+            // every expected machine has rejoined. Ordinary fresh admission
+            // resumes only after that transfer has completed.
+            if (Online::Instance()->LobbyMigrationBusy()) {
+                Online::Instance()->CloseConnection(actor->net_connection_id, ConnectionClosedReason::DISCONNECTED);
+                return new StateSuspended();
+            }
+            Online::Instance()->EstablishPeerPlayers(peer->peer_id, actor->local_names.empty() ? std::vector<std::string>{actor->player_name} : actor->local_names, actor->local_screens);
+        }
         return Online::Instance()->LobbyWaiting() ? static_cast<BaseState<PendingConnection>*>(new StateLobbyWaiting()) : new StateSync();
     }
     return this;

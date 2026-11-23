@@ -13,11 +13,11 @@ cd overgrowth-online
 
 Use the same release tag or commit as the host. The inherited private Wolfire submodules are not required; clone without `--recurse-submodules`. Game assets are read from each player's installed game and are not included in the source.
 
-The first local-multiplayer prerelease is `0.42.0-alpha.1`. Once its tag has been
+The current local-multiplayer prerelease is `0.42.0-alpha.3`. Once its tag has been
 published, select that exact source revision before configuring:
 
 ```sh
-git switch --detach v0.42.0-alpha.1
+git switch --detach v0.42.0-alpha.3
 ```
 
 Until a tag is published, ask the host for the commit to use. The in-game version
@@ -70,11 +70,26 @@ Replace `$gamePath` with your own installation folder. Keep the executable in `B
 2. One person chooses **Host**, then selects the mode and map in the lobby.
 3. Everyone else chooses **Connect** and enters the host's IP address.
 4. Add local players with their controllers, or use **Add local player (debug)** for testing. If a controller owns P1, **Enter** adds the keyboard/mouse as another player.
-5. The host starts when everyone is present. The hosting P1 can use **End game** to return everyone to the same lobby.
+5. The host starts when everyone is present. The designated host can use **End game** to return everyone to the same lobby.
 
 On a LAN, use the host's LAN address. Across the internet, the host may need to allow and forward **UDP 25744** to their computer. The source builds above use direct-IP networking. Steam invitations, friends-list joining and Valve relays use a separate Steamworks build; see [RELEASE.md](RELEASE.md).
 
-Keep the same fork version and enabled mods on every machine. New local players join in the lobby; controller reconnection during play restores an existing local player. Each player can open their own Start menu without stopping multiplayer; the hosting P1 has the default shared-pause authority.
+Keep the same fork version and enabled mods on every machine. Local players can join in the lobby or during play; reconnecting a controller restores its existing player. Each player can open their own Start menu without stopping multiplayer; the designated host has the default shared-pause authority.
+
+Joining an already-running single-player game creates a local party. Its roster,
+controller settings and screen assignments continue across campaign levels.
+Campaign cutscenes fill the window and hold extra players hidden until the scene
+ends, including players who join during it. Online hosting remains off until the
+host chooses **Open to online players**.
+
+The lobby's **Promote to leader** button transfers control of this computer's
+screens, player management and shared settings. **Promote to host** transfers
+match authority; selecting someone on another computer performs a pregame
+server handoff. Wait for its completion before the original host disconnects.
+For direct-IP play, the new host also needs a reachable multiplayer UDP port.
+During play, **Teams** in the pause menu shows team assignments and lets the
+local leader swap local screens. **Host controls teams** starts enabled;
+disabling it allows personal team choices where the mode permits them.
 
 ## Updates and troubleshooting
 

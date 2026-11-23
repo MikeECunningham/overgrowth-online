@@ -170,6 +170,7 @@ void GNSNetFramework::Dispose() {
 void GNSNetFramework::Update() {
     if (isns != nullptr) {
         isns->RunCallbacks();  // connection state changes -> OnStatusChanged, on this (network) thread
+        UpdateMigrationProbes();
     }
 }
 
@@ -219,6 +220,15 @@ NetListenSocketID GNSNetFramework::CreateListenSocketIP(const std::string& local
     }
 
     std::lock_guard<std::recursive_mutex> guard(maps_lock);
+    if (migration_listener != k_HSteamListenSocket_Invalid) {
+        SteamNetworkingIPAddr prepared;
+        if (isns->GetListenSocketAddress(migration_listener, &prepared) && prepared.m_port == addr.m_port) {
+            const NetListenSocketID id = GetFreeListenSocketID();
+            listen_socket_map[id] = migration_listener;
+            migration_listener = k_HSteamListenSocket_Invalid;
+            return id;
+        }
+    }
     HSteamListenSocket listen = isns->CreateListenSocketIP(addr, 0, nullptr);
 
     if (listen == k_HSteamListenSocket_Invalid) {
@@ -298,6 +308,7 @@ void GNSNetFramework::OnStatusChanged(SteamNetConnectionStatusChangedCallback_t*
     // SteamAPI_RunCallbacks (main thread) and our RunCallbacks (network thread)
     // can both deliver these in the Steam build: one at a time, in order
     std::lock_guard<std::mutex> one_at_a_time(status_lock);
+    if (HandleMigrationStatus(data)) return;
 
     NetFrameworkConnectionStatusChanged changed;
     {
@@ -360,6 +371,12 @@ NetListenSocketID GNSNetFramework::CreateListenSocketP2P() {
     }
 
     std::lock_guard<std::recursive_mutex> guard(maps_lock);
+    if (migration_p2p_listener != k_HSteamListenSocket_Invalid) {
+        const NetListenSocketID id = GetFreeListenSocketID();
+        listen_socket_map[id] = migration_p2p_listener;
+        migration_p2p_listener = k_HSteamListenSocket_Invalid;
+        return id;
+    }
     HSteamListenSocket listen = isns->CreateListenSocketP2P(0, 0, nullptr);
 
     if (listen == k_HSteamListenSocket_Invalid) {

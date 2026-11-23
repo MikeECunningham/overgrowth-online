@@ -368,4 +368,46 @@ void charsnap::test<8>() {
     ensure("read", Read(buf.data(), buf.size(), offset, g));
     ensure("resumed flag", g.resumed);
 }
+template <>
+template <>
+void charsnap::test<9>() {
+    // A loose weapon is a rigid pose: one rotation, no character skeleton.
+    // The first throw record must be visible immediately, and subsequent
+    // records must glide instead of waiting for a ten-frame warm-up.
+    Buffer buffer;
+    Frame a;
+    a.src_ms = 1000;
+    a.position = vec3(0.0f);
+    a.velocity = vec3(12.0f, 0.0f, 0.0f);
+    a.bones.resize(1);
+    a.bones[0].rotation = quaternion();
+    a.bones[0].translation = a.position;
+    buffer.Push(a, 5000.0);
+    Frame out;
+    ensure("first rigid pose needs no warm-up", buffer.Sample(5000.0, out));
+    ensure("initial pose", distance(out.position, a.position) < 1e-5f);
+
+    Frame b = a;
+    b.src_ms = 1030;
+    b.position.x() = 0.36f;
+    b.bones[0].translation = b.position;
+    b.bones[0].rotation = quaternion(vec4(0.0f, 1.0f, 0.0f, 1.0f));
+    buffer.Push(b, 5030.0);
+    ensure("two records play", buffer.Sample(5050.0, out));
+    ensure("translation between records", out.position.x() > 0.0f && out.position.x() < 0.36f);
+    ensure("rotation between records", QuatAngle(a.bones[0].rotation, out.bones[0].rotation) > 0.01f &&
+                                           QuatAngle(b.bones[0].rotation, out.bones[0].rotation) > 0.01f);
+    const int size = buffer.Size();
+    buffer.Push(a, 5055.0);
+    buffer.Push(b, 5060.0);
+    ensure("late and duplicate rigid poses discarded", buffer.Size() == size);
+
+    buffer.Clear();  // picked up, then thrown again much later
+    b.src_ms = 3000;
+    b.position = vec3(10.0f, 2.0f, 0.0f);
+    b.bones[0].translation = b.position;
+    buffer.Push(b, 7000.0);
+    ensure("new throw starts immediately", buffer.Sample(7000.0, out));
+    ensure("new throw has no old pose", distance(out.position, b.position) < 1e-5f);
+}
 }  // namespace tut

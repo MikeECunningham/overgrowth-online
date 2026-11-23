@@ -37,6 +37,8 @@ struct PendingConnection {
     std::string player_name;
     std::vector<std::string> local_names;
     std::vector<int> local_screens;
+    std::string migration_token;
+    PeerID migration_origin_peer = 0;
     std::string active_mods_string;
     PlayerID player_id;
 

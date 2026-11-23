@@ -22,6 +22,7 @@ int small_panel = 1;
 string preview_path;
 TextureAssetRef preview_texture;
 bool focus_lobby_form = true;
+int lobby_leader_input = -1;
 
 bool HasFocus() { return false; }
 
@@ -43,7 +44,8 @@ bool CanGoBack() {
 
 void Initialize() {
     ClearControllerItems();
-    SetControllerPlayer(0);
+    lobby_leader_input = LobbyGetLocalLeaderInputID();
+    SetControllerPlayer(lobby_leader_input);
     @imGUI = CreateIMGUI();
     imGUI.setup();
     setBackGround();
@@ -66,19 +68,25 @@ void Dispose() {
 
 void Update() {
     LobbyUpdate();
+    if(lobby_leader_input != LobbyGetLocalLeaderInputID()) {
+        lobby_leader_input = LobbyGetLocalLeaderInputID();
+        SetControllerPlayer(lobby_leader_input);
+        focus_lobby_form = true;
+        editing_name = -1;
+    }
     if(HasPopup()) {
         LobbySetJoinInputEnabled(false);
         UpdateController();
         imGUI.update();
         return;
     }
-    if(!Online_IsActive()) {
+    if(!Online_IsActive() && !LobbyMigrationBusy()) {
         this_ui.SendCallback("multiplayer_menu.as");
         return;
     }
     UpdateKeyboardMouse();
     imGUI.update();
-    if(editing_name >= 0 && LobbyCanManageLocal() && GetInputPressed(0, "menu_cancel")) {
+    if(editing_name >= 0 && LobbyCanManageLocal() && GetInputPressed(controller_player, "menu_cancel")) {
         editing_name = -1;
     }
     uint revision = LobbySnapshotRevision();
@@ -92,7 +100,7 @@ void Update() {
             lobby_displayed_mode = mode;
         }
     }
-    LobbySetJoinInputEnabled(editing_name < 0 && !ImGui_IsAnyItemActive() && !ImGui_IsAnyPopupOpen());
+    LobbySetJoinInputEnabled(!LobbyMigrationBusy() && editing_name < 0 && !ImGui_IsAnyItemActive() && !ImGui_IsAnyPopupOpen());
 }
 
 void Resize() { imGUI.doScreenResize(); setBackGround(); }
@@ -139,7 +147,7 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
         ImGui_SetWindowFocus();
         focus_lobby_form = false;
     }
-    bool can_edit = LobbyIsHost() && LobbyCanManageLocal();
+    bool can_edit = LobbyIsHost() && !LobbyMigrationBusy();
     int selected = LobbySelectedMode();
     if(selected >= 0 && !show_mode_cards) {
         ImGui_TextColored(kLobbyTitle, lobby_modes[selected].title);
@@ -271,14 +279,17 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         if(player.host) {
             association += " / lobby host";
         }
+        if(player.leader) {
+            association += " / local leader";
+        }
         if(!player.connected) {
             association += " / disconnected";
         }
         ImGui_TextColored(kLobbyDim, association);
         if(player.local) {
-            ImGui_BeginDisabled(!LobbyCanManageLocal());
+            ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
             float action_width = ImGui_GetContentRegionAvailWidth();
-            bool can_remove = LobbyCanRemovePlayer(player.id);
+            bool can_remove = !LobbyMigrationBusy() && LobbyCanRemovePlayer(player.id);
             if(MPButton("Rename", vec2(can_remove ? (action_width - 8.0f) * 0.5f : -1.0f, 30.0f * scale))) {
                 editing_name = int(player.id);
                 name_buffer = player.name;
@@ -295,18 +306,24 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
                     LobbyRemovePlayer(player.id);
                 }
             }
-        } else if(LobbyCanRemovePlayer(player.id)) {
-            string removal_label = player.local_index == 0 ? "Kick client" : "Remove";
+        } else if(!LobbyMigrationBusy() && LobbyCanRemovePlayer(player.id)) {
+            string removal_label = player.leader ? "Kick client" : "Remove";
             if(MPButton(removal_label, vec2(-1.0f, 30.0f * scale))) {
                 LobbyRemovePlayer(player.id);
             }
+        }
+        if(!LobbyMigrationBusy() && LobbyCanPromoteHost(player.id)) {
+            if(MPButton("Make host", vec2(-1.0f, 30.0f * scale))) LobbyPromoteHost(player.id);
+        }
+        if(!LobbyMigrationBusy() && LobbyCanPromoteLeader(player.id)) {
+            if(MPButton("Make local leader", vec2(-1.0f, 30.0f * scale))) LobbyPromoteLeader(player.id);
         }
         ImGui_NextColumn();
         // Align the interactive controls with Edit name, so right/left on a
         // controller stays on this player's row rather than jumping a row.
         ImGui_Dummy(vec2(0.0f, 2.0f * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
         int team = min(int(teams.length()) - 1, max(0, player.team - 1));
-        ImGui_BeginDisabled(!LobbyIsHost() || !LobbyCanManageLocal());
+        ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanSetPlayerTeam(player.id));
         ImGui_PushItemWidth(-1.0f);
         if(MPTeamCombo(team, int(teams.length()))) {
             LobbySetPlayerTeam(player.id, team + 1);
@@ -317,7 +334,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         ImGui_Dummy(vec2(0.0f, 2.0f * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
         if(player.local) {
             int screen = min(locals - 1, max(0, player.screen - 1));
-            ImGui_BeginDisabled(!LobbyCanManageLocal());
+            ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
             ImGui_PushItemWidth(-1.0f);
             if(ImGui_Combo("##screen", screen, screens)) {
                 LobbySetPlayerScreen(player.id, screen + 1);
@@ -342,14 +359,14 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     ImGui_EndChild();
     MPWindowScale(scale);
     ImGui_Spacing();
-    ImGui_BeginDisabled(!LobbyCanManageLocal());
+    ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
     if(MPButton("Add local player (debug)", vec2(-1.0f, 36.0f * scale))) {
         if(!LobbyAddLocalPlayer()) {
             notice = "Couldn't add a local player.";
         }
     }
     ImGui_EndDisabled();
-    ImGui_TextColored(kLobbyDim, "Local P1 assigns this couch's screens and names. The host assigns teams.");
+    ImGui_TextColored(kLobbyDim, "The local leader assigns this couch's screens and names. Team permissions are set by the host.");
     LobbyEndForm();
 }
 
@@ -359,7 +376,7 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
         ImGui_SetWindowFocus();
         focus_lobby_form = false;
     }
-    bool can_edit = LobbyIsHost() && LobbyCanManageLocal();
+    bool can_edit = LobbyIsHost() && !LobbyMigrationBusy();
     float options_height = max(130.0f, ImGui_GetContentRegionAvail().y - 176.0f * scale);
     ImGui_BeginChild("hosting_options", vec2(0.0f, options_height), false);
     MPWindowScale(1.0f);
@@ -370,6 +387,10 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
         LobbySetAllowAllPause(all_pause);
     }
     ImGui_TextColored(kLobbyDim, "Otherwise only the lobby host may pause.");
+    ImGui_Spacing();
+    bool host_controls_teams = LobbyGetHostControlsTeams();
+    if(MPCheckbox("Host controls teams", host_controls_teams)) LobbySetHostControlsTeams(host_controls_teams);
+    ImGui_TextColored(kLobbyDim, "When off, players may change their own team in modes using lobby teams.");
     ImGui_Spacing();
     bool force_teams = LobbyGetForceTeams();
     if(MPCheckbox("Force lobby teams", force_teams)) {
@@ -389,10 +410,17 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     ImGui_TextColored(kLobbyDim, team_hint);
     ImGui_Spacing();
     if(LobbyIsHost()) {
-        bool is_public = !ConfigHasKey("oo_public_game") || GetConfigValueBool("oo_public_game");
-        if(MPCheckbox("Public game", is_public)) {
-            SetConfigValueBool("oo_public_game", is_public);
-            SaveConfig();
+        if(LobbyIsLocalOnly()) {
+            ImGui_TextWrapped("Local party. Online hosting is off.");
+            if(MPButton("Open to online players", vec2(-1.0f, 36.0f * scale))) {
+                if(!LobbyOpenToNetwork()) notice = "Could not enable online hosting.";
+            }
+        } else {
+            bool is_public = !ConfigHasKey("oo_public_game") || GetConfigValueBool("oo_public_game");
+            if(MPCheckbox("Public game", is_public)) {
+                SetConfigValueBool("oo_public_game", is_public);
+                SaveConfig();
+            }
         }
         if(LobbyGetCampaign() == "com-wolfire-arena") {
             int fighters = ConfigHasKey("oo_arena_bots") ? GetConfigValueInt("oo_arena_bots") : 2;
@@ -415,17 +443,17 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
         }
         ImGui_Separator();
         ImGui_TextWrapped("Characters: Turner, with team colors.");
-        ImGui_TextColored(kLobbyDim, "Host P1 keeps Turner's brown fur.");
+        ImGui_TextColored(kLobbyDim, "The lobby host keeps Turner's brown fur.");
         if(MPButton("Difficulty", vec2(-1.0f, 36.0f * scale))) {
             this_ui.SendCallback("difficulty_menu.as");
         }
-        if(Online_HasFriendInviteOverlay() && MPButton("Invite friends", vec2(-1.0f, 36.0f * scale))) {
+        if(!LobbyIsLocalOnly() && Online_HasFriendInviteOverlay() && MPButton("Invite friends", vec2(-1.0f, 36.0f * scale))) {
             Online_ActivateInviteDialog();
         }
     } else {
         ImGui_TextWrapped("The host chooses visibility, difficulty and arena settings.");
         ImGui_Spacing();
-        ImGui_TextWrapped("Characters: Turner, with team colors. Host P1 keeps Turner's brown fur.");
+        ImGui_TextWrapped("Characters: Turner, with team colors. The lobby host keeps Turner's brown fur.");
     }
     ImGui_EndDisabled();
     ImGui_PopTextWrapPos();
@@ -433,7 +461,7 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     MPWindowScale(scale);
     ImGui_Spacing();
     ImGui_Separator();
-    bool ready = can_edit && LobbyCanStart();
+    bool ready = can_edit && !LobbyMigrationBusy() && LobbyCanStart();
     ImGui_BeginDisabled(!ready);
     if(MPButton("Start game", vec2(-1.0f, 48.0f * scale))) {
         if(!LobbyStart()) {
@@ -449,6 +477,7 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     if(notice != "") {
         ImGui_TextColored(kLobbyWarn, notice);
     }
+    if(LobbyGetMigrationStatus() != "") ImGui_TextColored(kLobbyTitle, LobbyGetMigrationStatus());
     ImGui_Separator();
     ImGui_BeginDisabled(!LobbyCanManageLocal());
     if(MPButton(LobbyIsHost() ? "Close lobby" : "Leave lobby", vec2(-1.0f, 36.0f * scale))) {
@@ -471,7 +500,7 @@ void DrawNameForm(float scale) {
     MPWindowScale(scale);
     MPPanelBackground();
     MPHeading("Edit local player's name", 44.0f);
-    ImGui_BeginDisabled(!LobbyCanManageLocal());
+    ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
     ImGui_PushItemWidth(-1.0f);
     if(ImGui_IsWindowAppearing()) {
         ImGui_SetKeyboardFocusHere();

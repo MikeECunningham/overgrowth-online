@@ -1,7 +1,7 @@
 # Publishing this fork
 
 This fork is published at <https://github.com/MikeECunningham/overgrowth-online>.
-The current version is **0.42.0-alpha.1**, a testing prerelease. See [VERSION](VERSION)
+The current version is **0.42.0-alpha.3**, a testing prerelease. See [VERSION](VERSION)
 for the authoritative version, [FRIENDS.md](FRIENDS.md) for building and playing,
 and [COMPILING.md](COMPILING.md) for dependency details.
 
@@ -28,7 +28,7 @@ maintained local-multiplayer protocol revision.
   compatibility is determined by the fork version and protocol, not that ID.
 
 Once a release commit has passed its checks, create its corresponding version
-tag, such as `v0.42.0-alpha.1`. Create a GitHub **prerelease** from that tag and
+tag, such as `v0.42.0-alpha.3`. Create a GitHub **prerelease** from that tag and
 attach the tested artifacts.
 Do not move a published tag to different code; publish another version instead.
 
@@ -64,6 +64,9 @@ clean-machine installation and Steam-specific behavior are separate checks.
    ./Build/OvergrowthOnline.bin.x86_64 --run-unit-tests --no-dialogues
    python3 Tools/ogmp.py suite smoke
    python3 Tools/ogmp.py run local_lobby lobby_lifecycle player_menus mode_teams
+   python3 Tools/ogmp.py run lobby_authority lobby_rollback stucco_solo cave_spawns loose_weapon_playback
+   python3 Tools/ogmp.py run newcampaign_local newcampaign_roles newcampaign_main_removal
+   python3 Tools/ogmp.py run newcampaign_cinematic_retry
    ```
 
    Close a normally running game before using the test runner. Repeat relevant
@@ -73,7 +76,8 @@ clean-machine installation and Steam-specific behavior are separate checks.
 4. **Test the packaged layout.** Use a fresh profile and a clean machine/VM with
    its own game assets. Check asset discovery, first launch, OpenGL/Vulkan,
    controller reconnects, independent menus, mixed local/remote players,
-   mode-managed/forced teams, End game and another match.
+   mode-managed/forced teams, campaign chapter progression with a retained party,
+   joining during dialogue, End game and another match.
 5. **Package only redistributable content.** Include the executable, this fork's
    data overrides, needed runtime libraries, launcher/instructions and license
    notices. Keep symbols as a separate diagnostic artifact if desired. Exclude

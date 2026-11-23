@@ -26,12 +26,12 @@ void version::test<1>() {
 template <> template <>
 void version::test<2>() {
     set_test_name("network compatibility requires the exact release and protocol, including prerelease");
-    ensure_equals("wire protocol is intentionally unchanged", GetOnlineProtocol(), 4);
+    ensure_equals("persistent campaign party protocol", GetOnlineProtocol(), 6);
     ensure("matching peers connect", IsNetworkVersionCompatible(GetNetworkVersion()));
     ensure("unversioned peers rejected", !IsNetworkVersionCompatible(""));
     ensure("old mod-disabled identity rejected", !IsNetworkVersionCompatible("+local-lobby4"));
     ensure("release without protocol rejected", !IsNetworkVersionCompatible(GetForkVersion()));
-    ensure("other protocol rejected", !IsNetworkVersionCompatible(std::string(GetForkVersion()) + "+local-lobby3"));
+    ensure("other protocol rejected", !IsNetworkVersionCompatible(std::string(GetForkVersion()) + "+local-lobby5"));
     ensure("old release rejected", !IsNetworkVersionCompatible("0.41.36+local-lobby4"));
 }
 

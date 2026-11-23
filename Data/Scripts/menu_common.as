@@ -427,9 +427,9 @@ class Checkbox : GUIElement{
         ToggleElement();
         if(config_name.length() != 0) {
             SetConfigValueBool(config_name, option_state);
-            // Gamepad inversion is read by Input on each step. Reapplying all
-            // graphics settings here needlessly rebuilds grass and render data.
-            if(config_name.findFirst("gamepad_") != 0) ReloadStaticValues();
+            // Native settings tracking applies graphics once only when a
+            // graphics value changed. Controls/audio stay on their own paths.
+            ReloadStaticValues();
             RefreshAllOptions();
         }
     }
@@ -861,6 +861,9 @@ class DropdownConfigurationMultival : DropdownConfigurationBaseClass{
 
 class DropdownConfiguration{
     DropdownConfigurationBaseClass@ conf;
+    DropdownConfiguration(DropdownConfigurationBaseClass@ configuration){
+        @conf = @configuration;
+    }
     
     DropdownConfiguration(array<string> config_values, array<string> display_values, string config_name){
         @conf = DropdownConfigurationStringArray(config_values, display_values);

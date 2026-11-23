@@ -32,6 +32,8 @@ PCSClientParametersMessage::PCSClientParametersMessage(const std::string& player
                                                                                                                                  enabled_mods_string(enabled_mods_string) {
     local_names = Online::Instance()->LocalLobbyNames();
     local_screens = Online::Instance()->LocalLobbyScreens();
+    migration_token = Online::Instance()->MigrationJoinToken();
+    migration_origin_peer = static_cast<PeerID>(Online::Instance()->MigrationOriginPeer());
 }
 
 binn* PCSClientParametersMessage::Serialize(void* object) {
@@ -46,6 +48,8 @@ binn* PCSClientParametersMessage::Serialize(void* object) {
     Json::Value screens(Json::arrayValue);
     for (int screen : t->local_screens) screens.append(screen);
     binn_object_set_std_string(l, "local_screens", Json::FastWriter().write(screens));
+    binn_object_set_std_string(l, "migration_token", t->migration_token);
+    binn_object_set_uint8(l, "migration_origin_peer", t->migration_origin_peer);
 
     return l;
 }
@@ -55,6 +59,9 @@ void PCSClientParametersMessage::Deserialize(void* object, binn* l) {
 
     binn_object_get_std_string(l, "player_name", &t->player_name);
     binn_object_get_std_string(l, "enabled_mods_string", &t->enabled_mods_string);
+    t->migration_token.clear(); t->migration_origin_peer = 0;
+    binn_object_get_std_string(l, "migration_token", &t->migration_token);
+    binn_object_get_uint8(l, "migration_origin_peer", &t->migration_origin_peer);
     std::string encoded;
     binn_object_get_std_string(l, "local_names", &encoded);
     Json::Value names; Json::Reader reader;

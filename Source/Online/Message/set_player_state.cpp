@@ -24,6 +24,7 @@
 
 #include <Online/online.h>
 #include <Main/engine.h>
+#include <Main/scenegraph.h>
 #include <Utility/binn_util.h>
 
 namespace OnlineMessages {
@@ -96,6 +97,12 @@ void SetPlayerState::Execute(const OnlineMessageRef& ref, void* object, PeerID f
 
     // Set new state
     Online::Instance()->online_session->player_states[t->player_id] = new_player_state;
+    SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    Object* avatar = graph ? graph->GetObjectFromID(object_id) : nullptr;
+    if (avatar && avatar->created_on_the_fly) {
+        avatar->exclude_from_save = true;
+        avatar->exclude_from_undo = true;
+    }
     Online::Instance()->ApplyAssignedTeam(object_id);
 }
 

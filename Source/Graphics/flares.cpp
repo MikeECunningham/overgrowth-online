@@ -317,7 +317,11 @@ void Flares::OcclusionQuery(int which) {
 }
 
 void Flares::Draw(Flares::FlareType flare_type) {
-    if (g_debug_runtime_disable_flares_draw) {
+    // Lens flares belong to a player's view, not the environment captured by
+    // light probes/reflections. The dedicated preview camera also has a
+    // negative ID, which cannot index the per-player occlusion query array.
+    if (g_debug_runtime_disable_flares_draw ||
+        ActiveCameras::GetID() == ActiveCameras::kPreviewCameraId) {
         return;
     }
 

@@ -169,7 +169,7 @@ void Init(string str) {
         Object@ marker = ReadObjectFromID(marker_ids[0]);
         int id = CreateObject(level.GetPath("char_player"), true);
         Object@ obj = ReadObjectFromID(id);
-        obj.SetTranslation(marker.GetTranslation());
+        obj.SetTranslation(Online_SafeSpotNear(marker.GetTranslation(), vec3(0.0f, 0.0f, 1.0f), 0));
         vec4 r = marker.GetRotationVec4();
         obj.SetRotation(quaternion(r.x, r.y, r.z, r.a));
         obj.SetPlayer(true);
@@ -623,21 +623,21 @@ void SendBecome() {
     }
 }
 
-// A character this machine runs becomes `path` ("own": the player's own choice)
+// A character this machine runs becomes `path` ("own": its lobby appearance)
 void Become(int id, const string &in path) {
     string p = path;
     if(p == "own") {
-        p = GetConfigValueString("mp_character");
-        if(p == "" || !FileExists(p)) {
-            p = level.GetPath("char_player");
-        }
+        // char_player is an Actor object file, not a Character definition.
+        // Feeding it to SwitchCharacter can leave an invalid rig and hang
+        // asset loading on every peer when the randomizer is switched off.
+        p = "Data/Characters/turner.xml";
     }
     if(p == "" || !FileExists(p)) {
         return;
     }
     ReadCharacterID(id).Execute(kDisarm + "SwitchCharacter(\"" + p + "\"); FixDiscontinuity();");  // (SwitchCharacter detaches all but kept the sheaths named)
     if(path == "own") {
-        Online_RestoreOwnCharacter();  // (its colours, as the menu set them)
+        Online_RestoreOwnCharacter();  // restore the lobby's team colours
     }
 }
 
@@ -803,7 +803,7 @@ int MakeBot() {
     }
     int id = CreateObject(path, true);
     Object@ obj = ReadObjectFromID(id);
-    obj.SetTranslation((spots.length() > 0 ? spots[0] : arena_center) + vec3(0.0f, 0.5f, 0.0f));
+    obj.SetTranslation(Online_SafeSpotNear(spots.length() > 0 ? spots[0] : arena_center, vec3(0.0f, 0.0f, 1.0f), 0));
     if(fur_channels[kind] >= 0) {
         array<vec3> furs = {vec3(0.45f, 0.33f, 0.22f), vec3(0.3f, 0.3f, 0.3f), vec3(0.6f, 0.5f, 0.38f), vec3(0.18f, 0.14f, 0.1f), vec3(0.75f, 0.72f, 0.68f)};
         obj.SetPaletteColor(fur_channels[kind], furs[rand() % int(furs.length())]);
@@ -1104,7 +1104,11 @@ void SpotFor(uint k, vec3 &out pos, vec3 &out facing) {
     vec3 to_middle = arena_center - base;
     to_middle.y = 0.0f;
     facing = length(to_middle) > 0.1f ? normalize(to_middle) : vec3(0.0f, 0.0f, 1.0f);
-    pos = slot < spots.length() ? base : Online_SafeSpotNear(base, facing, int(slot / spots.length()));
+    // Some authored markers are feet-level, embedded in the arena's rock
+    // floor (Rock Cave also has a second terrain surface underneath it).
+    // Resolve the original spots too: raw teleports can put a character
+    // through that upper collision surface.
+    pos = Online_SafeSpotNear(base, facing, int(slot / spots.length()));
 }
 
 // ---- shown ----------------------------------------------------------------

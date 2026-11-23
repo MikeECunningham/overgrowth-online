@@ -1046,7 +1046,7 @@ void Input::BindLocalKeyboard(int local_index) {
 
 void Input::RemoveLocalPlayerInput(unsigned local_index) {
     const unsigned count = static_cast<unsigned>(local_player_inputs_.size());
-    if (local_index == 0 || local_index >= count) return;
+    if (count <= 1 || local_index >= count) return;
     const Config saved_config = config;
     auto prefix = [](unsigned index) { return "gamepad_" + std::to_string(index); };
     auto is_profile = [](const std::string& key, const std::string& start) {
@@ -1069,6 +1069,13 @@ void Input::RemoveLocalPlayerInput(unsigned local_index) {
         }
     }
     local_player_inputs_.erase(local_player_inputs_.begin() + local_index);
+    for (const char* key : {"controller_menu_owner", "menu_player_config"}) {
+        auto owner = config.map_.find(key);
+        if (owner == config.map_.end()) continue;
+        const int previous = owner->second.data.toNumber<int>();
+        if (previous > static_cast<int>(local_index)) owner->second.data = previous - 1;
+        else if (previous == static_cast<int>(local_index)) owner->second.data = 0;
+    }
     if (keyboard_local_player_ == static_cast<int>(local_index)) keyboard_local_player_ = -1;
     else if (keyboard_local_player_ > static_cast<int>(local_index)) --keyboard_local_player_;
     SetUpForXPlayers(count - 1, true);

@@ -42,6 +42,9 @@ LedgeInfo ledge_info;
 bool omniscient = false;
 bool left_handed = true;
 bool dialogue_control = false;
+// Native co-op cutscenes hold extra humans without changing their health,
+// ragdoll state, or the authored dialogue choreography.
+bool coop_cutscene_hold = false;
 vec3 dialogue_position;
 float dialogue_rotation;
 string tutorial = "";
@@ -2462,6 +2465,10 @@ void UpdateMouth(const Timestep &in ts) {
 bool was_controlled = false;
 bool was_editor_mode = false; 
 void Update(int num_frames) {   
+    if(coop_cutscene_hold) {
+        this_mo.velocity = vec3(0.0f);
+        return;
+    }
     if(frozen && !this_mo.controlled) {
         if(knocked_out != _dead) {
             Timestep ts(time_step, num_frames);

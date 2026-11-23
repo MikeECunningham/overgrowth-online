@@ -133,7 +133,9 @@ void localmapping::test<6>() {
     ensure("inversion follows surviving player", config["gamepad_3_invert_x_look"].toBool());
     ensure_equals("binding follows surviving player", input.GetBindingValue("gamepad_3", "jump"), std::string("b"));
     input.RemoveLocalPlayerInput(0);
-    ensure_equals("primary cannot be removed", input.GetNumLocalPlayers(), 4u);
+    ensure_equals("former primary can be removed after role transfer", input.GetNumLocalPlayers(), 3u);
+    ensure_equals("physical input survives both removals", input.GetLocalPlayerInputID(2), last);
+    ensure_equals("profile survives both removals", config["gamepad_2_look_sensitivity"].toNumber<float>(), 1.9f);
 }
 template <> template <>
 void localmapping::test<7>() {
@@ -185,5 +187,31 @@ void localmapping::test<8>() {
     input.SetKeyboardMenuNavigationShared(true);
     input.ProcessController(0, 0.01f);
     ensure_equals("pregame can still navigate P1 with the keyboard", input.GetController(0)->key_down["menu_return"].depth, 1.0f);
+}
+template <> template <>
+void localmapping::test<9>() {
+    set_test_name("removing former keyboard primary preserves the promoted pad's identity and settings");
+    config.GetRef("gamepad_1_look_sensitivity") = 1.7f;
+    config.GetRef("gamepad_1_invert_y_look") = true;
+    config.GetRef("gamepad_1[jump]") = "b";
+    input.SetFromConfig(config);
+    input.SetUpForXPlayers(2, true);
+    const int survivor = input.GetLocalPlayerInputID(1);
+    auto& pad = input.GetOpenJoysticks()[10];
+    input.BindLocalJoystick(10, 1);
+    input.BindLocalKeyboard(0);
+    config.GetRef("controller_menu_owner") = 1;
+    config.GetRef("menu_player_config") = 1;
+    input.RemoveLocalPlayerInput(0);
+    ensure_equals("remaining player keeps actual input", input.GetLocalPlayerInputID(0), survivor);
+    ensure_equals("remaining pad keeps assignment", pad->player_input, survivor);
+    ensure_equals("removed keyboard is unassigned", input.LocalKeyboardPlayerIndex(), -1);
+    ensure_equals("shared menu owner follows surviving logical seat", config["controller_menu_owner"].toNumber<int>(), 0);
+    ensure_equals("profile editor follows surviving logical seat", config["menu_player_config"].toNumber<int>(), 0);
+    ensure_equals("pad sensitivity follows its profile", pad->joystick.look_sensitivity_, 1.7f);
+    ensure("inversion follows its profile", config["gamepad_0_invert_y_look"].toBool());
+    ensure_equals("bindings follow its profile", input.GetBindingValue("gamepad_0", "jump"), std::string("b"));
+    input.RemoveLocalPlayerInput(0);
+    ensure_equals("last local player cannot be removed", input.GetNumLocalPlayers(), 1u);
 }
 }  // namespace tut

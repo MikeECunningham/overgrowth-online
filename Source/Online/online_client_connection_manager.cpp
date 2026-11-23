@@ -75,15 +75,29 @@ void ClientConnectionManager::AddConnection(const PeerID peer_id, const NetConne
 }
 
 void ClientConnectionManager::ResetConnections() {
+    OnlineSession* session = Online::Instance()->online_session;
+    lock_guard<mutex> guard(session->connected_peers_lock);
     connection_states.clear();
-    for (auto& peer : Online::Instance()->GetPeers()) {
-        connection_states.emplace(std::piecewise_construct, std::make_tuple(peer.peer_id), std::make_tuple(new StateVersionCheck(), PendingConnection(peer.conn_id)));
+    for (const auto& peer : session->connected_peers) {
+        PendingConnection pending(peer.conn_id);
+        bool admitted = false;
+        for (const auto& player : Online::Instance()->GetPlayerStates()) if (player.peer_id == peer.peer_id) {
+            admitted = true;
+            if (pending.player_name.empty() || player.local_index == 0) pending.player_name = player.playername;
+        }
+        pending.player_id = peer.peer_id;
+        // A campaign changes its world, not its membership. Repeating admission
+        // discarded client rosters and temporarily reassigned local devices.
+        BaseState<PendingConnection>* state = admitted ? static_cast<BaseState<PendingConnection>*>(new StateSync()) : new StateVersionCheck();
+        connection_states.emplace(std::piecewise_construct, std::make_tuple(peer.peer_id), std::make_tuple(state, pending));
     }
 }
 
 void ClientConnectionManager::ParkConnectionsInLobby() {
+    OnlineSession* session = Online::Instance()->online_session;
+    lock_guard<mutex> guard(session->connected_peers_lock);
     connection_states.clear();
-    for (const auto& peer : Online::Instance()->GetPeers()) {
+    for (const auto& peer : session->connected_peers) {
         PendingConnection pending(peer.conn_id);
         pending.player_id = peer.peer_id;
         connection_states.emplace(std::piecewise_construct, std::make_tuple(peer.peer_id),
@@ -106,6 +120,8 @@ void ClientConnectionManager::ApplyPackage(const PeerID peer_id, PCSClientParame
     connection_states[peer_id].actor.active_mods_string = client_parameters->enabled_mods_string;
     connection_states[peer_id].actor.local_names = client_parameters->local_names;
     connection_states[peer_id].actor.local_screens = client_parameters->local_screens;
+    connection_states[peer_id].actor.migration_token = client_parameters->migration_token;
+    connection_states[peer_id].actor.migration_origin_peer = client_parameters->migration_origin_peer;
     connection_states[peer_id].actor.received_client_params = true;
 }
 

@@ -150,24 +150,27 @@ void LocalPlayerMenus::ApplyCommands() {
         const std::string& action = command.second;
         if (menus_.count(local) == 0) continue;
         Online* online = Online::Instance();
+        const PlayerID player = online->LobbyPlayerIDForLocalIndex(local);
+        const bool leader = online->IsLobbyLeader(player);
+        const bool host = online->IsLobbyHost(player);
         if (action == "close") {
             Close(local);
         } else if (action == "toggle_pause") {
             if (online->IsActive()) {
                 online->RequestPause(local, !engine_.paused);
-            } else if (local == 0) {
+            } else if (leader) {
                 engine_.user_paused = !engine_.paused;
                 engine_.CommitPause();
             }
-        } else if (local == 0 && action == "end_game" && online->IsHosting()) {
-            if (online->EndLobbyGame()) Clear();
-        } else if (local == 0 && action == "main_menu") {
+        } else if (host && action == "end_game" && online->IsHosting()) {
+            if (online->EndLobbyGame(player)) Clear();
+        } else if (leader && action == "main_menu") {
             Clear();
             engine_.ScriptableUICallback("back_to_main_menu");
-        } else if (local == 0 && action == "media_mode") {
+        } else if (leader && action == "media_mode") {
             Graphics::Instance()->SetMediaMode(true);
             Close(local);
-        } else if (local == 0 && action == "retry" && !online->IsClient()) {
+        } else if (host && action == "retry" && !online->IsClient()) {
             Clear();
             Level* level = engine_.GetSceneGraph()->level;
             if (online->IsHosting() && level->HasFunction("void OnlineRetry()")) {

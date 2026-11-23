@@ -171,6 +171,27 @@ CommonObjectID Online::GetOriginalID(ObjectID clientid) const {
 void Online::ClearIDTranslations() {
     to_object_id.clear();
     to_common_id.clear();
+    // This hook runs after scene disposal on hosts and clients, including
+    // same-map retries. Object IDs can be reused by the next scene; saved
+    // cutscene physics and ownership must never follow those numeric IDs.
+    coop_cutscene_players.clear();
+    coop_hidden.clear();
+    coop_cutscene = false;
+    campaign_main_avatar_id_ = static_cast<ObjectID>(-1);
+    held_hits.clear(); pending_revives.clear(); pending_avatar_characters.clear();
+    pending_unsticks.clear(); pending_drop_orders.clear(); pending_item_launches.clear();
+    owner_overrides.clear(); handed_back_ms.clear();
+    stream_latest.clear(); stream_sent.clear(); stream_owned.clear(); stream_next_capture_ms = 0.0;
+    last_safe_ground.clear(); coop_lost_since_ms = -1.0; client_player_key_states_.clear();
+    own_character_applied.clear();
+    if (online_session) {
+        online_session->player_inputs.clear();
+        online_session->free_avatars.clear(); online_session->taken_avatars.clear();
+        for (auto& player : online_session->player_states) player.second.object_id = static_cast<ObjectID>(-1);
+    }
+    // remote_cutscene_active_ is authoritative session metadata. A late
+    // joiner's snapshot may arrive before its level; retain that render/input
+    // guard until the host explicitly ends the cutscene.
 }
 
 bool Online::SendingRemovePackages() const {
@@ -199,15 +220,17 @@ static bool Finite3(const vec3& v) {
 
 void Online::ChangeLevel(const string& id) {
     mode_teams_.clear();
-    BroadcastLobby();
     campaign_id = ModLoading::Instance().WhichCampaignLevelBelongsTo(id);
     host_started_level = false;
+    lobby_start_pending_ = true;
+    campaign_main_avatar_id_ = static_cast<ObjectID>(-1);
     level_name = id;
 
     RemoveAllAvatarIds();
     loading = true;
     held_hits.clear();
     coop_cutscene = false;  // (the new level's objects)
+    remote_cutscene_active_ = false;
     coop_hidden.clear();
     last_safe_ground.clear();
 
@@ -221,21 +244,23 @@ void Online::ChangeLevel(const string& id) {
     }
     online_session->outgoing_messages_lock.unlock();
 
-    // Reset every peer to a pending connection state.
-    online_session->client_connection_manager.ResetConnections();
-
     // Reset every player's possession
     online_session->connected_peers_lock.lock();
     for (auto& it : online_session->player_states) {
         it.second.object_id = -1;
     }
     online_session->connected_peers_lock.unlock();
+    client_player_key_states_.clear();
+    BroadcastLobby();
 
     // Overgrowth Online: the clients load it now, together with us (the
     // network thread sends it while we load); the handshake that follows
     // used to tell them only once we had finished
     SendLevelFile(0, level_name);  // (a level of the host's own: the file first)
     Send<OnlineMessages::PCSFileTransferMetadataMessage>(level_name, campaign_id, true);
+    // Queue the preload before the admitted peers' map-sync confirmation, so
+    // the latter acknowledges the same load instead of scheduling it twice.
+    online_session->client_connection_manager.ResetConnections();
 }
 
 // Logging takes these integral constants by reference, requiring storage.
@@ -295,9 +320,12 @@ ObjectID Online::CreateCharacter() {
 
     // Attempt to move character close to an existing one.
     vector<ObjectID> local_avatar_ids = GetLocalAvatarIDs();
+    if (local_avatar_ids.empty() && CampaignMainAvatarID() != static_cast<ObjectID>(-1)) local_avatar_ids.push_back(CampaignMainAvatarID());
     if (local_avatar_ids.size() > 0) {
-        MovementObject* mymo = static_cast<MovementObject*>(scenegraph->GetObjectFromID(local_avatar_ids[0]));
-        team = mymo->GetScriptParams()->GetStringVal("Teams");
+        Object* anchor = scenegraph->GetObjectFromID(local_avatar_ids[0]);
+        if (!anchor || anchor->GetType() != _movement_object) return static_cast<ObjectID>(-1);
+        MovementObject* mymo = static_cast<MovementObject*>(anchor);
+        if (mymo->GetScriptParams()->HasParam("Teams")) team = mymo->GetScriptParams()->GetStringVal("Teams");
         // Overgrowth Online: near the host's character on solid ground (not in the water)
         position = mymo->position;  // a safe fallback, never the world's origin
         bool placed = false;
@@ -328,6 +356,8 @@ ObjectID Online::CreateCharacter() {
     mo->SetTranslation(position);
     mo->is_player = true;
     mo->created_on_the_fly = true;
+    mo->exclude_from_save = true;
+    mo->exclude_from_undo = true;
 
     // Overgrowth Online: create it everywhere first, or the clients drop its Teams update
     Send<OnlineMessages::CreateEntity>(default_hot_join_characte_path, position, id);
@@ -369,7 +399,8 @@ void Online::SendPlayerInputState() {
         const int input_id = Input::Instance()->GetLocalPlayerInputID(player.local_index);
         PlayerInput* input = Input::Instance()->GetController(input_id);
         if (input == nullptr || player.object_id == static_cast<ObjectID>(-1)) continue;
-        const bool menu_open = Engine::Instance()->PlayerHasMenu(input_id);
+        const bool menu_open = Engine::Instance()->PlayerHasMenu(input_id) ||
+            ((CoopCutscene() || RemoteCutsceneActive()) && player.object_id != CampaignMainAvatarID());
         auto& previous = client_player_key_states_[player.player_id];
         for (const string& binding : Input::Instance()->GetAllAvailableBindings()) {
             if (binding == "look_left" || binding == "look_right" || binding == "look_up" || binding == "look_down") continue;
@@ -387,6 +418,7 @@ void Online::SendPlayerInputState() {
 }
 
 void Online::LateUpdate(SceneGraph* scenegraph) {
+    UpdateLobbyHostMigration();
     UpdateScriptApi();  // (Overgrowth Online: the script API's sends, deliveries and player events)
     UpdateEditing(scenegraph);  // (Overgrowth Online: building a level together)
 
@@ -409,7 +441,12 @@ void Online::LateUpdate(SceneGraph* scenegraph) {
             Send<OnlineMessages::Ping>(online_session->last_ping_id, OnlineClockMs());
         }
 
-        online_session->client_connection_manager.Update();
+        {
+            // GNS admission adds peers on its network thread. Keep map/state
+            // transitions serialized with those additions and queue readers.
+            lock_guard<mutex> guard(online_session->connected_peers_lock);
+            online_session->client_connection_manager.Update();
+        }
         if (IsHosting() && lobby_start_pending_ && !lobby_waiting_ && !loading &&
             Engine::Instance()->IsLevelLoaded() && AllClientsReady()) {
             SessionStarted(true);
@@ -553,6 +590,7 @@ bool Online::CheckLoadedMapAndCampaignState(const string& campagin, const string
 
 void Online::SetLevelLoaded() {
     if (IsClient()) {
+        loading = false;
         // We notify the host about having loaded, the host can only finish loading if we have.
         // From the client's perspective! The host might already be ingame, client doesn't know.
         Send<OnlineMessages::PCSLoadingCompletedMessage>();
@@ -562,9 +600,14 @@ void Online::SetLevelLoaded() {
     // Host finished loading
     if (IsHosting()) {
         loading = false;
+        SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+        if (local_only_session_ && graph) level_name = graph->level_path_.GetOriginalPathStr();
         RemoveAllAvatarIds();
         AddFreeAvatarsIds();
+        campaign_main_avatar_id_ = online_session->free_avatars.empty() ? static_cast<ObjectID>(-1) : online_session->free_avatars.front();
+        if (!online_session->player_states.count(campaign_main_player_id_)) campaign_main_player_id_ = LobbyPlayerIDForLocalIndex(0);
         AssignPeerAvatars(LocalPeerID());
+        BroadcastLobby();
 
         campaign_id = ModLoading::Instance().WhichCampaignLevelBelongsTo(level_name);
         // (the empty level, Data/Levels/nothing.xml, loads as a new level: no path of its own)
@@ -654,6 +697,11 @@ bool Online::IsAwaitingShutdown() const {
 }
 
 void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
+    local_only_session_ = false;
+    campaign_main_player_id_ = LobbyAuthority::InvalidPlayer;
+    campaign_main_avatar_id_ = static_cast<ObjectID>(-1);
+    remote_cutscene_active_ = false;
+    lobby_migration_transport_lost_ = false;
     client_player_key_states_.clear();
     if (local_lobby_profiles_.empty()) {
         LocalLobbyProfile profile; profile.name = OnlineUtility::GetPlayerName();
@@ -698,7 +746,7 @@ void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
     if (mode == MultiplayerMode::Host) {
         // assert(scenegraph);
         // TODO this might never be true due to how we handle starting multiplayer now
-        if (engine->GetSceneGraph() != nullptr) {
+        if (engine->IsLevelLoaded() && engine->GetSceneGraph() != nullptr) {
             RemoveAllAvatarIds();
             AddFreeAvatarsIds();
             host_started_level = true;
@@ -738,10 +786,19 @@ void Online::StartHostingMultiplayer() {
     if (!IsActive()) {
         StartMultiplayer(MultiplayerMode::Host);
         CreateListenSocketIP("");
+    } else if (IsHosting() && local_only_session_) {
+        const NetListenSocketID socket = net.CreateListenSocketIP("");
+        if (socket != 0) {
+            listen_sockets.insert(socket);
+            local_only_session_ = false;
+        }
     }
 }
 
 void Online::PerformLevelChangeCleanUp() {
+    loading = true;
+    if (online_session) for (auto& player : online_session->player_states)
+        player.second.object_id = static_cast<ObjectID>(-1);
     lock_guard<mutex> guard(online_session->state_packages_lock);
     online_session->state_packages.clear();
 }
@@ -778,15 +835,22 @@ vector<Peer>::iterator Online::GetPeerIt(NetConnectionID conn_id) {
     return online_session->connected_peers.end();
 }
 
-void Online::QueueStopMultiplayer() {
+void Online::QueueStopMultiplayer(bool transport_lost) {
+    lobby_migration_transport_lost_ = transport_lost;
+    // Explicit Leave/Cancel also cancels a handoff while it is temporarily
+    // between sessions. It must not be mistaken for a recoverable link loss.
+    if (!transport_lost) OnLobbySessionStopping();
     if (IsActive()) {
         mode = MultiplayerMode::AwaitingShutdown;
     }
 }
 
 void Online::StopMultiplayer() {
+    OnLobbySessionStopping();
     lobby_waiting_ = false;
     lobby_start_pending_ = false;
+    local_only_session_ = false;
+    remote_cutscene_active_ = false;
     client_player_key_states_.clear();
     if (IsActive() || mode == MultiplayerMode::AwaitingShutdown) {
         mode = MultiplayerMode::CleanUp;
@@ -1026,7 +1090,7 @@ int MorphStep(float v) {
 }  // namespace
 
 void Online::StreamCharacters(SceneGraph* sg) {
-    if (!host_started_level || online_session == nullptr) {
+    if (local_only_session_ || !host_started_level || online_session == nullptr) {
         stream_latest.clear();
         stream_sent.clear();
         stream_owned.clear();
@@ -2236,12 +2300,12 @@ int Online::OwnApiPlayerID() const {
     if (!IsActive()) {
         return -1;
     }
-    return ApiPlayerID(online_session->local_player_id);
+    return ApiPlayerID(LocalLobbyLeaderPlayerID());
 }
 
 PeerID Online::ApiPlayerPeer(int player) const {
     if (IsActive() && online_session != nullptr) {
-        const PlayerID id = player == 0 ? 255 : static_cast<PlayerID>(player);
+        const PlayerID id = player == 0 ? LobbyHostPlayerID() : static_cast<PlayerID>(player);
         const auto found = online_session->player_states.find(id);
         if (found != online_session->player_states.end()) return found->second.peer_id;
     }
@@ -3189,6 +3253,7 @@ void Online::CloseConnectionImmediate(NetConnectionID conn_id, ConnectionClosedR
                 ov = owner_overrides.erase(ov);
             } else ++ov;
         }
+        RefreshLobbyAuthorities();
         BroadcastLobby();
 
         online_session->client_connection_manager.RemoveConnection(peer->peer_id);
@@ -3304,12 +3369,26 @@ void Online::ApplyPlayerInput() {
 }
 
 PlayerState Online::GetOwnPlayerState() {
+    PlayerState fallback;
+    fallback.object_id = -1;
+    if (online_session == nullptr) {
+        return fallback;
+    }
     std::lock_guard<std::mutex> guard(online_session->connected_peers_lock);
 
-    auto it = online_session->player_states.find(online_session->local_player_id);
-    if (it != online_session->player_states.end()) {
+    const PeerID own_peer = LocalPeerID();
+    auto it = online_session->player_states.find(LocalLobbyLeaderPlayerID());
+    if (it != online_session->player_states.end() && it->second.peer_id == own_peer) {
         own_state_missing_logged = false;
         return it->second;
+    }
+    // A couch's original primary may have left. Transport peer IDs remain
+    // stable; they are not logical player IDs after removal or host migration.
+    for (const auto& entry : online_session->player_states) {
+        if (entry.second.peer_id == own_peer) {
+            own_state_missing_logged = false;
+            return entry.second;
+        }
     }
 
     // Overgrowth Online: a joining client has none until the host assigns it,
@@ -3319,8 +3398,6 @@ PlayerState Online::GetOwnPlayerState() {
         own_state_missing_logged = true;
         LOGW << "Tried to get own players state, but there is no state registered for player id: " << std::to_string(online_session->local_player_id) << std::endl;
     }
-    PlayerState fallback;
-    fallback.object_id = -1;
     return fallback;
 }
 
@@ -3772,16 +3849,21 @@ ObjectID Online::HostAvatarID() const {
     if (online_session == nullptr) {
         return -1;
     }
-    // The host's own player state (its local_player_id, -1 as a PlayerID) on every machine
-    auto it = online_session->player_states.find((PlayerID)255);
-    if (it != online_session->player_states.end() && it->second.object_id >= 0) {
+    // Logical IDs survive host migration; the server's transport peer remains
+    // 255. Prefer its decision host, then any surviving seat on that couch.
+    auto it = online_session->player_states.find(LobbyHostPlayerID());
+    if (it != online_session->player_states.end() && it->second.peer_id == 255 && it->second.object_id >= 0) {
         return it->second.object_id;
     }
-    if (IsHosting()) {
-        vector<ObjectID> mine = GetLocalAvatarIDs();
-        return mine.empty() ? -1 : mine[0];
+    const PlayerState* first = nullptr;
+    for (const auto& entry : online_session->player_states) {
+        const PlayerState& state = entry.second;
+        if (state.peer_id == 255 && state.object_id >= 0 &&
+            (first == nullptr || state.local_index < first->local_index)) {
+            first = &state;
+        }
     }
-    return -1;
+    return first != nullptr ? first->object_id : -1;
 }
 
 int Online::GuestIndex(ObjectID id) const {
@@ -4051,54 +4133,115 @@ void Online::CoopZoneRespawn(SceneGraph* sg) {
     }
 }
 
-// Every machine. A dialogue is the host's character's scene: the guests'
-// characters aren't in it (hidden here; level.as holds a client's own one
-// still). When it ends, each guest stands up beside the host
+// Every machine, every frame. The authored story actor keeps its scripted
+// choreography. Extra humans, including later joins, wait outside that scene.
 void Online::CoopCutsceneUpdate(SceneGraph* sg) {
-    bool cutscene = host_started_level && sg != nullptr && sg->level != nullptr && sg->level->DialogueCameraControl();
-    ObjectID host = HostAvatarID();
-
-    if (cutscene && host >= 0) {
+    const bool cutscene = sg != nullptr && sg->level != nullptr &&
+        (sg->level->DialogueCameraControl() || (IsClient() && RemoteCutsceneActive()));
+    const ObjectID main = CampaignMainAvatarID();
+    // ChangeLevel clears the old objects/hidden IDs before the new scene can
+    // reuse their IDs. Its saved state must never be applied to those objects.
+    if (!coop_cutscene && coop_hidden.empty()) coop_cutscene_players.clear();
+    if (cutscene && main >= 0) {
         for (ObjectID id : PlayerAvatarIDs()) {
-            Object* o = id != host ? sg->GetObjectFromID(id) : nullptr;
+            Object* o = id != main ? sg->GetObjectFromID(id) : nullptr;
             if (o == nullptr || o->GetType() != _movement_object) {
                 continue;
             }
-            static_cast<MovementObject*>(o)->visible = false;  // (every frame: aschar.as Reset shows it again)
-            if (std::find(coop_hidden.begin(), coop_hidden.end(), id) == coop_hidden.end()) {
+            MovementObject* actor = static_cast<MovementObject*>(o);
+            auto saved = coop_cutscene_players.find(id);
+            if (saved == coop_cutscene_players.end()) {
+                CutscenePlayerState state;
+                state.visible = actor->visible;
+                state.position = actor->position;
+                if (actor->ASHasVar("dialogue_control")) state.dialogue_control = actor->ASGetBoolVar("dialogue_control");
+                if (actor->ASHasVar("coop_cutscene_hold")) state.hold = actor->ASGetBoolVar("coop_cutscene_hold");
+                if (auto* position = static_cast<vec3*>(actor->as_context->GetVarPtr("dialogue_position"))) state.dialogue_position = *position;
+                if (actor->ASHasVar("dialogue_rotation")) state.dialogue_rotation = actor->ASGetFloatVar("dialogue_rotation");
+                if (actor->rigged_object()) {
+                    const auto& bones = actor->rigged_object()->skeleton_.physics_bones;
+                    state.bones.resize(bones.size());
+                    for (size_t bone = 0; bone < bones.size(); ++bone)
+                        if (bones[bone].bullet_object) state.bones[bone] = bones[bone].bullet_object->GetTransform();
+                }
+                saved = coop_cutscene_players.emplace(id, state).first;
                 coop_hidden.push_back(id);
                 LOGI << "Overgrowth Online: cutscene, player character " << id << " hidden" << std::endl;
             }
+            // Do not depend on an enter event: resets and joins can happen in
+            // the middle of a dialogue, and received snapshots can show a proxy.
+            actor->visible = false;
+            actor->position = saved->second.position;
+            actor->velocity = vec3(0.0f);
+            if (actor->ASHasVar("coop_cutscene_hold")) actor->ASSetBoolVar("coop_cutscene_hold", true);
+            if (actor->rigged_object() && !actor->rigged_object()->animated) {
+                auto& bones = actor->rigged_object()->skeleton_.physics_bones;
+                for (size_t bone = 0; bone < std::min(bones.size(), saved->second.bones.size()); ++bone) {
+                    if (BulletObject* body = bones[bone].bullet_object) {
+                        body->SetTransform(saved->second.bones[bone]);
+                        body->SetLinearVelocity(vec3(0.0f));
+                        body->SetAngularVelocity(vec3(0.0f));
+                        body->UpdateTransform();
+                    }
+                }
+            }
         }
     }
-    if (cutscene == coop_cutscene) {
-        return;
-    }
+    const bool changed = coop_cutscene != cutscene;
     coop_cutscene = cutscene;
-    if (cutscene) {
-        return;
-    }
+    if (changed && IsHosting()) BroadcastLobby();
+    if (cutscene) return;
+    if (coop_cutscene_players.empty()) return;
 
-    for (ObjectID id : coop_hidden) {
+    std::map<PlayerID, ObjectID> ordered_players;
+    for (const auto& player : GetPlayerStates())
+        if (player.object_id != main && player.object_id != static_cast<ObjectID>(-1)) ordered_players[player.player_id] = player.object_id;
+    std::map<ObjectID, int> placement_slots;
+    int placement_index = 1;
+    for (const auto& player : ordered_players) placement_slots[player.second] = placement_index++;
+    for (const auto& entry : coop_cutscene_players) {
+        const ObjectID id = entry.first;
         Object* o = sg != nullptr ? sg->GetObjectFromID(id) : nullptr;
-        if (o != nullptr && o->GetType() == _movement_object) {
-            static_cast<MovementObject*>(o)->visible = true;
+        if (o == nullptr || o->GetType() != _movement_object) continue;
+        MovementObject* actor = static_cast<MovementObject*>(o);
+        const CutscenePlayerState& saved = entry.second;
+        if (actor->ASHasVar("coop_cutscene_hold")) actor->ASSetBoolVar("coop_cutscene_hold", saved.hold);
+        if (actor->ASHasVar("dialogue_control")) {
+            actor->ASSetBoolVar("dialogue_control", saved.dialogue_control);
         }
+        if (auto* position = static_cast<vec3*>(actor->as_context->GetVarPtr("dialogue_position"))) *position = saved.dialogue_position;
+        if (actor->ASHasVar("dialogue_rotation")) actor->ASSetFloatVar("dialogue_rotation", saved.dialogue_rotation);
+        actor->visible = saved.visible;
+        if (!IsLocalAvatar(id) || id == main || saved.dialogue_control || saved.hold) continue;
+        // Every local extra is placed, not just the client's first player.
+        // Keep its combat/health state; this is a teleport, not a revive.
+        vec3 position, facing;
+        const auto slot = placement_slots.find(id);
+        if (SpotBeside(this, sg, main, slot != placement_slots.end() ? slot->second : placement_index++, &position, &facing)) {
+            const vec3 offset = position - actor->position;
+            if (actor->rigged_object() && !actor->rigged_object()->animated) {
+                for (auto& bone : actor->rigged_object()->skeleton_.physics_bones) {
+                    if (BulletObject* body = bone.bullet_object) {
+                        mat4 transform = body->GetTransform();
+                        transform.SetTranslationPart(transform.GetTranslationPart() + offset);
+                        body->SetTransform(transform);
+                        body->SetLinearVelocity(vec3(0.0f));
+                        body->SetAngularVelocity(vec3(0.0f));
+                        body->UpdateTransform();
+                    }
+                }
+            }
+            actor->position = position;
+            actor->velocity = vec3(0.0f);
+            actor->SetRotationFromFacing(facing);
+            actor->Execute("SetCameraFromFacing(); FixDiscontinuity();");
+        }
+        pending_revives.erase(std::remove_if(pending_revives.begin(), pending_revives.end(),
+                                             [id](const PendingRevive& revive) { return revive.id == id; }),
+                              pending_revives.end());
     }
     coop_hidden.clear();
-
-    // Our own character, a guest's: beside the host, facing its way (a revive
-    // that came during the cutscene is this now)
-    ObjectID me = IsHosting() ? -1 : GetOwnPlayerState().object_id;
-    pending_revives.erase(std::remove_if(pending_revives.begin(), pending_revives.end(),
-                                         [&](const PendingRevive& r) { return r.id == me; }),
-                          pending_revives.end());
-    Object* o = me >= 0 && me != host && IsLocalAvatar(me) ? sg->GetObjectFromID(me) : nullptr;
-    vec3 pos, facing;
-    if (o != nullptr && o->GetType() == _movement_object && SpotBeside(this, sg, host, std::max(1, GuestIndex(me)), &pos, &facing)) {
-        LOGI << "Overgrowth Online: cutscene over, player character " << me << " beside the host's " << host << std::endl;
-        ReviveAvatar(static_cast<MovementObject*>(o), pos, facing);
-    }
+    coop_cutscene_players.clear();
 }
 
 // Every machine, once a frame after the game updates: while our own character
@@ -4456,7 +4599,7 @@ void Online::OnConnectionChange(NetFrameworkConnectionStatusChanged* data) {
             ConnectionClosedReason reason = data->conn_info.end_reason;
             CloseConnection(data->conn_id, reason);
             if (IsClient()) {
-                QueueStopMultiplayer();  // the main loop stops it (we may be on the network thread)
+                QueueStopMultiplayer(true);  // preserve an unfinished handoff for rollback
 
                 if (ConnectionClosedReasonUtil::IsUnusualReason(reason)) {
                     string error = ConnectionClosedReasonUtil::GetErrorMessage(reason);
@@ -4473,7 +4616,7 @@ void Online::OnConnectionChange(NetFrameworkConnectionStatusChanged* data) {
 
             if (IsClient()) {
                 // Lost the host: leave the session (it used to stay half open)
-                QueueStopMultiplayer();
+                QueueStopMultiplayer(true);
 
                 if (ConnectionClosedReasonUtil::IsUnusualReason(reason)) {
                     string error = ConnectionClosedReasonUtil::GetErrorMessage(reason);
@@ -4532,6 +4675,7 @@ void Online::ActivateGameOverlayInviteDialog() {
 // lobby carries the invite and "Join Game"; open from the level's start, so
 // friends can join without one (Join a friend)
 bool Online::OpenToFriends(bool overlay) {
+    if (local_only_session_) return false;
 #if ENABLE_STEAMWORKS
     SteamworksMatchmaking* matchmaking = Steamworks::Instance()->GetMatchmaking();
     if (matchmaking == nullptr || !IsHosting()) {
@@ -4554,6 +4698,7 @@ bool Online::OpenToFriends(bool overlay) {
 // Overgrowth Online (host, Steam): what friends see in Join a friend: the
 // campaign and level, the player count, our mods (they must match)
 void Online::UpdateFriendPresence(SceneGraph* scenegraph) {
+    if (local_only_session_) return;
 #if ENABLE_STEAMWORKS
     SteamworksMatchmaking* matchmaking = Steamworks::Instance()->GetMatchmaking();
     Engine* engine = Engine::Instance();

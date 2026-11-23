@@ -29,6 +29,7 @@
 #include <Online/online_file_transfer_handler.h>
 #include <Online/online_message_handler.h>
 #include <Online/state_machine.h>
+#include <Online/lobby_authority.h>
 
 #include <Online/Message/audio_play_sound_group_relative_gain_message.h>
 #include <Online/Message/audio_play_sound_group_gain_message.h>
@@ -382,7 +383,7 @@ class Online {
     void StartMultiplayer(MultiplayerMode multiplayerMode);
     void StartHostingMultiplayer();
 
-    void QueueStopMultiplayer();
+    void QueueStopMultiplayer(bool transport_lost = false);
     void StopMultiplayer();
     void StopListening();
 
@@ -551,7 +552,11 @@ class Online {
     static const int kScriptApiVersion = 1;
     static const size_t kScriptChannelMax = 64;
     static const size_t kScriptTextMax = 16384;
-    int ApiPlayerID(PlayerID id) const { return id == 255 ? 0 : (int)id; }
+    int ApiPlayerID(PlayerID id) const { return id == LobbyHostPlayerID() ? 0 : (int)id; }
+    int ApiPlayerID(PeerID peer) const {
+        const auto leader = lobby_authority_.leaders.find(peer);
+        return leader == lobby_authority_.leaders.end() ? -1 : ApiPlayerID(leader->second);
+    }
     PeerID ApiPlayerPeer(int player) const;  // zero when no such logical player exists
     int OwnApiPlayerID() const;
     std::vector<int> ApiPlayerIDs() const;
@@ -704,8 +709,19 @@ class Online {
     // dialogue plays; when it ends each guest stands up beside the host
     void CoopCutsceneUpdate(SceneGraph* sg);
     bool CoopCutscene() const { return coop_cutscene; }
+    bool RemoteCutsceneActive() const { return remote_cutscene_active_; }
+    bool remote_cutscene_active_ = false;
     bool coop_cutscene = false;
     vector<ObjectID> coop_hidden;
+    struct CutscenePlayerState {
+        bool visible = true;
+        bool dialogue_control = false;
+        bool hold = false;
+        vec3 position, dialogue_position;
+        float dialogue_rotation = 0.0f;
+        vector<mat4> bones;
+    };
+    std::map<ObjectID, CutscenePlayerState> coop_cutscene_players;
     // Spectating: our own character is down and another player's isn't, so the
     // camera follows theirs (the nearest; attack picks the next, level.as)
     void CoopSpectateUpdate(SceneGraph* sg);
@@ -827,19 +843,49 @@ class Online {
     PeerID LocalPeerID() const;
     unsigned LocalLobbyPlayerCount() const;
     bool BeginLobby();
+    bool EnsureLocalSession();
+    bool IsLocalOnlySession() const { return local_only_session_ && IsHosting(); }
+    bool OpenLobbyToNetwork(PlayerID actor = LobbyAuthority::InvalidPlayer);
+    ObjectID CampaignMainAvatarID() const;
     bool LobbyWaiting() const { return lobby_waiting_; }
     PlayerID AddLocalLobbyPlayer(const std::string& name);
-    bool RenameLobbyPlayer(PlayerID id, const std::string& name);
-    bool SetLobbyTeam(PlayerID id, int team);
-    bool SetLobbyScreen(PlayerID id, int screen);
-    bool CanRemoveLobbyPlayer(PlayerID id) const;
-    bool RemoveLobbyPlayer(PlayerID id);
-    bool EndLobbyGame();
+    PlayerID LobbyPlayerIDForLocalIndex(unsigned index) const;
+    PlayerID LocalLobbyLeaderPlayerID() const;
+    PlayerID LobbyHostPlayerID() const { return lobby_authority_.host; }
+    bool IsLobbyHost(PlayerID id) const;
+    bool IsLobbyLeader(PlayerID id) const;
+    void RefreshLobbyAuthorities();
+    std::string ExportLobbyForMigration() const;
+    bool RestoreLobbyForMigration(const std::string& payload, PeerID origin_local_peer, PlayerID target_host);
+    bool RestoreMigratedPeer(PeerID new_peer, PeerID old_peer);
+    bool BeginLobbyHostMigration(PlayerID target, PlayerID actor);
+    bool HandleLobbyMigrationControl(PeerID from, const std::string& payload);
+    void UpdateLobbyHostMigration();
+    bool AdmitMigratingPeer(PeerID new_peer, const std::string& token, PeerID old_peer);
+    void ConfigureClientMigrationHandshake(const std::string& token, PeerID origin_peer);
+    std::string MigrationJoinToken() const;
+    unsigned MigrationOriginPeer() const;
+    std::string LobbyMigrationStatus() const;
+    bool LobbyMigrationBusy() const;
+    void OnLobbySessionStopping();
+    bool CanPromoteLobbyHost(PlayerID target, PlayerID actor = LobbyAuthority::InvalidPlayer) const;
+    bool PromoteLobbyHost(PlayerID target, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool CanPromoteLobbyLeader(PlayerID target, PlayerID actor = LobbyAuthority::InvalidPlayer) const;
+    bool PromoteLobbyLeader(PlayerID target, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool RenameLobbyPlayer(PlayerID id, const std::string& name, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool CanSetLobbyTeam(PlayerID id, PlayerID actor = LobbyAuthority::InvalidPlayer) const;
+    bool SetLobbyTeam(PlayerID id, int team, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool SetLobbyScreen(PlayerID id, int screen, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool CanRemoveLobbyPlayer(PlayerID id, PlayerID actor = LobbyAuthority::InvalidPlayer) const;
+    bool RemoveLobbyPlayer(PlayerID id, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool EndLobbyGame(PlayerID actor = LobbyAuthority::InvalidPlayer);
     void ApplyLobbyAppearances(SceneGraph* scenegraph);
     static vec3 LobbyTeamColor(int team);
-    bool SetLobbySelection(const std::string& mode, const std::string& campaign, const std::string& map, bool build);
-    bool SetLobbyAllowAllPause(bool allow);
-    bool SetLobbyForceTeams(bool force);
+    bool SetLobbySelection(const std::string& mode, const std::string& campaign, const std::string& map, bool build, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool SetLobbyAllowAllPause(bool allow, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool SetLobbyForceTeams(bool force, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool SetLobbyHostControlsTeams(bool controls, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool LobbyHostControlsTeams() const { return lobby_host_controls_teams_; }
     bool LobbyForceTeams() const { return lobby_force_teams_; }
     bool UsesLobbyTeams() const;
     int AssignedModeTeam(ObjectID avatar) const;
@@ -851,7 +897,7 @@ class Online {
     const std::string& LobbyCampaign() const { return lobby_campaign_; }
     const std::string& LobbyMap() const { return lobby_map_; }
     bool LobbyBuild() const { return lobby_build_; }
-    bool StartLobbyGame(const std::string& level = "", const std::string& campaign = "", bool build = false);
+    bool StartLobbyGame(const std::string& level = "", const std::string& campaign = "", bool build = false, PlayerID actor = LobbyAuthority::InvalidPlayer);
     void ReceiveLobbyControl(PeerID from, const std::string& payload);
     void BroadcastLobby();
     void EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& names, const std::vector<int>& screens = {});
@@ -866,9 +912,17 @@ class Online {
     struct LocalLobbyProfile { std::string name; int screen = 1; };
     std::vector<LocalLobbyProfile> local_lobby_profiles_;
     bool lobby_waiting_ = false;
+    bool local_only_session_ = false;
+    PlayerID campaign_main_player_id_ = LobbyAuthority::InvalidPlayer;
+    ObjectID campaign_main_avatar_id_ = static_cast<ObjectID>(-1);
     bool lobby_start_pending_ = false;
     bool lobby_allow_all_pause_ = false;
     bool lobby_force_teams_ = false;
+    bool lobby_host_controls_teams_ = true;
+    std::atomic<bool> lobby_migration_transport_lost_{false};
+    LobbyAuthority::State lobby_authority_;
+    std::map<PlayerID, PlayerState> migration_saved_players_;
+    LobbyAuthority::State migration_saved_authority_;
     std::unordered_map<CommonObjectID, int> mode_teams_;
     bool lobby_build_ = false;
     std::string lobby_mode_, lobby_campaign_, lobby_map_;
@@ -877,6 +931,10 @@ class Online {
     void SubmitLobbyRequest(const std::string& payload);
     void PrepareReturnToLobby();
     void RemoveLocalLobbyProfile(unsigned index);
+    std::vector<LobbyAuthority::Seat> LobbySeats() const;
+    PlayerID ResolveLobbyActor(PlayerID actor) const;
+    void ApplyManualTeam(PlayerID id);
+    void ApplyLocalLobbyScreens();
     // Explicitally disable copy constructors and assignment to prevent misuse.
     Online(const Online&) = delete;
     Online& operator=(const Online&) = delete;

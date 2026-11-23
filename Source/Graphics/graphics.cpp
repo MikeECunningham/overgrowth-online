@@ -252,6 +252,7 @@ void Graphics::setColorMask(const bool red, const bool green, const bool blue, c
 }
 
 void Graphics::setSimpleShadows(const bool val) {
+    if (g_simple_shadows == val) return;
     g_simple_shadows = val;
     if (initialized) {
         InitScreen();
@@ -2268,6 +2269,9 @@ void Graphics::CheckForWindowResize() {
 
 void Graphics::SetFullscreen(FullscreenMode::Mode val) {
     config_.SetFullscreen(val);
+    // Reapplying the current mode used to force SetResolution(..., true),
+    // recreating every screen target for unrelated settings such as fog.
+    if (initialized && currentFullscreenType == val) return;
 
     // If entering windowed mode, resize the window to half the display resolution and center it,
     // Otherwise the title bar (on windows at least) might appear outside of the screen bounds
@@ -2364,6 +2368,7 @@ void Graphics::SetTemporalAA(int val) {
 }
 
 void Graphics::SetVsync(bool val) {
+    if (config_.vSync() == val) return;
     config_.SetVSync(val);
     ApplyVsync(val);
 }
@@ -2401,6 +2406,7 @@ void Graphics::SetDetailObjectLowres(bool val) {
 }
 
 void Graphics::SetDetailObjectsReduced(bool val) {
+    if (g_detail_objects_reduced == val) return;
     g_detail_objects_reduced = val;
     g_detail_objects_reduced_dirty = true;
 }

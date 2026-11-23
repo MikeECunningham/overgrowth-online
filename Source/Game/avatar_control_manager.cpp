@@ -270,10 +270,6 @@ void AvatarControlManager::Update() {
                             avatar->focused_character = false;
                         }
                     } else {
-                        if (!avatar->focused_character && !focused_character_set && !avatar->remote && Online::Instance()->IsHosting()) {
-                            Online::Instance()->PossessAvatar(Online::Instance()->online_session->local_player_id, avatar->GetID());
-                        }
-
                         // Set the first player controlled avatar as the focused one, this works
                         // in single player because we only expect there to be one controllable
                         // avatar.

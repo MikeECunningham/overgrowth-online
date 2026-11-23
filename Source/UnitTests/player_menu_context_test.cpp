@@ -53,4 +53,37 @@ void menuscope::test<1>() {
     config = saved;
     ensure("global UI state restored on return", restored);
 }
+template <> template <>
+void menuscope::test<2>() {
+    set_test_name("temporary menu ownership does not dirty persistent configuration");
+    config.has_changed_since_save = false;
+    PlayerMenuUI::Context context;
+    {
+        PlayerMenuUI::Scope scope(context);
+        ensure("opening and drawing a menu does not require a config save", !config.HasChangedSinceLastSave());
+    }
+    ensure("restoring ownership does not require a save", !config.HasChangedSinceLastSave());
+    {
+        PlayerMenuUI::Scope scope(context);
+        config.GetRef("gamepad_0_invert_x_look") = true;
+    }
+    ensure("a real settings edit remains dirty after scope exit", config.HasChangedSinceLastSave());
+}
+template <> template <>
+void menuscope::test<3>() {
+    set_test_name("graphics values are shared between personal menus while ownership stays private");
+    PlayerMenuUI::Context first, second;
+    first.local_index = 0;
+    second.local_index = 1;
+    {
+        PlayerMenuUI::Scope scope(first);
+        config.GetRef("simple_fog") = true;
+    }
+    {
+        PlayerMenuUI::Scope scope(second);
+        ensure("another screen observes the same graphics setting", config["simple_fog"].toBool());
+        ensure_equals("another screen keeps its own settings owner", config["menu_player_config"].toNumber<int>(), 1);
+    }
+    ensure("graphics edits survive exiting either menu", config["simple_fog"].toBool());
+}
 }
