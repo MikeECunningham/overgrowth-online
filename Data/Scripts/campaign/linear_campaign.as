@@ -67,6 +67,9 @@ void ReceiveMessage(string msg) {
     }
     
     if(token == "levelwin" ) {
+        if(!Online_IsClient() && !EditorModeActive() && !disable_progress) {
+            Online_ChallengeCompletion("campaign_level:" + GetCurrLevelRelPath());
+        }
         if(!disable_progress){
             string curr_id = GetCurrLevelID();
             LevelFinished(curr_id);

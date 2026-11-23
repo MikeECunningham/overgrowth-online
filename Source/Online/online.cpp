@@ -182,6 +182,7 @@ void Online::ClearIDTranslations() {
     // same-map retries. Object IDs can be reused by the next scene; saved
     // cutscene physics and ownership must never follow those numeric IDs.
     ResetCampaignDifficulty(true);
+    ChallengeSceneChanged();
     ResetCampaignFactions();
     coop_cutscene_players.clear();
     coop_hidden.clear();
@@ -700,6 +701,7 @@ void Online::LateUpdate(SceneGraph* scenegraph) {
             for (const auto& player : GetPlayerStates()) if (player.object_id >= 0) ApplyAssignedTeam(player.object_id);
         }
         CoopUpdate(scenegraph);
+        UpdateModeChallenge(scenegraph);
         UpdateCampaignDifficulty(scenegraph);
         CoopSpectateUpdate(scenegraph);
         ResolveHeldHits();

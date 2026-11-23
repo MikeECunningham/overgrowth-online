@@ -23,6 +23,7 @@
 //-----------------------------------------------------------------------------
 
 #include "threatcheck.as"
+#include "challenge_arena_events.as"
 #include "music_load.as"
 
 MusicLoad ml("Data/Music/lugaru_new.xml");
@@ -570,6 +571,7 @@ void CharactersNoticeEachOther() {
 
 // Spawn all of the objects that we'll need in the level of given total difficulty
 void SetUpLevel(float initial_difficulty){
+    ChallengeArenaNewMatch();
     // Remove all spawned objects
     DeleteObjectsInList(spawned_object_ids);
     spawned_object_ids.resize(0);
@@ -872,6 +874,9 @@ void ReceiveMessage(string msg) {
         string param1 = token_iter.GetToken(msg);
         token_iter.FindNextToken(msg);
         string param2 = token_iter.GetToken(msg);
+        if(atoi(param1) == 0 && param2 == "fighting" && meta_states[0] != "fighting") {
+            ChallengeArenaRoundBegin();
+        }
         meta_states[atoi(param1)] = param2;
     } else if(token == "dispose_level"){
         StopSound(audience_sound_handle);
@@ -972,6 +977,7 @@ float GetRandomDifficultyNearPlayerSkill() {
 }
 
 void EndMatch(bool victory){
+    ChallengeArenaMatchComplete();
     float win_prob = ProbabilityOfWin(player_skill, curr_difficulty);
     float excitement_level = 1.0f-pow(0.9f,total_excitement*0.3f);
     const float kMatchImportance = 0.3f; // How much this match influences your skill evaluation
@@ -1037,6 +1043,7 @@ void VictoryCheck() {
         bool multiple_teams_alive = false;
         bool any_team_alive = false;
         string team_alive;
+        int winner_avatar = -1;
 
         int num = GetNumCharacters();
         for(int i=0; i<num; ++i){
@@ -1045,6 +1052,7 @@ void VictoryCheck() {
                 ScriptParams@ params = ReadObjectFromID(char.GetID()).GetScriptParams();
                 if(!any_team_alive){
                     any_team_alive = true;
+                    winner_avatar = char.GetID();
                     team_alive = params.GetString("Teams");
                 } else if(team_alive != params.GetString("Teams")){
                     multiple_teams_alive = true;
@@ -1053,6 +1061,7 @@ void VictoryCheck() {
         }
 
         if(!multiple_teams_alive && meta_states[0] == "fighting"){
+            ChallengeArenaRoundWin(winner_avatar);
             // Store id of the team that won the last round
             int last_round_winner = -1;
             if("0" == team_alive){
@@ -1073,7 +1082,7 @@ void VictoryCheck() {
             int max_score = MaxScore();
 
 
-            if(match_score[last_round_winner] < max_score){
+            if(last_round_winner == -1 || match_score[last_round_winner] < max_score){
                 ClearMeta();
                 AddMetaEvent(kMessage, "set_all_hostile false");
                 AddMetaEvent(kMessage, "set_meta_state 0 fighting_over_but_allowed");

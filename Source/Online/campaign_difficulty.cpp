@@ -1,5 +1,6 @@
 // Party-size scaling for authored campaign encounters. Apache-2.0.
 #include <Online/campaign_difficulty.h>
+#include <Online/challenge_scaling.h>
 #include <Online/online.h>
 #include <Online/online_utility.h>
 #include <Main/engine.h>
@@ -45,6 +46,11 @@ MovementObject* Actor(SceneGraph* graph, ObjectID id) {
 bool Awake(MovementObject* actor) {
     return actor && actor->ASHasVar("knocked_out") && actor->ASGetIntVar("knocked_out") == 0;
 }
+bool LobbyBot(Online* online, ObjectID id) {
+    if (online->online_session) for (const auto& player : online->online_session->player_states)
+        if (player.second.object_id == id) return player.second.is_bot;
+    return false;
+}
 int Strength(MovementObject* actor) {
     if (!actor || !actor->ASHasVar("species")) return CampaignDifficulty::Rabbit;
     switch (actor->ASGetIntVar("species")) {
@@ -57,6 +63,10 @@ int Strength(MovementObject* actor) {
 }
 bool OpposesMain(Online* online, SceneGraph* graph, MovementObject* actor) {
     if (!actor) return false;
+    if (!online->CoopCampaign()) {
+        MovementObject* reference = Actor(graph, online->ChallengeReferenceAvatar());
+        return reference && !actor->ASOnSameTeam(reference);
+    }
     bool member = false;
     for (const auto& player : online->GetPlayerStates()) {
         if (!online->CampaignPlayerOnMainTeam(player.player_id)) continue;
@@ -68,7 +78,7 @@ bool OpposesMain(Online* online, SceneGraph* graph, MovementObject* actor) {
     return member;
 }
 bool Hostile(Online* online, SceneGraph* graph, MovementObject* actor) {
-    if (!actor || actor->controlled || online->IsPlayerCharacter(actor->GetID()) ||
+    if (!actor || actor->controlled || (online->IsPlayerCharacter(actor->GetID()) && !LobbyBot(online, actor->GetID())) ||
         !actor->HasFunction("void SetCampaignScaling(float, float, float, float)")) return false;
     ScriptParams* params = actor->GetScriptParams();
     if (params->HasParam("Campaign Scaling Exempt") && params->ASGetInt("Campaign Scaling Exempt") != 0) return false;
@@ -456,7 +466,7 @@ void Online::ReceiveCampaignScale(CommonObjectID character, float vitality, floa
         vitality < 1 || vitality > 6 || damage < 1 || damage > 2 || armor < 1 || armor > 2 || ai < 0 || ai > 0.03f) return;
     MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), GetObjectID(character));
     if (!actor || !actor->HasFunction("void SetCampaignScaling(float, float, float, float)")) return;
-    if (IsPlayerCharacter(actor->GetID()) && (vitality != 1 || damage != 1 || armor != 1 || ai != 0)) return;
+    if (IsPlayerCharacter(actor->GetID()) && !LobbyBot(this, actor->GetID()) && (vitality != 1 || damage != 1 || armor != 1 || ai != 0)) return;
     ASArglist args;
     args.Add(vitality); args.Add(damage); args.Add(armor); args.Add(ai);
     actor->as_context->CallScriptFunction("void SetCampaignScaling(float, float, float, float)", &args);
@@ -487,7 +497,9 @@ bool Online::CampaignEncounterDefeated(ObjectID hotspot, int goal) const {
 }
 
 void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
-    if (!IsHosting() || !host_started_level || loading || !graph || !graph->level || !CoopCampaign()) return;
+    if (!IsHosting() || !host_started_level || loading || LobbyWaiting() || LobbyBuild() || BuildSession() || !graph || !graph->level) return;
+    const bool campaign = CoopCampaign();
+    if (!campaign && !campaign_difficulty_state && ModeChallengePressure() <= 0) return;
     if (!campaign_difficulty_state || campaign_difficulty_state->graph != graph) {
         campaign_difficulty_state = std::make_shared<CampaignDifficultyState>();
         campaign_difficulty_state->graph = graph;
@@ -516,14 +528,18 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
         state.deployment_target = -1; state.deployment_seats.clear();
         state.member_combat.clear(); state.active_encounter = {-1, -1}; state.last_deployment = -100000;
     }
-    StageOpponents(this, graph, state);
+    if (campaign) StageOpponents(this, graph, state);
     if (now < state.next_update) return;
     state.next_update = now + 350.0;
     const int humans = CampaignPartySize();
-    const bool stats = config["campaign_mp_scaling"].toBool();
-    const bool nightmare = config.GetDifficultyPreset() == "Nightmare";
+    const bool stats = campaign && config["campaign_mp_scaling"].toBool();
+    const bool nightmare = campaign && config.GetDifficultyPreset() == "Nightmare";
+    // Publish small steps rather than a reliable packet for every tiny clock
+    // change, while keeping the authoritative progression clock continuous.
+    const auto challenge = ChallengeScaling::Evaluate(std::round(ModeChallengePressure() * 1000.0f) / 1000.0f);
     std::set<ObjectID> bosses;
     for (Object* object : graph->hotspots_) {
+        if (!campaign) break;
         auto* hotspot = static_cast<Hotspot*>(object);
         if (hotspot->GetScriptFile().find("overgrowth_level") == std::string::npos || !hotspot->ASHasVar("progress")) continue;
         for (const auto& param : hotspot->GetScriptParams()->GetParameterMap()) {
@@ -540,7 +556,7 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
                 if (token.empty() || !std::isdigit(static_cast<unsigned char>(token[0]))) continue;
                 const ObjectID id = std::atoi(token.c_str());
                 MovementObject* actor = Actor(graph, id);
-                if (!Hostile(this, graph, actor)) continue;
+                if (!Hostile(this, graph, actor) || IsPlayerCharacter(id)) continue;
                 encounter.originals.push_back(id);
                 if (Strength(actor) > strongest) { strongest = Strength(actor); top_count = 1; }
                 else if (Strength(actor) == strongest) ++top_count;
@@ -555,8 +571,13 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
         }
     }
     auto apply = [&](MovementObject* actor, bool hostile, bool boss) {
-        const auto factors = hostile ? CampaignDifficulty::ForPlayers(humans, boss, Strength(actor), stats, nightmare,
+        auto factors = hostile && !LobbyBot(this, actor->GetID()) ? CampaignDifficulty::ForPlayers(humans, boss, Strength(actor), stats, nightmare,
                                                                      GetOriginalID(actor->GetID())) : CampaignDifficulty::Factors();
+        if (hostile) {
+            factors.vitality = std::min(6.0f, factors.vitality * challenge.vitality);
+            factors.damage = std::min(2.0f, factors.damage * challenge.damage);
+            factors.armor = std::min(2.0f, factors.armor * challenge.armor);
+        }
         const std::array<float, 4> values = {{factors.vitality, factors.damage, factors.armor, factors.ai}};
         auto old = state.applied.find(actor->GetID());
         const char* names[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
@@ -579,6 +600,7 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
         if (actor->HasFunction("void SetCampaignScaling(float, float, float, float)"))
             apply(actor, hostile, bosses.count(actor->GetID()) != 0 || ExplicitBoss(actor, false));
     }
+    if (!campaign) return;
     DeployOpponents(this, graph, state, now);
     if (!stats || humans <= 1 || coop_cutscene || graph->level->DialogueCameraControl()) return;
     for (auto& entry : state.encounters) {

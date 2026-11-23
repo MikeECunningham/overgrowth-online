@@ -9,7 +9,7 @@ namespace SettingsChanges {
 inline bool CampaignMatchSetting(const std::string& key) {
     return key == "difficulty_preset" || key == "game_difficulty" ||
            key == "global_time_scale_mult" || key == "tutorials" || key == "auto_ledge_grab" ||
-           key == "campaign_mp_scaling" || key == "campaign_mp_nightmare";
+           key == "campaign_mp_scaling" || key == "campaign_mp_nightmare" || key == "oo_arena_random";
 }
 
 inline bool StartsWith(const std::string& value, const char* prefix) {

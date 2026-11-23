@@ -25,6 +25,7 @@
 #include "ui_effects.as"
 #include "ui_tools.as"
 #include "threatcheck.as"
+#include "challenge_campaign_events.as"
 #include "music_load.as"
 #include "arena_meta_persistence.as"
 
@@ -613,12 +614,15 @@ void VictoryCheckNormal() {
         return;
     }
     bool victory = true;
+    bool has_combat_objective = false;
     bool display_victory_conditions = false;
 
     float max_reset_delay = _reset_delay;
     for(int i=0; i<level.GetNumObjectives(); ++i){
         string objective = level.GetObjective(i);
         if(objective == "destroy_all"){
+            has_combat_objective = true;
+            ChallengeCampaignGoalPoll(-1, 0, "defeat");
             int threats_remaining = ThreatsRemaining();
             int threats_possible = ThreatsPossible();
             if(threats_remaining > 0 || threats_possible == 0){
@@ -685,6 +689,10 @@ void VictoryCheckNormal() {
                 reset_allowed = false;
             }
             if(victory){
+                if(!failure && !Online_IsClient() && !EditorModeActive()) {
+                    if(has_combat_objective) ChallengeCampaignGoalWin(-1, 0);
+                    Online_ChallengeCompletion("campaign_level:" + GetCurrLevelRelPath());
+                }
                 achievements.Save();
             }
         }

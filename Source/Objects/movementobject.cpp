@@ -1807,8 +1807,7 @@ int MovementObject::GetWaypointTarget() {
 void MovementObject::Reset() {
     // Scaling is authoritative match metadata, not an actor's initial script
     // default. Keep it through ResetGlobals on hosts and network replicas.
-    const bool keep_campaign_scale = !Online::Instance()->IsPlayerCharacter(GetID()) &&
-        HasFunction("void SetCampaignScaling(float, float, float, float)");
+    const bool keep_campaign_scale = HasFunction("void SetCampaignScaling(float, float, float, float)");
     float campaign_scale[4] = {1, 1, 1, 0};
     const char* campaign_names[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
     if (keep_campaign_scale) for (int i = 0; i < 4; ++i)

@@ -135,11 +135,14 @@ def campaign_scaling(ctx):
     code(host, "LobbyAddLocalPlayer();")
     wait(lambda: len(rows(host)) == 2 and all(factors(host, n)[0] > 1 for n in (boss, regular)), "two-local-human scaling")
     two_boss, two_regular = factors(host, boss), factors(host, regular)
+    assert math.isclose(two_regular[0], 1.18275, abs_tol=1e-5), two_regular
+    assert math.isclose(two_boss[0], 1.8245, abs_tol=1e-5), two_boss
     assert two_boss[0] > two_regular[0] and two_boss[1] > 1 and two_boss[2] > 1, (two_boss, two_regular)
     no_ai_change(boss, baseline_boss)
     no_ai_change(regular, baseline_regular)
-    wait(lambda: any(c.get("campaign_scaling_source", -1) in regulars for c in world(host)),
-         "active rabbit encounter receives a safely placed same-race reinforcement")
+    time.sleep(0.8)  # allow multiple normal difficulty update intervals
+    assert not any(c.get("campaign_scaling_source", -1) in regulars for c in world(host)), \
+        "one additional ally must not create a reinforcement"
     freeze_humans(host)
     metrics["two_humans"] = {"boss": two_boss, "regular": two_regular}
 
@@ -152,15 +155,20 @@ def campaign_scaling(ctx):
     _ready(guest)
     wait(lambda: len(rows(host)) == len(rows(guest)) == 3, "late guest campaign roster")
     wait(lambda: settings(guest) == settings(host), "authoritative host difficulty reaches the late guest")
+    wait(lambda: math.isclose(factors(host, regular)[0], 1.3655, abs_tol=1e-5) and
+         math.isclose(factors(host, boss)[0], 2.649, abs_tol=1e-5), "three-human difficulty reacts")
+    assert not any(c.get("campaign_scaling_source", -1) in regulars for c in world(host)), \
+        "two additional allies must not create a reinforcement"
     code(guest, "LobbyAddLocalPlayer();")
     wait(lambda: len(rows(host)) == len(rows(guest)) == 4, "guest's second local human")
-    wait(lambda: factors(host, boss)[0] > two_boss[0] and factors(host, regular)[0] > two_regular[0], "four-human difficulty reacts")
+    wait(lambda: math.isclose(factors(host, boss)[0], 3.4735, abs_tol=1e-5) and
+         math.isclose(factors(host, regular)[0], 1.54825, abs_tol=1e-5), "four-human difficulty reacts")
     wait(lambda: all(factors(host, n) == factors(guest, n) for n in (boss, regular)), "late guest receives current actor scaling")
     four_boss, four_regular = factors(host, boss), factors(host, regular)
-    assert math.isclose(four_regular[0], 1.645, abs_tol=1e-5), ("original four-participant rabbit durability", four_regular)
-    assert math.isclose(four_boss[0], 3.91, abs_tol=1e-5), ("original boss durability", four_boss)
-    wait(lambda: len([c for c in world(host) if c.get("campaign_scaling_source", -1) in regulars]) == 4,
-         "four participants reach the original ordinary reinforcement cap")
+    assert math.isclose(four_regular[0], 1.54825, abs_tol=1e-5), ("gentler four-participant rabbit durability", four_regular)
+    assert math.isclose(four_boss[0], 3.4735, abs_tol=1e-5), ("gentler boss durability", four_boss)
+    wait(lambda: len([c for c in world(host) if c.get("campaign_scaling_source", -1) in regulars]) == 1,
+         "three additional allies receive one safely placed same-race reinforcement")
     no_ai_change(boss, baseline_boss)
     no_ai_change(regular, baseline_regular)
     freeze_humans(host)
@@ -215,8 +223,8 @@ def campaign_scaling(ctx):
     wait(lambda: factors(host, boss)[0] > four_boss[0] and factors(host, regular)[0] > four_regular[0],
          "friendly bot contributes one party member to encounter difficulty")
     party_boss, party_regular = factors(host, boss), factors(host, regular)
-    assert math.isclose(party_boss[0], 4.88, abs_tol=1e-5), ("friendly bot uses the original boss curve", party_boss)
-    assert math.isclose(party_regular[0], 1.86, abs_tol=1e-5), party_regular
+    assert math.isclose(party_boss[0], 4.298, abs_tol=1e-5), ("friendly bot uses the same gentler boss curve", party_boss)
+    assert math.isclose(party_regular[0], 1.731, abs_tol=1e-5), party_regular
     friendly_bot = next(p for p in rows(host) if p.get("bot"))
     friendly_bot_actor = next(c for c in world(host) if c["id"] == friendly_bot["avatar_id"])
     assert factors(host, friendly_bot_actor["common_id"]) == (1.0, 1.0, 1.0, 0.0), friendly_bot_actor
@@ -236,7 +244,7 @@ def campaign_scaling(ctx):
     assert actor(host, boss)["permanent_health"] <= 0.4001 and stats(host, boss)["ko_shield"] == 1
 
     extras = [c for c in world(host) if c.get("campaign_scaling_source", -1) >= 0]
-    assert len(extras) <= 8, ("original level reinforcement cap", len(extras))
+    assert len(extras) <= 8, ("level reinforcement cap", len(extras))
     for addition in extras:
         original = actor(host, addition["campaign_scaling_source"])
         assert original and addition["char_path"] == original["char_path"], ("reinforcement character changed", addition, original)
@@ -252,8 +260,15 @@ def campaign_scaling(ctx):
     metrics["reinforcements"] = [{k: c[k] for k in ("common_id", "char_path", "campaign_scaling_source")} for c in extras]
     metrics["boss_health_after_roster_changes"] = actor(host, boss)["permanent_health"]
 
-    # A separate explicit dog boss encounter gets capped same-race
-    # bodyguards for four humans and their friendly bot. It cannot finish while that bodyguard is awake.
+    # An ordinary dog boss gets its first same-race guard at six participants.
+    # A temporary second friendly bot crosses that threshold without another
+    # rendered view. The encounter cannot finish while its guard is awake.
+    original_bot_ids = {p["id"] for p in rows(host) if p.get("bot")}
+    code(host, "LobbyAddBot();")
+    wait(lambda: len([p for p in rows(host) if p.get("bot")]) == 2, "six-member party for boss bodyguard coverage")
+    temporary_bot = next(p["id"] for p in rows(host) if p.get("bot") and p["id"] not in original_bot_ids)
+    wait(lambda: math.isclose(factors(host, boss)[0], 4.63951908218, abs_tol=1e-5),
+         "temporary friendly bot contributes to the six-member party")
     boss_dog = host.bridge.call("spawn", path="Data/Objects/characters/dogs/dog_soldier_actor.xml",
                                pos=[base[0] + 5, base[1] + 0.2, base[2] + 1], teams="scaling_enemy")["object_id"]
     code(host, f'ReadObjectFromID({boss_dog}).GetScriptParams().SetInt("Campaign Boss",1);'
@@ -261,7 +276,7 @@ def campaign_scaling(ctx):
     boss_encounter = set_encounter([boss_dog], advance=True)
     wait(lambda: any(c.get("campaign_scaling_source", -1) == boss_dog for c in world(host)), "boss bodyguard is placed")
     guards = [c for c in world(host) if c.get("campaign_scaling_source", -1) == boss_dog]
-    assert 1 <= len(guards) <= 2, ("boss bodyguard cap", guards)
+    assert len(guards) == 1, ("six participants receive exactly one ordinary boss guard", guards)
     assert guards[0]["char_path"] == actor(host, boss_dog)["char_path"]
     assert factors(host, boss_dog)[0] > party_regular[0]
     assert factors(host, guards[0]["common_id"])[0] < factors(host, boss_dog)[0], "bodyguard inherited boss durability"
@@ -273,6 +288,10 @@ def campaign_scaling(ctx):
         code(host, "SetKnockedOut(_dead);Ragdoll(_RGDL_LIMP);", guard["id"])
     wait(lambda: probe(host, gate) == "true", "boss encounter finishes after its bodyguard")
     metrics["boss_bodyguard"] = {"encounter": boss_encounter, "boss": boss_dog, "guard": guards[0]["common_id"]}
+    code(host, f"LobbyRemovePlayer({temporary_bot});")
+    wait(lambda: len([p for p in rows(host) if p.get("bot")]) == 1 and
+         factors(host, boss) == party_boss and factors(host, regular) == party_regular,
+         "temporary bot removal restores the original five-member party")
     old_additions = {c["common_id"] for c in world(host) if c.get("campaign_scaling_source", -1) >= 0}
     before_retry = len(old_additions)
     code(host, 'level.SendMessage("reset");')

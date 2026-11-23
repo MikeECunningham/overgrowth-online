@@ -23,6 +23,7 @@
 //-----------------------------------------------------------------------------
 
 #include "threatcheck.as"
+#include "challenge_campaign_events.as"
 
 string campaign_name = "my_simple_campaign";
 string current_level_path;
@@ -90,6 +91,9 @@ void ReceiveMessage(string msg) {
 
     if(token == "levelwin" ) {
         if(!EditorModeActive()){
+            if(!Online_IsClient()) {
+                Online_ChallengeCompletion("campaign_level:" + GetCurrLevelRelPath());
+            }
             string path = GetNextLevel();
             if(path != ""){
                 FinishedGeneralCampaignLevel(current_level_path);
@@ -139,6 +143,7 @@ float win_time = -1.0;
 bool sent_level_complete_message = false;
 
 void Update() {
+    ChallengeCampaignGoalPoll(hotspot.GetID(), 0, "defeat");
     int player_id = GetPlayerCharacterID();
 
 	blackout_amount = 0.0;
@@ -163,6 +168,7 @@ void Update() {
     }
 	if(ThreatsRemaining() == 0 && ThreatsPossible() != 0 && ko_time == -1.0){
 		if(win_time == -1.0f){
+            ChallengeCampaignGoalWin(hotspot.GetID(), 0);
 			win_time = the_time;
 		}
 		if(win_time < the_time - 5.0 && !sent_level_complete_message){

@@ -50,27 +50,26 @@ inline Factors ForPlayers(int participants, bool boss, int strength, bool stats,
     const float extra = ExtraPlayers(participants);
     const int rank = std::max(int(Rat), std::min(int(Wolf), strength));
     if (stats) {
-        const float vitality_step = boss ? 0.65f + 0.08f * rank : 0.18f + 0.035f * rank;
+        const float vitality_step = (boss ? 0.65f + 0.08f * rank : 0.18f + 0.035f * rank) * 0.85f;
         out.vitality = std::min(boss ? 6.0f : 3.0f, 1.0f + vitality_step * extra);
-        out.damage = std::min(boss ? 1.9f : 1.6f, 1.0f + (boss ? 0.12f : 0.075f) * extra);
-        out.armor = std::min(boss ? 1.9f : 1.5f, 1.0f + (boss ? 0.15f : 0.07f) * extra);
+        out.damage = std::min(boss ? 1.9f : 1.6f, 1.0f + (boss ? 0.12f : 0.075f) * 0.85f * extra);
+        out.armor = std::min(boss ? 1.9f : 1.5f, 1.0f + (boss ? 0.15f : 0.07f) * 0.85f * extra);
     }
     if (nightmare && TweakForUnit(shared_id) != NoTweak) out.ai = NightmareAIAmount(participants);
     return out;
 }
 
-// Weak-species encounters gain numbers earlier. Bosses primarily gain
-// durability; large dogs and wolves do not become a pack at two players.
+// Additional allies buy a small fixed number budget, independent of the
+// original crowd's size. Bosses and stronger species receive additions later.
 inline int ExtraEnemies(int participants, int original_count, bool boss, int strength) {
     if (participants <= 1 || original_count <= 0) return 0;
     const int rank = std::max(int(Rat), std::min(int(Wolf), strength));
     if (boss) {
-        if (rank == Wolf) return participants >= 8 ? 1 : 0;
-        if (rank == BigDog) return participants >= 6 ? 1 : 0;
-        return std::min(kBossExtraCap, (participants - 1) / 3);
+        if (rank == Wolf) return participants >= 12 ? 1 : 0;
+        if (rank == BigDog) return participants >= 8 ? 1 : 0;
+        return std::min(kBossExtraCap, (participants - 1) / 5);
     }
-    const float density[] = {0.42f, 0.32f, 0.24f, 0.16f, 0.10f};
-    const double count = double(std::min(original_count, kActorCap)) * density[rank] * ExtraPlayers(participants);
-    return std::min(kRegularExtraCap, int(std::floor(count + 0.5)));
+    const int allies_per_extra = rank <= Rabbit ? 3 : 4;
+    return std::min(kRegularExtraCap, (participants - 1) / allies_per_extra);
 }
 }  // namespace CampaignDifficulty

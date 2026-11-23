@@ -34,7 +34,7 @@ const char* const migration_match_settings[] = {
 };
 const char* const campaign_match_settings[] = {
     "game_difficulty", "global_time_scale_mult", "tutorials", "auto_ledge_grab",
-    "campaign_mp_scaling", "campaign_mp_nightmare"
+    "campaign_mp_scaling", "campaign_mp_nightmare", "oo_arena_random"
 };
 
 bool NormalizeCampaignMatchSetting(const std::string& key, const std::string& value, std::string* normalized) {
@@ -457,6 +457,8 @@ std::string Online::LobbyPayload() const {
     message["mode"] = lobby_mode_; message["campaign"] = lobby_campaign_; message["map"] = lobby_map_;
     message["build"] = lobby_build_; message["allow_all_pause"] = lobby_allow_all_pause_;
     message["force_teams"] = lobby_force_teams_;
+    Json::Reader challenge_reader;
+    challenge_reader.parse(ModeChallengePayload(), message["mode_challenge"], false);
     message["host_controls_teams"] = lobby_host_controls_teams_;
     message["match_settings"] = Json::Value(Json::objectValue);
     for (const char* key : campaign_match_settings) message["match_settings"][key] = config[key].str();
@@ -564,6 +566,7 @@ bool Online::RestoreLobbyForMigration(const std::string& payload, PeerID origin_
     lobby_allow_all_pause_ = message.get("allow_all_pause", false).asBool();
     lobby_force_teams_ = message.get("force_teams", false).asBool();
     lobby_host_controls_teams_ = message.get("host_controls_teams", true).asBool();
+    ReceiveModeChallenge(Encode(message["mode_challenge"]));
     const Json::Value& settings = message["match_settings"];
     if (settings.isObject()) {
         for (const char* key : migration_match_settings)
@@ -1061,6 +1064,7 @@ bool Online::StartLobbyGame(const std::string& level, const std::string& campaig
     }
     lobby_waiting_ = false;
     mode_teams_.clear();
+    ResetModeChallenge();
     lobby_start_pending_ = true;
     const bool building = level.empty() ? lobby_build_ : build;
     if (building) BuildOnLoad();
@@ -1106,6 +1110,7 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         lobby_allow_all_pause_ = message.get("allow_all_pause", false).asBool();
         lobby_force_teams_ = message.get("force_teams", false).asBool();
         lobby_host_controls_teams_ = message.get("host_controls_teams", true).asBool();
+        ReceiveModeChallenge(Encode(message["mode_challenge"]));
         ApplyCampaignMatchSnapshot(message["match_settings"]);
         lobby_authority_.host = message.get("decision_host", 255).asUInt();
         remote_cutscene_active_ = message.get("cutscene", false).asBool();
@@ -1279,6 +1284,11 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         return;
     }
     if (!lobby_waiting_) return;
+    if (action == "mode_setting") {
+        if (valid_actor && message["value"].isInt() && message["key"].isString())
+            SetModeSetting(message.get("key", "").asString(), message["value"].asInt(), actor);
+        return;
+    }
     if (action == "promote_host") {
         const PlayerID target = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         if (!valid_actor || !CanPromoteLobbyHost(target, actor)) return;

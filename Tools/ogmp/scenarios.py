@@ -1249,3 +1249,25 @@ def _bot_escort_stealth(ctx):
 
 
 SCENARIOS["bot_escort_stealth"] = _bot_escort_stealth
+
+
+def _mode_settings_lobby(ctx):
+    from .mode_settings_suite import mode_settings_lobby
+    return mode_settings_lobby(ctx)
+
+
+def _mode_challenge(ctx):
+    from .mode_settings_suite import mode_challenge
+    return mode_challenge(ctx)
+
+
+SCENARIOS["mode_settings_lobby"] = _mode_settings_lobby
+SCENARIOS["mode_challenge"] = _mode_challenge
+
+
+def _lobby_tooltips(ctx):
+    from .mode_settings_suite import lobby_tooltips
+    return lobby_tooltips(ctx)
+
+
+SCENARIOS["lobby_tooltips"] = _lobby_tooltips

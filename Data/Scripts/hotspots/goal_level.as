@@ -23,6 +23,7 @@
 //-----------------------------------------------------------------------------
 
 #include "threatcheck.as"
+#include "challenge_campaign_events.as"
 #include "lugaru_campaign.as"
 
 int progress = 0;
@@ -62,6 +63,9 @@ void TriggerGoalString(const string &in goal_str){
 }
 
 void TriggerGoalPre() {
+    if(params.HasParam("goal_"+progress)) {
+        ChallengeCampaignGoalBegin(hotspot.GetID(), progress, params.GetString("goal_"+progress));
+    }
     if(params.HasParam("goal_"+progress+"_pre")){
         TriggerGoalString(params.GetString("goal_"+progress+"_pre"));
     }
@@ -262,6 +266,7 @@ void PossibleWinEvent(const string &in event, int val, int goal_check){
                         }
                     }
                     if(success){
+                        ChallengeCampaignGoalWin(hotspot.GetID(), goal_check);
                         win_time = the_time + 3.0;
                         win_target = goal_check+1;
                     }
@@ -303,6 +308,10 @@ void ReceiveMessage(string msg) {
 
 
 void Update() {
+    // Initial goal setup can run while the native session is still loading.
+    if(params.HasParam("goal_"+progress)) {
+        ChallengeCampaignGoalPoll(hotspot.GetID(), progress, params.GetString("goal_"+progress));
+    }
     if(queued_goal_check){
         CheckReset();
         queued_goal_check = false;

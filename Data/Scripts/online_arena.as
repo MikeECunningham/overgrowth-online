@@ -36,6 +36,7 @@
 //-----------------------------------------------------------------------------
 
 #include "threatcheck.as"
+#include "challenge_arena_events.as"
 #include "music_load.as"
 #include "multi_arena/multi_arena_music.as"
 
@@ -312,6 +313,11 @@ void ReceiveMessage(string msg) {
 // ---- host: the match -------------------------------------------------------
 
 void SetPhase(ArenaPhase p) {
+    if(p != phase) {
+        if(p == kFighting) ChallengeArenaRoundBegin();
+        else if(p == kRoundOver) ChallengeArenaRoundWin(round_winner);
+        else if(p == kMatchOver) ChallengeArenaMatchComplete();
+    }
     phase = p;
     phase_time = the_time;
     intro_step = 0;
@@ -435,6 +441,7 @@ void HostUpdate() {
 }
 
 void NewMatch() {
+    ChallengeArenaNewMatch();
     SetUpMatch();
     roster.resize(0);
     points.resize(0);

@@ -26,8 +26,9 @@ base settings no longer qualify as the exact Nightmare preset.
 - Count MC-team humans and friendly lobby bots with an admitted character,
   including knocked-out members and temporarily disconnected controllers. A defeated player does not
   make the remaining enemies weaker. Removing a party seat changes the count.
-  Opposing lobby teams do not increase the scaling count; lobby bots themselves
-  keep their original stats and AI. Nightmare uses Expert as their base.
+  Opposing lobby teams do not increase the scaling count. Party modifiers never
+  boost lobby bots, and Nightmare uses Expert as their base. Optional mode
+  progression can separately strengthen opposing bots while allies stay unchanged.
 - Scale smoothly through four participants, then use diminishing growth. All stat
   increases and reinforcement counts have hard limits.
 
@@ -40,11 +41,11 @@ Examples at four MC-team participants, relative to each actor's authored base:
 
 | Opponent | Effective durability | Damage | Passive-block armor |
 | --- | --- | --- | --- |
-| Ordinary rat | 1.54× | 1.225× | 1.21× |
-| Ordinary rabbit | 1.645× | 1.225× | 1.21× |
-| Ordinary cat/dog | 1.75× | 1.225× | 1.21× |
-| Cat/dog boss | 3.43× | 1.36× | 1.45× |
-| Wolf boss | 3.91× | 1.36× | 1.45× |
+| Ordinary rat | 1.459× | 1.19125× | 1.1785× |
+| Ordinary rabbit | 1.54825× | 1.19125× | 1.1785× |
+| Ordinary cat/dog | 1.6375× | 1.19125× | 1.1785× |
+| Cat/dog boss | 3.0655× | 1.306× | 1.3825× |
+| Wolf boss | 3.4735× | 1.306× | 1.3825× |
 
 Regular durability caps at 3× and boss durability at 6×. Damage caps at 1.6×
 and 1.9× respectively; passive-block armor caps at 1.5× and 1.9×.
@@ -61,8 +62,11 @@ The global difficulty slider, movement speed, and game speed stay at Expert.
 ## Reinforcement and story safeguards
 
 Ordinary fights add at most **four** enemies; boss encounters at most **two**
-bodyguards. Large dogs and wolves receive additions later: a solo wolf boss
-does not gain another wolf until eight participants. Reinforcements use existing
+bodyguards. Ordinary rats/rabbits gain one extra per three additional allies,
+starting at four participants; stronger species gain one per four allies.
+This budget is independent of the original group size. Ordinary bosses gain a
+guard from six participants, large dogs from eight. Large dogs and wolves receive additions later: a solo wolf boss
+does not gain another wolf until twelve participants. Reinforcements use existing
 encounter species, with the weakest existing member preferred for bodyguards.
 
 There are at most **eight additions per chapter attempt**, and additions stop
@@ -168,3 +172,6 @@ boss emphasis, species-aware addition counts, diminishing growth, hard caps,
 and the independence of Nightmare AI from stat/number scaling. It also covers
 overlapping faction friendships, ordered team mapping and wildcards, MC anchor
 replacement, and stable balanced bot escorts.
+
+Mode-specific time, level/match, win, player-defeat and adaptive win rules are described
+in [Mode challenge settings](Mode%20Challenge.md). They are optional and do not add AI bonuses.

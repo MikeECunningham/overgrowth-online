@@ -62,24 +62,30 @@ template<> template<> void campaign_test::test<3>() {
 }
 
 template<> template<> void campaign_test::test<4>() {
-    ensure("rats gain numbers before wolves", CampaignDifficulty::ExtraEnemies(2, 4, false, CampaignDifficulty::Rat) >
-        CampaignDifficulty::ExtraEnemies(2, 4, false, CampaignDifficulty::Wolf));
+    ensure("rats gain numbers before wolves", CampaignDifficulty::ExtraEnemies(4, 4, false, CampaignDifficulty::Rat) >
+        CampaignDifficulty::ExtraEnemies(4, 4, false, CampaignDifficulty::Wolf));
     ensure_equals("two humans do not duplicate a wolf boss", CampaignDifficulty::ExtraEnemies(2, 1, true, CampaignDifficulty::Wolf), 0);
     ensure_equals("four humans do not duplicate a wolf boss", CampaignDifficulty::ExtraEnemies(4, 1, true, CampaignDifficulty::Wolf), 0);
     ensure_equals("six participants do not duplicate a wolf boss", CampaignDifficulty::ExtraEnemies(6, 1, true, CampaignDifficulty::Wolf), 0);
-    ensure_equals("eight participants may face one same-species wolf bodyguard", CampaignDifficulty::ExtraEnemies(8, 1, true, CampaignDifficulty::Wolf), 1);
-    ensure_equals("ordinary bosses may gain one guard at four humans", CampaignDifficulty::ExtraEnemies(4, 1, true, CampaignDifficulty::CatOrDog), 1);
+    ensure_equals("eight participants still do not duplicate a wolf boss", CampaignDifficulty::ExtraEnemies(8, 1, true, CampaignDifficulty::Wolf), 0);
+    ensure_equals("twelve participants may face one same-species wolf bodyguard", CampaignDifficulty::ExtraEnemies(12, 1, true, CampaignDifficulty::Wolf), 1);
+    ensure_equals("ordinary bosses do not gain a guard at four participants", CampaignDifficulty::ExtraEnemies(4, 1, true, CampaignDifficulty::CatOrDog), 0);
+    ensure_equals("ordinary bosses gain their first guard at six participants", CampaignDifficulty::ExtraEnemies(6, 1, true, CampaignDifficulty::CatOrDog), 1);
 }
 
 template<> template<> void campaign_test::test<5>() {
     const auto rabbit = CampaignDifficulty::ForPlayers(4, false, CampaignDifficulty::Rabbit, true, false);
     const auto wolf = CampaignDifficulty::ForPlayers(4, true, CampaignDifficulty::Wolf, true, false);
-    ensure("ordinary rabbits restore the original four-participant tuning", std::fabs(rabbit.vitality - 1.645f) < 0.00001f);
-    ensure("wolf bosses restore the original four-participant tuning", std::fabs(wolf.vitality - 3.91f) < 0.00001f);
-    ensure_equals("four-rabbit encounters restore the original reinforcement count",
-                  CampaignDifficulty::ExtraEnemies(4, 4, false, CampaignDifficulty::Rabbit), 4);
-    ensure_equals("weak swarms restore the original CPU bound", CampaignDifficulty::ExtraEnemies(4, 4, false, CampaignDifficulty::Rat), 4);
-    ensure_equals("chapter addition cap restores the original limit", CampaignDifficulty::kLevelExtraCap, 8);
+    ensure("ordinary rabbit stat growth is fifteen percent gentler", std::fabs(rabbit.vitality - 1.54825f) < 0.00001f);
+    ensure("wolf boss stat growth is fifteen percent gentler", std::fabs(wolf.vitality - 3.4735f) < 0.00001f);
+    ensure_equals("three extra allies buy only one rabbit reinforcement",
+                  CampaignDifficulty::ExtraEnemies(4, 4, false, CampaignDifficulty::Rabbit), 1);
+    ensure_equals("one helper does not add a mob even to a large crowd", CampaignDifficulty::ExtraEnemies(2, 30, false, CampaignDifficulty::Rat), 0);
+    ensure_equals("two helpers still do not add a mob", CampaignDifficulty::ExtraEnemies(3, 30, false, CampaignDifficulty::Rabbit), 0);
+    ensure_equals("a large original crowd cannot multiply the addition budget", CampaignDifficulty::ExtraEnemies(4, 30, false, CampaignDifficulty::Rat), 1);
+    ensure_equals("each three additional weak-species allies buy one more mob", CampaignDifficulty::ExtraEnemies(7, 4, false, CampaignDifficulty::Rabbit), 2);
+    ensure_equals("strong-species groups require four allies for one mob", CampaignDifficulty::ExtraEnemies(5, 4, false, CampaignDifficulty::CatOrDog), 1);
+    ensure_equals("chapter addition cap remains bounded", CampaignDifficulty::kLevelExtraCap, 8);
     ensure_equals("live hostile cap is unchanged", CampaignDifficulty::kActorCap, 32);
 }
 

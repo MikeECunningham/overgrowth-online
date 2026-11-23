@@ -5975,6 +5975,11 @@ int AS_Online_CampaignHumanCount() { return Online::Instance()->CampaignHumanCou
 int AS_Online_CampaignPartySize() { return Online::Instance()->CampaignPartySize(); }
 bool AS_Online_CampaignIsMainCharacter(int avatar) { return Online::Instance()->CampaignCharacterOnMainTeam(avatar); }
 std::string AS_Online_CampaignWaitingText() { return Online::Instance()->CampaignWaitingText(); }
+void AS_Online_ChallengeEncounterBegin(const std::string& key) { Online::Instance()->ChallengeEncounterBegin(key); }
+void AS_Online_ChallengeEncounterWin(const std::string& key) { Online::Instance()->ChallengeEncounterWin(key); }
+void AS_Online_ChallengeCompletion(const std::string& key) { Online::Instance()->ChallengeCompletion(key); }
+int AS_Online_ChallengeReferenceAvatar() { return Online::Instance()->ChallengeReferenceAvatar(); }
+float AS_Online_ChallengePressure() { return Online::Instance()->ModeChallengePressure(); }
 
 bool AS_Online_FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3& spot) {
     return Online::Instance()->FindSafeSpot(base, facing, index, &spot);
@@ -6221,6 +6226,11 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("int Online_CampaignPartySize()", asFUNCTION(AS_Online_CampaignPartySize), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_CampaignIsMainCharacter(int avatar)", asFUNCTION(AS_Online_CampaignIsMainCharacter), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_CampaignWaitingText()", asFUNCTION(AS_Online_CampaignWaitingText), asCALL_CDECL);
+    context->RegisterGlobalFunction("void Online_ChallengeEncounterBegin(const string &in key)", asFUNCTION(AS_Online_ChallengeEncounterBegin), asCALL_CDECL);
+    context->RegisterGlobalFunction("void Online_ChallengeEncounterWin(const string &in key)", asFUNCTION(AS_Online_ChallengeEncounterWin), asCALL_CDECL);
+    context->RegisterGlobalFunction("void Online_ChallengeCompletion(const string &in key)", asFUNCTION(AS_Online_ChallengeCompletion), asCALL_CDECL);
+    context->RegisterGlobalFunction("int Online_ChallengeReferenceAvatar()", asFUNCTION(AS_Online_ChallengeReferenceAvatar), asCALL_CDECL);
+    context->RegisterGlobalFunction("float Online_ChallengePressure()", asFUNCTION(AS_Online_ChallengePressure), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_FindSafeSpot(const vec3 &in base, const vec3 &in facing, int index, vec3 &out spot)", asFUNCTION(AS_Online_FindSafeSpot), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_ObjectFile(int id)", asFUNCTION(AS_Online_ObjectFile), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_Spectating()", asFUNCTION(AS_Online_Spectating), asCALL_CDECL);

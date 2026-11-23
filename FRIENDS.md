@@ -13,11 +13,11 @@ cd overgrowth-online
 
 Use the same release tag or commit as the host. The inherited private Wolfire submodules are not required; clone without `--recurse-submodules`. Game assets are read from each player's installed game and are not included in the source.
 
-The current local-multiplayer prerelease is `0.42.0-alpha.8`. Once its tag has been
+The current local-multiplayer prerelease is `0.42.0-alpha.9`. Once its tag has been
 published, select that exact source revision before configuring:
 
 ```sh
-git switch --detach v0.42.0-alpha.8
+git switch --detach v0.42.0-alpha.9
 ```
 
 Until a tag is published, ask the host for the commit to use. The in-game version
@@ -67,7 +67,7 @@ Replace `$gamePath` with your own installation folder. Keep the executable in `B
 ## Host and connect
 
 1. Launch the fork and open **Multiplayer**.
-2. One person chooses **Host**, then selects the mode and map in the lobby.
+2. One person chooses **Host**, then selects the mode and map in the lobby. **Mode settings** offers optional time, level/match, encounter-win and player-defeat pressure; these progression rules start Off. Hover or focus lobby controls for descriptions.
 3. Everyone else chooses **Connect** and enters the host's IP address.
 4. Add local players by pressing a button on their controllers. If a controller owns P1, **Enter** adds the keyboard/mouse as another player.
 5. The host starts when everyone is present. The designated host can use **End game** to return everyone to the same lobby.

@@ -23,6 +23,7 @@
 //-----------------------------------------------------------------------------
 
 #include "threatcheck.as"
+#include "challenge_campaign_events.as"
 #include "hotspots/overgrowth_course.as"
 
 int progress = 0;
@@ -254,6 +255,9 @@ void TriggerGoalString(const string &in goal_str, GoalTriggerType type){
 }
 
 void TriggerGoalPre() {
+    if(params.HasParam("goal_"+progress)) {
+        ChallengeCampaignGoalBegin(hotspot.GetID(), progress, params.GetString("goal_"+progress));
+    }
     if(params.HasParam("goal_"+progress+"_pre")){
         Log(info, "Triggering "+"goal_"+progress+"_pre");
         TriggerGoalString(params.GetString("goal_"+progress+"_pre"), _all_but_sting);
@@ -560,6 +564,7 @@ void PossibleWinEvent(const string &in event, int val, int goal_check, int recur
                     }
                     if(success && !Online_CampaignEncounterDefeated(hotspot.GetID(), goal_check)) success = false;
                     if(success){
+                        ChallengeCampaignGoalWin(hotspot.GetID(), goal_check);
                         int player_id = GetPlayerCharacterID();
                         if(Online_IsActive()){
                             CoopHealOwnPlayers();  // (up ones only: the downed get up beside the checkpoint's reacher)
@@ -819,6 +824,10 @@ void SetMusicLayer(int layer){
 }
 
 void Update() {
+    // Initial goal setup can run while the native session is still loading.
+    if(params.HasParam("goal_"+progress)) {
+        ChallengeCampaignGoalPoll(hotspot.GetID(), progress, params.GetString("goal_"+progress));
+    }
     EnterTelemetryZone("Overgrowth Level Update");
     CoopCourseUpdate();
 

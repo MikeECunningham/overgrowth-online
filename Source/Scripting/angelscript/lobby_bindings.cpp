@@ -97,6 +97,8 @@ void Leave() { TryLeave(); }
 std::string Mode() { return Online::Instance()->LobbyMode(); }
 std::string Campaign() { return Online::Instance()->LobbyCampaign(); }
 std::string Map() { return Online::Instance()->LobbyMap(); }
+int ModeSetting(const std::string& key) { return Online::Instance()->ModeSetting(key); }
+bool SetModeSetting(const std::string& key, int value) { return Online::Instance()->SetModeSetting(key, value, MenuPlayerID()); }
 bool Build() { return Online::Instance()->LobbyBuild(); }
 bool AllowAllPause() { return Online::Instance()->LobbyAllowAllPause(); }
 bool ForceTeams() { return Online::Instance()->LobbyForceTeams(); }
@@ -457,6 +459,8 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("void LobbyUpdate()", UpdateLocalLobbyInput); LOBBY_FN("uint LobbySnapshotRevision()", Revision);
     LOBBY_FN("array<LobbyPlayer>@ LobbyPlayers()", PlayerArray);
     LOBBY_FN("string LobbyGetMode()", Mode); LOBBY_FN("string LobbyGetCampaign()", Campaign); LOBBY_FN("string LobbyGetMap()", Map);
+    LOBBY_FN("int LobbyGetModeSetting(const string &in)", ModeSetting);
+    LOBBY_FN("bool LobbySetModeSetting(const string &in, int)", SetModeSetting);
     LOBBY_FN("bool LobbyGetBuildMode()", Build); LOBBY_FN("bool LobbyGetAllowAllPause()", AllowAllPause);
     LOBBY_FN("bool LobbyGetForceTeams()", ForceTeams); LOBBY_FN("bool LobbySetForceTeams(bool)", SetForceTeams);
     LOBBY_FN("string LobbyCampaignTeamAffiliation(int)", CampaignTeamAffiliation);

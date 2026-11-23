@@ -154,7 +154,7 @@ def campaign_teams(ctx):
     wait(lambda: all(avatar(p) and avatar(p, guest) for p in teams), "all campaign characters admitted")
     freeze_humans(host); freeze_humans(guest); quiet_npcs()
     wait(lambda: party_size() == 7, "MC humans and friendly bots count as seven participants")
-    seven_participant_boss = 1.0 + 0.97 * (3.0 + math.sqrt(3.0))
+    seven_participant_boss = 1.0 + 0.97 * 0.85 * (3.0 + math.sqrt(3.0))
     wait(lambda: math.isclose(factors(by_common(67))[0], seven_participant_boss, abs_tol=1e-5) and
          factors(by_common(67))[3] == 0,
          "enemy NPC scaling uses only the seven-member MC party despite an allied enemy human")

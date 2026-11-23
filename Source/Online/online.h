@@ -224,6 +224,7 @@ extern std::string g_launch_lobby;
 
 struct CampaignDifficultyState;
 struct CampaignFactionState;
+struct ChallengeRuntimeState;
 
 class Online {
    public:
@@ -710,6 +711,21 @@ class Online {
     void ResetCampaignDifficulty(bool scene_disposed = false);
     int CampaignHumanCount() const;
     int CampaignPartySize() const;
+    std::shared_ptr<ChallengeRuntimeState> mode_challenge_state;
+    std::map<std::string, std::map<std::string, int>> mode_settings_;
+    std::string ModeSettingsKey() const;
+    int ModeSetting(const std::string& key) const;
+    bool SetModeSetting(const std::string& key, int value, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    std::string ModeChallengePayload() const;
+    void ReceiveModeChallenge(const std::string& payload);
+    void ResetModeChallenge();
+    void ChallengeSceneChanged();
+    void UpdateModeChallenge(SceneGraph* graph);
+    float ModeChallengePressure() const;
+    ObjectID ChallengeReferenceAvatar() const;
+    void ChallengeEncounterBegin(const std::string& key);
+    void ChallengeEncounterWin(const std::string& key);
+    void ChallengeCompletion(const std::string& key);
     bool CampaignCharacterOnMainTeam(ObjectID avatar);
     std::string CampaignWaitingText();
     bool CampaignEncounterDefeated(ObjectID hotspot, int goal) const;

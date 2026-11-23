@@ -376,6 +376,8 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             out["vk_passes"] = (Json::UInt64)ds.passes;
         }
         Json::Value& o = out["online"];
+        Json::Reader challenge_reader;
+        challenge_reader.parse(online->ModeChallengePayload(), o["challenge"], false);
         o["active"] = online->IsActive();
         o["hosting"] = online->IsHosting();
         o["client"] = online->IsClient();
