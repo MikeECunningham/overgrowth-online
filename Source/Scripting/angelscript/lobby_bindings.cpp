@@ -80,13 +80,20 @@ bool CanStart() {
     return true;
 }
 bool Start() { return CanStart() && Online::Instance()->StartLobbyGame("", "", false, MenuPlayerID()); }
-void Leave() {
+bool CanLeave() {
     Online* online = Online::Instance();
     // Admission has not assigned a leader yet. The person trying to connect
     // must still be able to cancel instead of waiting for transport timeout.
-    if (CanManageLocal() || (online->IsClient() && online->LobbyPlayerIDForLocalIndex(0) == LobbyAuthority::InvalidPlayer))
-        online->QueueStopMultiplayer();
+    return !online->IsActive() || IsHost() || CanManageLocal() ||
+        (online->IsClient() && online->LobbyPlayerIDForLocalIndex(0) == LobbyAuthority::InvalidPlayer);
 }
+bool TryLeave() {
+    if (!CanLeave()) return false;
+    // Explicit Leave must also cancel a handoff while it is between sessions.
+    Online::Instance()->QueueStopMultiplayer();
+    return true;
+}
+void Leave() { TryLeave(); }
 std::string Mode() { return Online::Instance()->LobbyMode(); }
 std::string Campaign() { return Online::Instance()->LobbyCampaign(); }
 std::string Map() { return Online::Instance()->LobbyMap(); }
@@ -132,14 +139,17 @@ void SetJoinInputEnabled(bool enabled) { join_input_enabled = enabled; }
 
 unsigned MenuLocalPlayer() {
     if (const auto* menu = PlayerMenuUI::Current()) return static_cast<unsigned>(std::max(0, menu->local_index));
-    if (Engine::Instance()->current_menu_player >= 0) {
-        const int logical = Input::Instance()->LocalPlayerIndexForInputID(Engine::Instance()->current_menu_player);
-        return static_cast<unsigned>(std::max(0, logical));
+    Engine* engine = Engine::Instance();
+    if (engine->current_engine_state_.type != kEngineScriptableUIState && engine->current_menu_player >= 0) {
+        const int logical = Input::Instance()->LocalPlayerIndexForInputID(engine->current_menu_player);
+        if (logical >= 0) return static_cast<unsigned>(logical);
     }
     // controller.as stores the logical owner, unlike the engine's actual
     // input ID. These differ after removing a seat or allocating remote slots.
-    return static_cast<unsigned>(std::max(0, config["controller_menu_owner"].toNumber<int>()));
+    const int count = std::max(1u, Input::Instance()->GetNumLocalPlayers());
+    return static_cast<unsigned>(std::max(0, std::min(count - 1, config["controller_menu_owner"].toNumber<int>())));
 }
+int CurrentInputID() { return Input::Instance()->GetLocalPlayerInputID(MenuLocalPlayer()); }
 bool CanPause() {
     const unsigned local = MenuLocalPlayer();
     Online* online = Online::Instance();
@@ -237,6 +247,7 @@ struct JoinedDevice { std::string identity; int local = -1; };
 std::map<int, JoinedDevice> joined_devices;
 std::map<std::string, std::vector<int>> remembered_slots;
 std::map<int, bool> held_buttons;
+std::set<int> joining_buttons_held;
 struct DeviceProfile { std::string name; std::map<std::string, std::string> settings; };
 std::map<std::string, DeviceProfile> removed_device_profiles;
 bool was_lobby = false;
@@ -298,6 +309,7 @@ void LocalLobbyPlayerRemoving(unsigned index) {
         if (it->second.local == static_cast<int>(index)) {
             removed_device_profiles[it->second.identity] = profile;
             Input::Instance()->BindLocalJoystick(it->first, -1);
+            joining_buttons_held.erase(it->first);
             it = joined_devices.erase(it);
         } else { if (it->second.local > static_cast<int>(index)) --it->second.local; ++it; }
     }
@@ -335,7 +347,9 @@ void UpdateLocalLobbyInput() {
     for (auto it = joined_devices.begin(); it != joined_devices.end();) {
         if (!present.count(it->first) || it->second.local < 0 || static_cast<unsigned>(it->second.local) >= local_count) {
             if (!present.count(it->first) && it->second.local >= 0) NotifyDevice(static_cast<unsigned>(it->second.local), false);
-            held_buttons.erase(it->first); it = joined_devices.erase(it);
+            held_buttons.erase(it->first);
+            joining_buttons_held.erase(it->first);
+            it = joined_devices.erase(it);
         }
         else { occupied.insert(it->second.local); ++it; }
     }
@@ -377,6 +391,7 @@ void UpdateLocalLobbyInput() {
             }
             if (slot >= 0) {
                 joined_devices[instance] = {identity, slot};
+                if (rising) joining_buttons_held.insert(instance);
                 auto& memory = remembered_slots[identity];
                 if (std::find(memory.begin(), memory.end(), slot) == memory.end()) memory.push_back(slot);
                 occupied.insert(slot);
@@ -385,6 +400,13 @@ void UpdateLocalLobbyInput() {
         }
         joined = joined_devices.find(instance);
         if (joined != joined_devices.end()) input->BindLocalJoystick(instance, joined->second.local);
+        // The press that claims/reconnects a controller joins only. A pad
+        // which was already auto-assigned its slot can otherwise also activate
+        // the lobby's focused Rename/Close button. Consume it until release.
+        if (joining_buttons_held.count(instance)) {
+            entry.second->joystick.buttons_down_.clear();
+            if (!down) joining_buttons_held.erase(instance);
+        }
     }
     const bool text_input = ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
     if ((lobby || world) && keyboard_join && (!lobby || join_input_enabled) && !text_input && input->LocalKeyboardPlayerIndex() < 0) {
@@ -429,6 +451,8 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("bool LobbyAddLocalPlayer()", AddLocal); LOBBY_FN("bool LobbyCanStart()", CanStart);
     LOBBY_FN("bool LobbyAddBot()", AddBot); LOBBY_FN("bool LobbyCanRenamePlayer(uint)", CanRename);
     LOBBY_FN("bool LobbyStart()", Start); LOBBY_FN("void LobbyLeave()", Leave);
+    LOBBY_FN("bool LobbyCanLeave()", CanLeave); LOBBY_FN("bool LobbyTryLeave()", TryLeave);
+    LOBBY_FN("int LobbyGetCurrentInputID()", CurrentInputID);
     LOBBY_FN("void LobbyUpdate()", UpdateLocalLobbyInput); LOBBY_FN("uint LobbySnapshotRevision()", Revision);
     LOBBY_FN("array<LobbyPlayer>@ LobbyPlayers()", PlayerArray);
     LOBBY_FN("string LobbyGetMode()", Mode); LOBBY_FN("string LobbyGetCampaign()", Campaign); LOBBY_FN("string LobbyGetMap()", Map);

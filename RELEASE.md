@@ -1,7 +1,7 @@
 # Publishing this fork
 
 This fork is published at <https://github.com/MikeECunningham/overgrowth-online>.
-The current version is **0.42.0-alpha.4**, a testing prerelease. See [VERSION](VERSION)
+The current version is **0.42.0-alpha.5**, a testing prerelease. See [VERSION](VERSION)
 for the authoritative version, [FRIENDS.md](FRIENDS.md) for building and playing,
 and [COMPILING.md](COMPILING.md) for dependency details.
 
@@ -28,7 +28,7 @@ maintained local-multiplayer protocol revision.
   compatibility is determined by the fork version and protocol, not that ID.
 
 Once a release commit has passed its checks, create its corresponding version
-tag, such as `v0.42.0-alpha.4`. Create a GitHub **prerelease** from that tag and
+tag, such as `v0.42.0-alpha.5`. Create a GitHub **prerelease** from that tag and
 attach the tested artifacts.
 Do not move a published tag to different code; publish another version instead.
 
@@ -68,6 +68,7 @@ clean-machine installation and Steam-specific behavior are separate checks.
    python3 Tools/ogmp.py run newcampaign_local newcampaign_roles newcampaign_main_removal
    python3 Tools/ogmp.py run newcampaign_cinematic_retry
    python3 Tools/ogmp.py run lobby_bots roster_bots_arena bot_migration
+   python3 Tools/ogmp.py run lobby_role_ui connection_cancel
    ```
 
    Close a normally running game before using the test runner. Repeat relevant

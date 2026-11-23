@@ -744,6 +744,17 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
                     ProcessEventImGui(&event);
                 }
                 input->RecordKeyboardJoinEvent(event);
+                // Dear ImGui captures lobby keyboard navigation, including
+                // Escape. Route an unconsumed Back through the current UI's
+                // permission check once; dropdowns and active edits keep it.
+                if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.sym == SDLK_ESCAPE &&
+                    current_engine_state_.type == kEngineScriptableUIState && Online::Instance()->IsActive() &&
+                    Online::Instance()->LobbyWaiting() && input->LocalKeyboardPlayerIndex() >= 0 &&
+                    !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) && !ImGui::IsAnyItemActive()) {
+                    config.GetRef("controller_menu_owner") = input->LocalKeyboardPlayerIndex();
+                    ScriptableUICallback("back");
+                    continue;
+                }
                 // Redirect input events to the controller
                 switch (event.type) {
                     case SDL_WINDOWEVENT:

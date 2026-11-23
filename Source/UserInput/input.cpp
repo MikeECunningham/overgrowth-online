@@ -149,6 +149,15 @@ void Input::UpdateGamepadDeadzone() {
 }
 
 void Input::OpenJoystick(int index) {
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    // Opt-in process-local test isolation: real pads may still be used by a
+    // person in another window while our test's SDL virtual pads join/play.
+    const char* virtual_only = SDL_getenv("OGMP_VIRTUAL_CONTROLLERS_ONLY");
+    if (virtual_only && SDL_strcmp(virtual_only, "1") == 0 && !SDL_JoystickIsVirtual(index)) {
+        LOGI << "Test input: ignoring physical joystick " << index << std::endl;
+        return;
+    }
+#endif
     // int num_joysticks = SDL_NumJoysticks();
 
     // If joystick has a GameController definition, extract mapping

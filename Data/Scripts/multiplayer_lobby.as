@@ -16,6 +16,7 @@ string lobby_displayed_mode;
 bool show_mode_cards = true;
 string map_filter;
 string notice;
+bool leave_denied = false;
 int editing_name = -1;
 string name_buffer;
 bool name_keyboard_open = false;
@@ -36,11 +37,10 @@ bool CanGoBack() {
         editing_name = -1;
         return false;
     }
-    if(!LobbyCanManageLocal()) {
-        return false;
-    }
-    LobbyLeave();
-    return true;
+    if(LobbyTryLeave()) return true;
+    notice = "Use the lobby host's or local leader's controller to leave.";
+    leave_denied = true;
+    return false;
 }
 
 void Initialize() {
@@ -75,6 +75,14 @@ void Update() {
         focus_lobby_form = true;
         editing_name = -1;
     }
+    // Native Dear ImGui records whichever local controller actually acted.
+    // Keep legacy popup/back handling on that same physical input too.
+    int current_input = LobbyGetCurrentInputID();
+    if(current_input >= 0 && controller_player != current_input) SetControllerPlayer(current_input);
+    if(leave_denied && LobbyCanLeave()) {
+        notice = "";
+        leave_denied = false;
+    }
     if(HasPopup()) {
         LobbySetJoinInputEnabled(false);
         UpdateController();
@@ -87,8 +95,9 @@ void Update() {
     }
     UpdateKeyboardMouse();
     imGUI.update();
-    if(editing_name >= 0 && GetInputPressed(controller_player, "menu_cancel")) {
-        editing_name = -1;
+    if(GetInputPressed(controller_player, "menu_cancel")) {
+        if(editing_name >= 0) editing_name = -1;
+        else if(!ImGui_IsAnyPopupOpen()) this_ui.SendCallback("back");
     }
     uint revision = LobbySnapshotRevision();
     if(revision != lobby_revision || lobby_players.length() == 0) {
@@ -117,6 +126,27 @@ int LocalPlayers() {
         }
     }
     return count;
+}
+
+string LobbyShortName(const string &in name) {
+    if(name.length() <= 16) return name;
+    uint end = 13;
+    while(end > 0 && (name[end] & 0xC0) == 0x80) --end;
+    return name.substr(0, end) + "...";
+}
+
+string LobbyRoleSummary() {
+    string actor = "Player " + (LobbyCurrentLocalPlayerIndex() + 1);
+    string host = "unassigned";
+    string leader = "unassigned";
+    uint current = LobbyCurrentPlayerID();
+    for(uint i = 0; i < lobby_players.length(); ++i) {
+        LobbyPlayer player = lobby_players[i];
+        if(player.id == current) actor = LobbyShortName(player.name);
+        if(player.host) host = LobbyShortName(player.name);
+        if(player.local && player.leader) leader = LobbyShortName(player.name);
+    }
+    return "Menu: " + actor + "  /  Host: " + host + "  /  Local leader: " + leader;
 }
 
 void LobbyForm(const string &in title, const vec2 &in position, const vec2 &in size, float scale, bool title_bar = true) {
@@ -389,7 +419,8 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
         focus_lobby_form = false;
     }
     bool can_edit = LobbyIsHost() && !LobbyMigrationBusy();
-    float options_height = max(130.0f, ImGui_GetContentRegionAvail().y - 176.0f * scale);
+    float footer_height = (LobbyCanLeave() ? 176.0f : 214.0f) * scale;
+    float options_height = max(80.0f, ImGui_GetContentRegionAvail().y - footer_height);
     ImGui_BeginChild("hosting_options", vec2(0.0f, options_height), false);
     MPWindowScale(1.0f);
     ImGui_PushTextWrapPos(0.0f);
@@ -479,12 +510,14 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     }
     if(LobbyGetMigrationStatus() != "") ImGui_TextColored(kLobbyTitle, LobbyGetMigrationStatus());
     ImGui_Separator();
-    ImGui_BeginDisabled(!LobbyCanManageLocal());
-    if(MPButton(LobbyIsHost() ? "Close lobby" : "Leave lobby", vec2(-1.0f, 36.0f * scale))) {
-        LobbyLeave();
-        this_ui.SendCallback("back");
+    bool can_leave = LobbyCanLeave();
+    ImGui_BeginDisabled(!can_leave);
+    if(MPButton(Online_IsHosting() ? "Close lobby" : "Leave lobby", vec2(-1.0f, 36.0f * scale))) {
+        if(LobbyTryLeave()) this_ui.SendCallback("back");
+        else notice = "The lobby could not close. Try again with the host or local leader.";
     }
     ImGui_EndDisabled();
+    if(!can_leave && !leave_denied) ImGui_TextColored(kLobbyDim, "To leave, use the host's or local leader's controller.");
     LobbyEndForm();
 }
 
@@ -558,17 +591,18 @@ void DrawGUI() {
     float width = min(1720.0f, sw - margin * 2.0f);
     float x = (sw - width) * 0.5f;
     float top = max(24.0f, sh * 0.06f);
-    float header_h = 62.0f * scale;
+    float header_h = 94.0f * scale;
     float body_y = top + header_h + gap;
     float body_h = sh - body_y - margin;
     ImGui_PushStyleVar(ImGuiStyleVar_WindowPadding, vec2(16.0f, 16.0f));
     ImGui_PushStyleVar(ImGuiStyleVar_ItemSpacing, vec2(10.0f, 10.0f));
     LobbyForm("Lobby", vec2(x, top), vec2(width, header_h), scale, false);
     ImGui_PushMenuFont(true);
-    ImGui_TextColored(kLobbyTitle, LobbyIsHost() ? "Host lobby" : "Joined lobby");
+    ImGui_TextColored(kLobbyTitle, Online_IsHosting() ? "Host lobby" : "Joined lobby");
     ImGui_PopFont();
     ImGui_SameLine();
     ImGui_TextColored(kLobbyDim, " / " + lobby_players.length() + " players / " + LocalPlayers() + " on this couch");
+    ImGui_TextColored(kLobbyDim, LobbyRoleSummary());
     LobbyEndForm();
 
     if(sw >= 1100.0f) {

@@ -344,7 +344,9 @@ class Online {
     unordered_map<ObjectID, CommonObjectID> to_common_id;
 
     bool attach_avatar_camera;
-    MultiplayerMode mode;
+    // Main-thread shutdown and transport callbacks share this state. Publishing
+    // shutdown must stop the worker before its session can be dismantled.
+    std::atomic<MultiplayerMode> mode;
     uint64_t initial_ts;
     uint32_t next_available_state_id;
     bool loading;

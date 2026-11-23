@@ -154,7 +154,8 @@ void GNSNetFramework::Dispose() {
 
     if (isns != nullptr) {
         for (auto& it : connection_id_map) {
-            isns->CloseConnection(it.second, 0, "shutdown", false);
+            if (it.second != k_HSteamNetConnection_Invalid)
+                isns->CloseConnection(it.second, 0, "shutdown", false);
         }
 
         for (auto& it : listen_socket_map) {
@@ -257,7 +258,7 @@ void GNSNetFramework::CloseConnection(NetConnectionID conn_id, ConnectionClosedR
     auto it = connection_id_map.find(conn_id);
 
     if (it != connection_id_map.end()) {
-        if (isns != nullptr) {
+        if (isns != nullptr && it->second != k_HSteamNetConnection_Invalid) {
             isns->CloseConnection(it->second, static_cast<int>(reason), nullptr, false);
         }
 
@@ -329,6 +330,15 @@ void GNSNetFramework::OnStatusChanged(SteamNetConnectionStatusChangedCallback_t*
         }
 
         changed.conn_id = it->second;
+        if (data->m_info.m_eState == k_ESteamNetworkingConnectionState_ClosedByPeer ||
+            data->m_info.m_eState == k_ESteamNetworkingConnectionState_ProblemDetectedLocally) {
+            // Keep the small ID reserved until Online retires its peer on the
+            // main thread, but mark the socket unusable before delivering the
+            // callback. A hosting session continues running after one guest
+            // leaves and must not keep receiving/sending on its closed socket.
+            connection_id_map[changed.conn_id] = k_HSteamNetConnection_Invalid;
+            connection_id_map_reverse.erase(it);
+        }
     }
 
     changed.conn_info.end_reason = static_cast<ConnectionClosedReason>(data->m_info.m_eEndReason);
@@ -346,11 +356,14 @@ void GNSNetFramework::OnStatusChanged(SteamNetConnectionStatusChangedCallback_t*
 }
 
 int GNSNetFramework::ReceiveMessageOnConnection(NetConnectionID conn_id, NetworkingMessage* networking_message) {
-    HSteamNetConnection handle = Handle(conn_id);
+    std::lock_guard<std::recursive_mutex> guard(maps_lock);
+    auto connection = connection_id_map.find(conn_id);
 
-    if (isns == nullptr || handle == k_HSteamNetConnection_Invalid) {
+    if (isns == nullptr || connection == connection_id_map.end()) {
         return -1;
     }
+    const HSteamNetConnection handle = connection->second;
+    if (handle == k_HSteamNetConnection_Invalid) return 0;  // terminal callback; peer cleanup is queued
 
     SteamNetworkingMessage_t* msg = nullptr;
     int ret = isns->ReceiveMessagesOnConnection(handle, &msg, 1);
@@ -427,6 +440,9 @@ std::string GNSNetFramework::GetResultString(int result) {
 }
 
 void GNSNetFramework::SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush) {
+    // Match receive/close: a Steam callback may also arrive on the main
+    // thread, so keep the handle alive for the duration of the send itself.
+    std::lock_guard<std::recursive_mutex> guard(maps_lock);
     HSteamNetConnection handle = Handle(conn_id);
 
     if (isns == nullptr || handle == k_HSteamNetConnection_Invalid) {

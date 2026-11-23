@@ -1151,6 +1151,14 @@ def _bot_migration(ctx):
 SCENARIOS["bot_migration"] = _bot_migration
 
 
+def _connection_cancel(ctx):
+    from .connection_cancel_suite import connection_cancel
+    return connection_cancel(ctx)
+
+
+SCENARIOS["connection_cancel"] = _connection_cancel
+
+
 SUITES = {
     "smoke": ["boot", "move", "connect"],
     "baseline": ["connect", "connect_typical", "connect_bad", "bot_duel"],
@@ -1169,3 +1177,11 @@ SUITES = {
     "phase2_long": ["unit_tests", "connect", "connect_good", "connect_typical", "connect_bad", "clock_sync",
                     "late_join", "drop_rejoin", "clean_leave", "client_camera", "bot_duel"],
 }
+
+
+def _lobby_role_ui(ctx):
+    from .lobby_role_ui_suite import lobby_role_ui
+    return lobby_role_ui(ctx)
+
+
+SCENARIOS["lobby_role_ui"] = _lobby_role_ui

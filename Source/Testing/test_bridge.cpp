@@ -47,6 +47,7 @@
 #include <Internal/timer.h>
 #include <Logging/logdata.h>
 #include <JSON/json.h>
+#include <imgui_internal.h>
 
 #include <SDL_net.h>
 
@@ -320,6 +321,14 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         out["epoch_ms"] = EpochMs();
         out["game_time"] = game_timer.game_time;
         out["clock_ms"] = OnlineClockMs();  // this instance's online clock (clock sync checks)
+        out["menu_owner"] = config["controller_menu_owner"].toNumber<int>();
+        out["current_menu_player"] = engine->current_menu_player;
+        if (ImGui::GetCurrentContext()) {
+            const ImGuiContext& gui = *ImGui::GetCurrentContext();
+            out["ui_nav_id"] = gui.NavId;
+            out["ui_nav_window_id"] = gui.NavWindow ? gui.NavWindow->ID : 0;
+            out["ui_nav_window"] = gui.NavWindow ? gui.NavWindow->Name : "";
+        }
         out["camera_pos"] = Vec(ActiveCameras::Get()->GetPos());  // the view on screen (camera jitter checks)
         out["level_loaded"] = loaded;
         out["waiting_for_input"] = engine->waiting_for_input_;
@@ -910,7 +919,8 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         }
     } else if (cmd == "key") {
         // A key pressed and let go as the keyboard sends it (SDL events through the engine's own
-        // input path): {"key": "f1"}; "repeat": how many presses, one per call
+        // input path): {"key": "f1"}; optional "down" holds/releases across
+        // frames for Dear ImGui, which reads the current key state.
         SDL_Scancode code = SDL_GetScancodeFromName(req.get("key", "").asString().c_str());
         out["ok"] = code != SDL_SCANCODE_UNKNOWN;
         if (code != SDL_SCANCODE_UNKNOWN) {
@@ -918,15 +928,18 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             for (int i = 0; i < std::max(1, req.get("repeat", 1).asInt()); ++i) {
                 SDL_Event e;
                 SDL_zero(e);
-                e.type = SDL_KEYDOWN;
+                const bool held = req.get("down", true).asBool();
+                e.type = held ? SDL_KEYDOWN : SDL_KEYUP;
                 e.key.windowID = window;
-                e.key.state = SDL_PRESSED;
+                e.key.state = held ? SDL_PRESSED : SDL_RELEASED;
                 e.key.keysym.scancode = code;
                 e.key.keysym.sym = SDL_GetKeyFromScancode(code);
                 SDL_PushEvent(&e);
-                e.type = SDL_KEYUP;
-                e.key.state = SDL_RELEASED;
-                SDL_PushEvent(&e);
+                if (!req.isMember("down")) {
+                    e.type = SDL_KEYUP;
+                    e.key.state = SDL_RELEASED;
+                    SDL_PushEvent(&e);
+                }
             }
         }
     } else if (cmd == "screenshot") {

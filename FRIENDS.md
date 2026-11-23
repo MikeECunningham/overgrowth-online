@@ -13,11 +13,11 @@ cd overgrowth-online
 
 Use the same release tag or commit as the host. The inherited private Wolfire submodules are not required; clone without `--recurse-submodules`. Game assets are read from each player's installed game and are not included in the source.
 
-The current local-multiplayer prerelease is `0.42.0-alpha.4`. Once its tag has been
+The current local-multiplayer prerelease is `0.42.0-alpha.5`. Once its tag has been
 published, select that exact source revision before configuring:
 
 ```sh
-git switch --detach v0.42.0-alpha.4
+git switch --detach v0.42.0-alpha.5
 ```
 
 Until a tag is published, ask the host for the commit to use. The in-game version

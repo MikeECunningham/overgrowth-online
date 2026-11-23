@@ -975,8 +975,9 @@ void Online::QueueStopMultiplayer(bool transport_lost) {
     // Explicit Leave/Cancel also cancels a handoff while it is temporarily
     // between sessions. It must not be mistaken for a recoverable link loss.
     if (!transport_lost) OnLobbySessionStopping();
-    if (IsActive()) {
-        mode = MultiplayerMode::AwaitingShutdown;
+    MultiplayerMode expected = mode.load();
+    while (expected == MultiplayerMode::Host || expected == MultiplayerMode::Client) {
+        if (mode.compare_exchange_weak(expected, MultiplayerMode::AwaitingShutdown)) break;
     }
 }
 
@@ -989,6 +990,16 @@ void Online::StopMultiplayer() {
     client_player_key_states_.clear();
     if (IsActive() || mode == MultiplayerMode::AwaitingShutdown) {
         mode = MultiplayerMode::CleanUp;
+
+        // The worker may still be finishing a callback or a receive/send pass.
+        // Stop it before closing its handles or touching script-owned objects
+        // and session queues. Cancel used to dismantle these underneath it.
+        if (socket_thread.joinable()) {
+            socket_thread.join();
+        }
+        // Connection IDs may be reused by the next attempt. Delayed packets
+        // from the cancelled session must never be delivered to that attempt.
+        net_sim_queue.clear();
 
         {  // Immediately disconnect all clients
             lock_guard<mutex> guard(online_session->connected_peers_lock);
@@ -1035,10 +1046,6 @@ void Online::StopMultiplayer() {
             Steamworks::Instance()->GetMatchmaking()->LeaveAll();  // the lobby and the "Join Game" presence
         }
 #endif
-
-        if (socket_thread.joinable()) {
-            socket_thread.join();
-        }
 
         // Make sure we get booted into the main menu, if we aren't there already.
         if (Engine::Instance()->current_engine_state_.type != EngineStateType::kEngineScriptableUIState) {
@@ -4709,6 +4716,13 @@ ObjectID Online::GetFreeAvatarID() {
 }
 
 void Online::OnConnectionChange(NetFrameworkConnectionStatusChanged* data) {
+    if (!IsActive()) {
+        // Callbacks already queued by GNS/Steam can arrive after Cancel or a
+        // terminal callback. They belong to the retiring session, not a new
+        // peer, and must not touch its shutdown queues.
+        net.CloseConnection(data->conn_id, ConnectionClosedReason::DISCONNECTED);
+        return;
+    }
     switch (data->conn_info.connection_state) {
         case NetFrameworkConnectionState::Connecting: {
             if (IsHosting()) {
@@ -4979,8 +4993,13 @@ void Online::NetworkDataThread() {
     while (IsActive()) {
         uint64_t sent_before = net_msgs_out.load();
         net.Update();
+        // A terminal connection callback can queue shutdown inside Update.
+        // Its socket is already closed; do not receive or send on it again.
+        if (!IsActive()) break;
         int received = CheckNewMessages();
+        if (!IsActive()) break;
         SendMessages();
+        if (!IsActive()) break;
         FlushDelayedSends();
 
         if (received == 0 && net_msgs_out.load() == sent_before) {

@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.4** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.5** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -97,6 +97,12 @@ Press a button on another controller to add a local player. If a controller owns
 
 **Promote to host** transfers lobby and match authority. Choosing a player on another computer also transfers the pregame network session, so the original hosting computer can leave after the handoff completes. Every client first checks that it can reach the new host; a failed reachability check leaves the original lobby running. Direct-IP hosts need a reachable UDP port, while Steamworks builds can use Steam P2P. Host transfer is available in the lobby; return there before handing off a running match.
 
+The lobby header shows who is operating the shared menu, the match host and the
+local leader. Each controller uses its player's permissions. Promoting another
+local player keeps this computer's host/client status; either the host or local
+leader can close or leave the lobby. Other local players see which controller
+to use. The button used to join a controller does not also activate a menu item.
+
 **Host controls teams** defaults to on. When it is off, players can change their own teams in modes that permit manual teams; the host keeps team-management authority. Mode-managed campaign/Arena teams remain governed by the selected mode unless overridden. Explicit host edits during play override that player's current team; future matches still follow the mode unless **Force lobby teams** is enabled. The pause menu's **Teams** page shows the roster and team controls. Local leaders can also swap local screen assignments there during a match.
 
 The host's P1 starts as Turner. Other players start with their team's fur and clothing colors; the numbered team dropdowns include matching color swatches. The lobby uses the game's menu artwork and fonts, with native scrolling and controller navigation underneath.
@@ -138,6 +144,10 @@ matches (`cave_spawns`), and loose weapon playback when the host's camera looks
 away (`loose_weapon_playback`). Run them with `python3 Tools/ogmp.py run` followed
 by the scenario names. The connection dialog remains cancellable while waiting
 for the version/mod handshake to finish.
+
+`lobby_role_ui` checks promotions and exit through the rendered lobby using
+keyboard and virtual controller input. `connection_cancel` checks a departed
+host, repeated connection cancellation, timeout recovery and reconnecting.
 
 Campaign regressions cover joining an offline story with a controller, real
 chapter progression, and a remote party joining during authored dialogue

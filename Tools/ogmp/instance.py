@@ -309,6 +309,7 @@ class Instance:
                 args.extend(["-l", self.level])
             env = os.environ.copy()
             env.setdefault("ALSOFT_DRIVERS", "null")
+            env.setdefault("OGMP_VIRTUAL_CONTROLLERS_ONLY", "1")
             isolation_descriptor = _linux_window_isolation(self.dir, env)
             try:
                 with open(self.dir + "/console.log", "w", encoding="utf-8") as output:
