@@ -76,8 +76,8 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 
 | | Wolfire's prototype | Overgrowth Online |
 |---|---|---|
-| Your character | Runs on the host: every move waits for the network | Runs on your machine: the network adds no input lag |
-| Other characters | Full poses about 120 times a second, about 5 Mbit/s per player | Compact streams, about 35 kbit/s per player in a two-player game, smooth on any ping |
+| Your character | Runs on the host: every move waits for the network | Local movement runs on your machine; combat confirmations still depend on latency |
+| Other characters | Full poses about 120 times a second, about 5 Mbit/s per player | Compact, interpolated streams; bandwidth and smoothness depend on scene size, latency and loss |
 | Guests' frame rate | About half the host's: every streamed character's morph targets were looked up per vertex, twice a frame | Close to the host's |
 | Hits | Decided on the host | Decided by the defender's own machine |
 | Joining | Steam invites, or TCP by IP | Steam friends, a server browser, direct IP |
@@ -86,6 +86,8 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 | Game modes | Any level, without co-op or PvP rules | Story co-op, arena PvP with bots |
 | Who may change what | Any connected player could delete, spawn or move any object and rewrite player states and settings | The host checks every message: a player can only affect their own character; hits and grabs must be in reach |
 | Malformed packets | Could crash the game | Dropped unread; tested with forged attacks |
+
+See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **8** requires matching updated binaries on every computer.
 
 ## Multiplayer lobby
 

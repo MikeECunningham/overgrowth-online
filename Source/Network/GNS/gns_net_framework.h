@@ -116,7 +116,7 @@ class GNSNetFramework {
     int ReceiveMessageOnConnection(NetConnectionID conn_id, NetworkingMessage* msg);
     bool AcceptConnection(NetConnectionID conn_id, int* result);
     std::string GetResultString(int result);
-    void SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush);
+    void SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush, int lane = 0);
 
     bool RemoteAddress(NetConnectionID conn_id, std::string* ip, uint64_t* steam_id) const;
     bool BeginMigrationListener(const std::string& secret);

@@ -88,9 +88,9 @@ def dist(a, b):
     return math.dist(a, b)
 
 
-# Stock 1.4 also logs these: the main menu's missing include; aschar's sheath swap indexing
-# weapon_slots by an item id; goal_level.as's missing include and Folti's Cliff's music name
-KNOWN_STOCK_ERRORS = ("campaign_common.as", "weapon_slots out of array bounds", "lugaru_campaign.as", "can't load music")  # (music names missing from the 1.4 data: Folti's Cliff, Therium-2)
+# Stock 1.4 also logs these: the main menu/goal level's missing campaign
+# includes and music names absent from the 1.4 data (Folti's Cliff, Therium-2).
+KNOWN_STOCK_ERRORS = ("campaign_common.as", "lugaru_campaign.as", "can't load music")
 
 
 def script_errors(inst):
@@ -1159,6 +1159,22 @@ def _connection_cancel(ctx):
 SCENARIOS["connection_cancel"] = _connection_cancel
 
 
+def _coop_inventory(ctx):
+    from .coop_inventory_suite import coop_inventory
+    return coop_inventory(ctx)
+
+
+SCENARIOS["coop_inventory"] = _coop_inventory
+
+
+def _crowded_actions(ctx):
+    from .crowded_actions_suite import crowded_actions
+    return crowded_actions(ctx)
+
+
+SCENARIOS["crowded_actions"] = _crowded_actions
+
+
 SUITES = {
     "smoke": ["boot", "move", "connect"],
     "baseline": ["connect", "connect_typical", "connect_bad", "bot_duel"],
@@ -1185,3 +1201,19 @@ def _lobby_role_ui(ctx):
 
 
 SCENARIOS["lobby_role_ui"] = _lobby_role_ui
+
+
+def _gui_navigation(ctx):
+    from .gui_navigation_suite import gui_navigation
+    return gui_navigation(ctx)
+
+
+SCENARIOS["gui_navigation"] = _gui_navigation
+
+
+def _campaign_hazards(ctx):
+    from .campaign_hazard_suite import campaign_hazards
+    return campaign_hazards(ctx)
+
+
+SCENARIOS["campaign_hazards"] = _campaign_hazards

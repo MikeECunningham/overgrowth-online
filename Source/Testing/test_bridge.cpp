@@ -54,6 +54,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <map>
 #include <stdexcept>
@@ -62,6 +63,11 @@ extern Timer game_timer;
 extern Config config;
 
 namespace {
+
+bool test_pointer_enabled = false;
+int test_pointer_x = 0;
+int test_pointer_y = 0;
+uint32_t test_pointer_buttons = 0;
 
 #if SDL_VERSION_ATLEAST(2, 0, 14)
 // SDL virtual devices live in this process only. They exercise the real input
@@ -131,6 +137,14 @@ int MyAvatar(Engine* engine) {
 
 }  // namespace
 
+bool TestBridgePointerState(int& x, int& y, uint32_t& buttons) {
+    if (!TestBridge::Instance()->Running() || !test_pointer_enabled) return false;
+    x = test_pointer_x;
+    y = test_pointer_y;
+    buttons = test_pointer_buttons;
+    return true;
+}
+
 TestBridge* TestBridge::Instance() {
     static TestBridge bridge;
     return &bridge;
@@ -149,6 +163,8 @@ bool TestBridge::Start(int port) {
 }
 
 void TestBridge::Stop() {
+    test_pointer_enabled = false;
+    test_pointer_buttons = 0;
     if (!running_) {
         return;
     }
@@ -400,6 +416,9 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         o["hits_resolved"] = (Json::UInt64)online->hits_resolved.load();
         o["hits_out_of_range"] = (Json::UInt64)online->hits_out_of_range.load();
         o["hit_results"] = (Json::UInt64)online->hit_results.load();
+        o["stale_hit_results"] = (Json::UInt64)online->stale_hit_results.load();
+        o["item_updates_sent"] = (Json::UInt64)online->item_updates_sent.load();
+        o["item_updates_idle_skipped"] = (Json::UInt64)online->item_updates_idle_skipped.load();
         o["takeovers"] = (Json::UInt64)online->takeovers.load();
         o["item_launches"] = (Json::UInt64)online->item_launches.load();
         o["item_hits"] = (Json::UInt64)online->item_hits.load();
@@ -419,6 +438,13 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 p["conn_id"] = (int)peer.conn_id;
                 p["ping_ms"] = peer.current_ping_delta * 1000.0f;
                 p["transport_ping_ms"] = online->GetPeerTransportPing(peer.conn_id);
+                ConnectionStatus link{};
+                online->GetConnectionStatus(peer, &link);
+                p["queue_ms"] = (double)link.usec_queue_time / 1000.0;
+                p["pending_reliable"] = link.pending_reliable;
+                p["pending_unreliable"] = link.pending_unreliable;
+                p["unacked_reliable"] = link.sent_unacked_reliable;
+                p["send_rate_bytes_per_second"] = link.send_rate_bytes_per_second;
                 p["clock_offset_ms"] = peer.clock.Offset();
                 p["clock_samples"] = peer.clock.Samples();
                 o["peers"].append(p);
@@ -461,6 +487,34 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 c["proxy"] = mo->network_proxy;
                 c["bones"] = (int)mo->rigged_object()->skeleton_.physics_bones.size();
                 c["morphs"] = (int)mo->rigged_object()->morph_targets.size();
+                c["weapon_slots"] = Json::Value(Json::arrayValue);
+                c["weapon_slots_common"] = Json::Value(Json::arrayValue);
+                for (int slot = 0; mo->ASHasVar("weapon_slots") && slot < 6; ++slot) {
+                    const int item = mo->ASGetArrayIntVar("weapon_slots", slot);
+                    c["weapon_slots"].append(item);
+                    c["weapon_slots_common"].append(item < 0 ? -1 : static_cast<int>(online->GetOriginalID(item)));
+                }
+                c["attachments"] = Json::Value(Json::arrayValue);
+                for (const AttachedItem& attached : mo->rigged_object()->attached_items.items) {
+                    ItemObject* item = attached.item.GetAttached();
+                    if (!item) continue;
+                    Json::Value entry;
+                    entry["id"] = item->GetID();
+                    entry["common_id"] = static_cast<int>(online->GetOriginalID(item->GetID()));
+                    entry["state"] = static_cast<int>(item->state());
+                    entry["bone_id"] = attached.bone_id;
+                    c["attachments"].append(entry);
+                }
+                c["item_connections"] = Json::Value(Json::arrayValue);
+                for (const ItemObjectScriptReader& connection : mo->item_connections) {
+                    if (!connection.GetAttached()) continue;
+                    Json::Value entry;
+                    entry["id"] = connection.GetAttached()->GetID();
+                    entry["common_id"] = static_cast<int>(online->GetOriginalID(connection.GetAttached()->GetID()));
+                    entry["type"] = static_cast<int>(connection.attachment_type);
+                    entry["mirrored"] = connection.attachment_mirror;
+                    c["item_connections"].append(entry);
+                }
                 c["char_path"] = mo->character_path;
                 c["palette"] = Json::Value(Json::arrayValue);
                 for (const LabeledColor& lc : *mo->GetPalette()) {
@@ -518,6 +572,8 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 ItemObject* io = static_cast<ItemObject*>(obj);
                 Json::Value it;
                 it["id"] = io->GetID();
+                it["state"] = static_cast<int>(io->state());
+                it["parent_id"] = io->parent ? io->parent->GetID() : -1;
                 it["common_id"] = online->GetOriginalID(io->GetID());
                 it["label"] = io->item_ref()->GetLabel();
                 it["held_by"] = io->HeldByWhom();
@@ -917,6 +973,79 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             vk["uploads"] = (Json::UInt64)s.uploads;
             vk["upload_mb"] = (double)s.upload_bytes / (1024.0 * 1024.0);
         }
+    } else if (cmd == "pointer") {
+        const uint32_t previous = test_pointer_buttons;
+        test_pointer_enabled = req.get("enabled", true).asBool();
+        test_pointer_x = req.get("x", test_pointer_x).asInt();
+        test_pointer_y = req.get("y", test_pointer_y).asInt();
+        test_pointer_buttons = test_pointer_enabled ? req.get("buttons", 0).asUInt() : 0;
+        const Uint32 window = SDL_GetWindowID(Graphics::Instance()->sdl_window_);
+        SDL_Event event;
+        SDL_zero(event);
+        event.type = SDL_MOUSEMOTION;
+        event.motion.windowID = window;
+        event.motion.x = test_pointer_x;
+        event.motion.y = test_pointer_y;
+        SDL_PushEvent(&event);
+        for (int button = SDL_BUTTON_LEFT; button <= SDL_BUTTON_RIGHT; ++button) {
+            const uint32_t mask = SDL_BUTTON(button);
+            if ((previous & mask) == (test_pointer_buttons & mask)) continue;
+            SDL_zero(event);
+            event.type = test_pointer_buttons & mask ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+            event.button.windowID = window;
+            event.button.button = button;
+            event.button.state = test_pointer_buttons & mask ? SDL_PRESSED : SDL_RELEASED;
+            event.button.x = test_pointer_x;
+            event.button.y = test_pointer_y;
+            SDL_PushEvent(&event);
+        }
+        out["enabled"] = test_pointer_enabled;
+    } else if (cmd == "text") {
+        const std::string text = req.get("text", "").asString();
+        for (size_t offset = 0; offset < text.size();) {
+            SDL_Event event;
+            SDL_zero(event);
+            event.type = SDL_TEXTINPUT;
+            event.text.windowID = SDL_GetWindowID(Graphics::Instance()->sdl_window_);
+            size_t length = std::min(text.size() - offset, sizeof(event.text.text) - 1);
+            while (offset + length < text.size() && length > 0 &&
+                   (static_cast<unsigned char>(text[offset + length]) & 0xc0) == 0x80) --length;
+            if (length == 0) throw std::runtime_error("invalid UTF-8 text input");
+            std::memcpy(event.text.text, text.data() + offset, length);
+            SDL_PushEvent(&event);
+            offset += length;
+        }
+    } else if (cmd == "ui_state") {
+        if (!ImGui::GetCurrentContext()) throw std::runtime_error("no ImGui context");
+        const ImGuiContext& gui = *ImGui::GetCurrentContext();
+        auto rectangle = [](const ImRect& rect) {
+            Json::Value result(Json::arrayValue);
+            result.append(rect.Min.x); result.append(rect.Min.y);
+            result.append(rect.Max.x); result.append(rect.Max.y);
+            return result;
+        };
+        out["active_id"] = gui.ActiveId;
+        out["nav_id"] = gui.NavId;
+        out["nav_window"] = gui.NavWindow ? gui.NavWindow->Name : "";
+        out["want_text_input"] = gui.IO.WantTextInput;
+        if (gui.NavWindow) {
+            ImRect rect = gui.NavWindow->NavRectRel[gui.NavLayer];
+            rect.Translate(gui.NavWindow->Pos);
+            out["nav_rect"] = rectangle(rect);
+        }
+        Json::Value windows(Json::arrayValue);
+        for (const ImGuiWindow* window : gui.Windows) {
+            if (!window->WasActive) continue;
+            Json::Value row;
+            row["name"] = window->Name;
+            row["id"] = window->ID;
+            row["rect"] = rectangle(window->Rect());
+            row["clip_rect"] = rectangle(window->ClipRect);
+            row["scroll_y"] = window->Scroll.y;
+            row["max_scroll_y"] = window->ScrollMax.y;
+            windows.append(row);
+        }
+        out["windows"] = windows;
     } else if (cmd == "key") {
         // A key pressed and let go as the keyboard sends it (SDL events through the engine's own
         // input path): {"key": "f1"}; optional "down" holds/releases across

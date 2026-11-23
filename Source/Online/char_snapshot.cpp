@@ -568,6 +568,7 @@ uint64_t Hash(const uint8_t* data, size_t size) {
 
 void Buffer::Clear() {
     frames_.clear();
+    root_history_.clear();
     lags_.clear();
     gaps_.clear();
     started_ = false;
@@ -632,6 +633,8 @@ void Buffer::Push(const Frame& f, double arrival_ms) {
 
     frames_.push_back(f);
     frames_.back().morphs.clear();  // applied on arrival, not kept
+    root_history_.push_back({f.src_ms, f.position, f.velocity});
+    while ((int)root_history_.size() > kMaxFrames) root_history_.pop_front();
 
     while ((int)frames_.size() > kMaxFrames) {
         frames_.pop_front();
@@ -641,6 +644,36 @@ void Buffer::Push(const Frame& f, double arrival_ms) {
     while ((int)lags_.size() > kLagWindow) {
         lags_.pop_front();
     }
+}
+
+bool Buffer::SourceTimeRange(uint32_t& oldest, uint32_t& newest) const {
+    if (root_history_.empty()) return false;
+    oldest = root_history_.front().src_ms;
+    newest = root_history_.back().src_ms;
+    return true;
+}
+
+bool Buffer::PositionAt(uint32_t source_ms, vec3& out) const {
+    if (root_history_.empty() || source_ms < root_history_.front().src_ms) return false;
+    const RootPose& newest = root_history_.back();
+    vec3 position;
+    if (source_ms >= newest.src_ms) {
+        const double ahead_ms = static_cast<double>(source_ms) - newest.src_ms;
+        if (ahead_ms > kMaxExtrapolateMs) return false;
+        position = newest.position + newest.velocity * static_cast<float>(ahead_ms / 1000.0);
+    } else {
+        auto after = std::lower_bound(root_history_.begin(), root_history_.end(), source_ms,
+            [](const RootPose& pose, uint32_t time) { return pose.src_ms < time; });
+        if (after->src_ms == source_ms) position = after->position;
+        else {
+            const RootPose& before = *(after - 1);
+            const float t = static_cast<float>(source_ms - before.src_ms) / (after->src_ms - before.src_ms);
+            position = lerp(before.position, after->position, t);
+        }
+    }
+    if (!std::isfinite(position[0]) || !std::isfinite(position[1]) || !std::isfinite(position[2])) return false;
+    out = position;
+    return true;
 }
 
 bool Buffer::Sample(double now_ms, Frame& out) {

@@ -678,8 +678,10 @@ void MovementObject::ReconcileNetworkItems(const CharSnapshot::Vitals& v) {
         }
     }
 
-    // Take up what it has: hands (grip) and sheaths
-    for (int i = 0; i < 4; ++i) {
+    // Take up what it has: hands, sheathed weapons and the separate scabbards
+    // in slots 4/5. A scabbard may have been detached by an older owner record
+    // while its reliable creation/attachment messages were still in flight.
+    for (int i = 0; i < 6; ++i) {
         Object* o = slots[i] == -1 ? nullptr : scenegraph_->GetObjectFromID(slots[i]);
         if (o == nullptr || o->GetType() != _item_object) {
             continue;
@@ -687,7 +689,7 @@ void MovementObject::ReconcileNetworkItems(const CharSnapshot::Vitals& v) {
 
         ItemObject* item = static_cast<ItemObject*>(o);
         bool grip = i < 2;
-        bool mirrored = (i == 0) || (i == 3);  // held left; sheathed right (aschar.as HandleEditorAttachment)
+        bool mirrored = (i == 0) || (i == 3) || (i == 5);  // held left; right hip, including scabbard
         int holder = item->HeldByWhom();
 
         if (holder == GetID() && item->state() == (grip ? ItemObject::kWielded : ItemObject::kSheathed)) {
@@ -710,6 +712,14 @@ void MovementObject::ReconcileNetworkItems(const CharSnapshot::Vitals& v) {
         online->UnstickHere(scenegraph_, item);  // pulled out there: out of the body here too
         AttachItemToSlot(item->GetID(), grip ? _at_grip : _at_sheathe, mirrored);
     }
+
+    // Moving an existing item between hand and sheath invalidates its old
+    // holding reader. That callback clears the script's slot for this item.
+    // Publish the complete owner inventory after those callbacks, otherwise
+    // co-op loadout code sees an empty slot alongside a still-held weapon and
+    // can create a second copy before the next character snapshot arrives.
+    for (int i = 0; i < 6; ++i) ASSetArrayIntVar("weapon_slots", i, slots[i]);
+    ASSetIntVar("primary_weapon_slot", v.primary_slot);
 }
 
 // Overgrowth Online: the pose we stream for a character we simulate
@@ -4707,21 +4717,29 @@ bool MovementObject::Disconnect(Object& other, bool from_socket /* = false */, b
         as_context->CallScriptFunction(as_funcs.reset_waypoint_target);
         return true;
     } else if (other.GetType() == _item_object) {
+        bool had_connection = false;
         for (std::list<ItemObjectScriptReader>::iterator iter = item_connections.begin();
              iter != item_connections.end();) {
             if ((*iter)->GetID() == other.GetID()) {
                 iter = item_connections.erase(iter);
-                if (as_context.get()) {
-                    ASArglist args;
-                    args.Add(other.GetID());
-                    as_context->CallScriptFunction(as_funcs.notify_item_detach, &args);
-                }
-                rigged_object_->DetachItem((ItemObject*)&other);
-                ((ItemObject*)(&other))->Reset();
+                had_connection = true;
             } else {
                 ++iter;
             }
         }
+        // Snapshot reconciliation can attach runtime weapons without creating
+        // an editor connection. A reliable detach must remove those too.
+        rigged_object_->DetachItem(static_cast<ItemObject*>(&other));
+        if (as_context.get()) {
+            ASArglist args;
+            args.Add(other.GetID());
+            as_context->CallScriptFunction(as_funcs.notify_item_detach, &args);
+        }
+        if (other.parent == this) other.SetParent(nullptr);
+        // Editor disconnection restores the saved placement. A network drop
+        // keeps its current world transform for the owner's throw/free-item
+        // updates; rewinding it here creates a second apparent floor weapon.
+        if (had_connection && !from_socket) static_cast<ItemObject*>(&other)->Reset();
         return true;
     } else if (other.GetType() == _hotspot_object) {
         return Object::Disconnect(other, checking_other);

@@ -72,12 +72,13 @@ void HitRequest::Destroy(void* object) {
 HitResult::HitResult() : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT) {
 }
 
-HitResult::HitResult(CommonObjectID attacker, CommonObjectID target, const std::string& type, int32_t result)
+HitResult::HitResult(CommonObjectID attacker, CommonObjectID target, const std::string& type, int32_t result, uint32_t request_ms)
     : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT),
       attacker(attacker),
       target(target),
       type(type),
-      result(result) {
+      result(result),
+      request_ms(request_ms) {
 }
 
 binn* HitResult::Serialize(void* object) {
@@ -87,6 +88,7 @@ binn* HitResult::Serialize(void* object) {
     binn_object_set_int32(l, "t", m->target);
     binn_object_set_std_string(l, "y", m->type);
     binn_object_set_int32(l, "r", m->result);
+    binn_object_set_uint32(l, "s", m->request_ms);
     return l;
 }
 
@@ -96,6 +98,7 @@ void HitResult::Deserialize(void* object, binn* l) {
     binn_object_get_int32(l, "t", &m->target);
     binn_object_get_std_string(l, "y", &m->type);
     binn_object_get_int32(l, "r", &m->result);
+    binn_object_get_uint32(l, "s", &m->request_ms);
 }
 
 void HitResult::Execute(const OnlineMessageRef& ref, void* object, PeerID peer) {

@@ -118,6 +118,7 @@ bool ControllerSettingsAvailable() {
 }
 
 void BuildUI(string landing_screen){
+    CaptureNumericTextDrafts();
     SetControllerPlayer(controller_player);
     float header_width = 550;
     float header_height = 128;
@@ -250,6 +251,7 @@ void SetActiveCategory(string name){
 }
 
 void SwitchSettingsScreen(string screen_name){
+    CaptureNumericTextDrafts();
     if(PersonalSettingsOnly()) screen_name = MenuOwnsKeyboard() ? "Controls" : "Gamepad";
     if(IsPlayerMenuContext() && screen_name == "Controls" && !MenuOwnsKeyboard()) screen_name = "Gamepad";
     if(IsPlayerMenuContext() && screen_name == "Gamepad" && MenuOwnsKeyboard() && !IsControllerConnected()) screen_name = "Controls";
@@ -688,6 +690,8 @@ void AddKeyBinds(IMContainer@ parent) {
     }
     key_rebind_horizontal.append(key_rebind_vertical);
 
+    ConfigureControllerScrollRegion(key_rebind_vertical, show_keybinds_offset, kMaxShownKeybinds, keyboard_keybinds.size());
+
     AddScrollBar(key_rebind_horizontal, 50.0f, 700.0f, keyboard_keybinds.size(), kMaxShownKeybinds, show_keybinds_offset);
 
     parent.setElement(key_rebind_horizontal);
@@ -737,6 +741,8 @@ void AddControllerBinds(IMContainer@ parent) {
     }
     key_rebind_horizontal.append(key_rebind_vertical);
 
+    ConfigureControllerScrollRegion(key_rebind_vertical, show_keybinds_offset, kMaxShownKeybinds, controller_keybinds.size());
+
     AddScrollBar(key_rebind_horizontal, 50.0f, 700.0f, controller_keybinds.size(), kMaxShownKeybinds, show_keybinds_offset);
 
     parent.setElement(key_rebind_horizontal);
@@ -756,9 +762,10 @@ void SaveUnsavedChanges() {
 }
 
 void DiscardUnsavedChanges() {
+    numeric_text_drafts.resize(0);
     for(uint i = 0; i < gui_elements.size(); i++){
-        if(gui_elements[i].unsaved_values){
-            gui_elements[i].PutCurrentValue();
+        if(gui_elements[i].unsaved_values || gui_elements[i].HasTextDraft()){
+            gui_elements[i].DiscardValue();
         }
     }
 }
@@ -767,11 +774,9 @@ void ProcessSettingsMessage(IMMessage@ message){
     if(active_rebind == -1){
         CloseAllOptionMenus();
         if( message.name == "ui_element_clicked" ){
-            DiscardUnsavedChanges();
             ToggleUIElement(message.getString(0));
         }
         else if( message.name == "option_changed" ){
-            DiscardUnsavedChanges();
             for(uint i = 0; i < gui_elements.size(); i++){
                 if(gui_elements[i].name == message.getString(0)){
                     gui_elements[i].SwitchOption(message.getString(1));
@@ -782,7 +787,6 @@ void ProcessSettingsMessage(IMMessage@ message){
             if(current_screen == "Screen" || current_screen == "Ray Tracing") SwitchSettingsScreen(current_screen);
         }
         else if( message.name == "close_all_open_menus" ){
-            DiscardUnsavedChanges();
             CloseAllOptionMenus();
         }
         else if( message.name == "save_unsaved_changes" ){
@@ -840,9 +844,14 @@ void ProcessSettingsMessage(IMMessage@ message){
         }
         else if( message.name == "back" ){
             //Log(info,"Received back message");
-            if(OptionMenuOpen()){
+            bool editing_text = false;
+            for(uint i = 0; i < gui_elements.length(); ++i) editing_text = editing_text || gui_elements[i].HasTextDraft();
+            if(editing_text) {
+                DiscardUnsavedChanges();
+            } else if(OptionMenuOpen()){
                 CloseAllOptionMenus();
             }else{
+                DiscardUnsavedChanges();
                 imGUI.receiveMessage(IMMessage("Back"));
             }
         }
@@ -858,7 +867,7 @@ void ProcessSettingsMessage(IMMessage@ message){
                 }
             }
         }
-        else if(message.name == "shift_menu"){
+        else if(message.name == "shift_menu" || message.name == "controller_scroll"){
             if(current_screen == "Controls" || current_screen == "Gamepad") {
                 int offset = message.getInt(0);
                 show_keybinds_offset += offset;
@@ -869,6 +878,7 @@ void ProcessSettingsMessage(IMMessage@ message){
                     show_keybinds_offset = min(show_keybinds_offset, controller_keybinds.size() - kMaxShownKeybinds);
                 }
                 SwitchSettingsScreen(current_screen);
+                if(message.name == "controller_scroll") FocusControllerScrollEdge(controller_scroll_region, offset);
             }
         }
         else if(message.name.findFirst("menu_player") == 0 && !IsPlayerMenuContext()) {

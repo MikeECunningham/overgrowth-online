@@ -23,6 +23,7 @@
 //-----------------------------------------------------------------------------
 
 #include "threatcheck.as"
+#include "hotspots/overgrowth_course.as"
 
 int progress = 0;
 float progress_sync_next = 0.0f;  // online host: the progress again now and then (late joiners)
@@ -611,6 +612,8 @@ void ReceiveMessage(string msg) {
 
     string msg_start = token_iter.GetToken(msg);
     if(msg_start == "reset"){
+        CoopCourseReset();
+        progress_sync_next = 0.0f;
         queued_goal_check = true;
         ko_time = -1.0;
         win_time = -1.0;
@@ -641,7 +644,17 @@ void ReceiveMessage(string msg) {
                 CoopFollowProgress(atoi(token_iter.GetToken(msg)));
             } else if(what == "og_heal"){
                 CoopHealOwnPlayers();
+            } else if(what == "og_course_seed" && token_iter.FindNextToken(msg)) {
+                string target = token_iter.GetToken(msg);
+                int target_id = atoi(target.substr(0, 1) == "#" ? target.substr(1) : target);
+                if(target_id == hotspot.GetID() && token_iter.FindNextToken(msg)) {
+                    int seat = atoi(token_iter.GetToken(msg));
+                    if(token_iter.FindNextToken(msg)) CoopCourseSeed(seat, atoi(token_iter.GetToken(msg)));
+                }
             }
+        } else if(sub_msg == "coop_course_rebase" && token_iter.FindNextToken(msg)) {
+            int avatar = atoi(token_iter.GetToken(msg));
+            if(token_iter.FindNextToken(msg)) CoopCourseRebase(avatar, atoi(token_iter.GetToken(msg)));
         } else if(sub_msg == "set_camera_dof"){
             dof_params.resize(0);
             while(token_iter.FindNextToken(msg)){
@@ -747,14 +760,11 @@ void ReceiveMessage(string msg) {
                 int fell = token_iter.FindNextToken(msg) ? atoi(token_iter.GetToken(msg)) : -1;
                 if(fell != -1 && MovementObjectExists(fell)){
                     MovementObject@ char = ReadCharacterID(fell);
-                    if(!char.remote && Online_IsActive() && LandsSoon(char)){
-                        // Online: a jump, not a fall. A teammate's progress turned the box
-                        // on around this player (offline it is always behind you)
-                        Log(info, "Overgrowth Online: fall death zone " + checkpoint_id + " ignored for " + fell + ", ground under it");
-                    } else if(!char.remote){
+                    bool held = char.HasVar("coop_cutscene_hold") && char.GetBoolVar("coop_cutscene_hold");
+                    if(!char.network_proxy && !held && (!Online_IsActive() || CoopCourseProgressForCharacter(fell) >= checkpoint_id)) {
                         char.ReceiveMessage("fall_death");
                     }
-                } else {
+                } else if(!Online_IsActive()) {
                     int player_id = GetPlayerCharacterID();
                     if(player_id != -1 && ObjectExists(player_id)){
                         MovementObject@ char = ReadCharacter(player_id);
@@ -763,6 +773,20 @@ void ReceiveMessage(string msg) {
                 }
             }
         }
+    }
+
+    if(msg_start == "player_entered_checkpoint" && token_iter.FindNextToken(msg)) {
+        int checkpoint_id = atoi(token_iter.GetToken(msg));
+        int avatar = token_iter.FindNextToken(msg) ? atoi(token_iter.GetToken(msg)) : -1;
+        int source = token_iter.FindNextToken(msg) ? atoi(token_iter.GetToken(msg)) : -1;
+        if(Online_IsActive()) CoopCourseCheckpoint(checkpoint_id, avatar, source);
+        // The existing shared-story handler below consumes the same message.
+        token_iter.Init();
+        token_iter.FindNextToken(msg);
+    }
+    if(msg_start == "coop_course_rebase" && token_iter.FindNextToken(msg)) {
+        int avatar = atoi(token_iter.GetToken(msg));
+        if(token_iter.FindNextToken(msg)) CoopCourseRebase(avatar, atoi(token_iter.GetToken(msg)));
     }
 
     if(win_time == -1.0){
@@ -776,12 +800,6 @@ void ReceiveMessage(string msg) {
             }
         }
     }
-}
-
-// Ground within a jump's height under the character
-bool LandsSoon(MovementObject@ char){
-    vec3 end = char.position - vec3(0.0f, 3.5f, 0.0f);
-    return distance(col.GetRayCollision(char.position, end), end) > 0.01f;
 }
 
 void SetMusicLayer(int layer){
@@ -801,6 +819,7 @@ void SetMusicLayer(int layer){
 
 void Update() {
     EnterTelemetryZone("Overgrowth Level Update");
+    CoopCourseUpdate();
 
     if(Online_IsHosting() && the_time >= progress_sync_next){
         progress_sync_next = the_time + 5.0f;

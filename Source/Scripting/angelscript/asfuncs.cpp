@@ -4122,18 +4122,12 @@ void AS_ImGui_SetTextBuf(const std::string& contents) {
 }
 
 bool AS_ImGui_InputText2(const std::string& label, std::string& text_buffer, int buffer_size, int flags) {
-    text_buffer.reserve(buffer_size);
     AS_ImGui_SetTextBuf(text_buffer);
-    bool ret_val = ImGui::InputText(label.c_str(), buf, buffer_size, flags);
-    if (ret_val) {
-        size_t new_size = strlen(buf);
-        if (text_buffer.size() < new_size) {
-            text_buffer.insert(text_buffer.size(), new_size - text_buffer.size(), 0);
-        } else if (text_buffer.size() > new_size) {
-            text_buffer.erase(text_buffer.end() - (text_buffer.size() - new_size), text_buffer.end());
-        }
-        strcpy(&text_buffer[0], buf);
-    }
+    bool ret_val = ImGui::InputText(label.c_str(), buf, std::max(1, std::min(buffer_size, kBufSize)), flags);
+    // EnterReturnsTrue changes the activation result, not whether the buffer
+    // was edited. Keep the script's draft current before another widget takes
+    // focus, or clicking Save would read the value from before typing.
+    text_buffer.assign(buf);
     return ret_val;
 }
 
@@ -4149,18 +4143,9 @@ bool AS_ImGui_InputTextMultiline(const std::string& label, const vec2& size, int
 }
 
 bool AS_ImGui_InputTextMultiline2(const std::string& label, std::string& text_buffer, int buffer_size, const vec2& size, int flags) {
-    text_buffer.reserve(buffer_size);
     AS_ImGui_SetTextBuf(text_buffer);
-    bool ret_val = ImGui::InputTextMultiline(label.c_str(), buf, buffer_size, ImVec2(size[0], size[1]), flags | ImGuiInputTextFlags_CallbackAlways, ImGui_TextInputCallback);
-    if (ret_val) {
-        size_t new_size = strlen(buf);
-        if (text_buffer.size() < new_size) {
-            text_buffer.insert(text_buffer.size(), new_size - text_buffer.size(), 0);
-        } else if (text_buffer.size() > new_size) {
-            text_buffer.erase(text_buffer.end() - (text_buffer.size() - new_size), text_buffer.end());
-        }
-        strcpy(&text_buffer[0], buf);
-    }
+    bool ret_val = ImGui::InputTextMultiline(label.c_str(), buf, std::max(1, std::min(buffer_size, kBufSize)), ImVec2(size[0], size[1]), flags | ImGuiInputTextFlags_CallbackAlways, ImGui_TextInputCallback);
+    text_buffer.assign(buf);
     return ret_val;
 }
 

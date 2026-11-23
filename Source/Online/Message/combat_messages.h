@@ -50,8 +50,10 @@ class HitResult : public OnlineMessageBase {
     std::string type;
     int32_t result = 0;  // aschar.as: _miss 0, _going_to_block 1, _hit 2, _block_impact 3, _invalid 4, _going_to_dodge 5
 
+    uint32_t request_ms = 0;  // echoed request; never apply an old correction to a later attack
+
     HitResult();
-    HitResult(CommonObjectID attacker, CommonObjectID target, const std::string& type, int32_t result);
+    HitResult(CommonObjectID attacker, CommonObjectID target, const std::string& type, int32_t result, uint32_t request_ms = 0);
 
     static binn* Serialize(void* object);
     static void Deserialize(void* object, binn* l);

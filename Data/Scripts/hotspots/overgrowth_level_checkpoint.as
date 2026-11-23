@@ -36,10 +36,16 @@ void HandleEvent(string event, MovementObject @mo){
     }
 }
 
-int entered = -1;
-float entered_time = 0.0f;
+array<int> entered;
+array<float> entered_time;
+
+void Reset() {
+    entered.resize(0);
+    entered_time.resize(0);
+}
 
 void OnEnter(MovementObject @mo) {
+    if(mo.HasVar("coop_cutscene_hold") && mo.GetBoolVar("coop_cutscene_hold")) return;
     if(mo.controlled && params.HasParam("level_hotspot_id") && params.HasParam("checkpoint_id")){
         if(params.HasParam("fall_death")){
             int level_hotspot_id = params.GetInt("level_hotspot_id");
@@ -49,30 +55,41 @@ void OnEnter(MovementObject @mo) {
                 obj.ReceiveScriptMessage("player_entered_checkpoint_fall_death "+checkpoint_id+" "+mo.GetID());  // (who fell)
             }
         } else {
-            entered = mo.GetID();
-            entered_time = the_time;
+            int at = entered.find(mo.GetID());
+            if(at < 0) {
+                entered.insertLast(mo.GetID());
+                entered_time.insertLast(the_time);
+            } else entered_time[at] = the_time;
         }
     }
 }
 
 void OnExit(MovementObject @mo) {
     if(mo.controlled){
-        if(mo.GetID() == entered){
-            entered = -1;
+        int at = entered.find(mo.GetID());
+        if(at >= 0){
+            entered.removeAt(at);
+            entered_time.removeAt(at);
         }
     }
 }
 
 void Update() {
-    if(entered != -1){
-        if(!params.HasParam("time") || entered_time < the_time - params.GetFloat("time")){
+    for(int i = int(entered.length()) - 1; i >= 0; --i) {
+        if(!MovementObjectExists(entered[i]) || !ReadCharacterID(entered[i]).controlled) {
+            entered.removeAt(i);
+            entered_time.removeAt(i);
+            continue;
+        }
+        if(!params.HasParam("time") || entered_time[i] < the_time - params.GetFloat("time")){
             int level_hotspot_id = params.GetInt("level_hotspot_id");
             if(ObjectExists(level_hotspot_id)){
                 Object@ obj = ReadObjectFromID(level_hotspot_id);
                 int checkpoint_id = params.GetInt("checkpoint_id");
-                obj.ReceiveScriptMessage("player_entered_checkpoint "+checkpoint_id+" "+entered);  // (who: online, the downed get up beside them)
+                obj.ReceiveScriptMessage("player_entered_checkpoint "+checkpoint_id+" "+entered[i]+" "+hotspot.GetID());
             }
-            entered = -1;
+            entered.removeAt(i);
+            entered_time.removeAt(i);
         }
     }
 }

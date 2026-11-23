@@ -111,6 +111,7 @@
 #include <array>
 #include <list>
 #include <thread>
+#include <tuple>
 #include <mutex>
 #include <atomic>
 #include <deque>
@@ -674,6 +675,11 @@ class Online {
     void UpdateTakeOvers(SceneGraph* scenegraph);
 
     // Thrown weapons: the host flies them; hits on characters run elsewhere go to their owners
+    struct ItemStreamState { mat4 transform; double sent_ms; };
+    std::map<ObjectID, ItemStreamState> item_stream_sent;
+    std::atomic<uint64_t> item_updates_sent{0}, item_updates_idle_skipped{0};
+    std::map<std::tuple<CommonObjectID, CommonObjectID, std::string>, uint32_t> pending_hit_requests;
+    std::atomic<uint64_t> stale_hit_results{0};
     vector<ObjectID> pending_item_launches;  // client, main thread: sent at the end of the step
     std::atomic<uint64_t> item_launches{0};
     std::atomic<uint64_t> item_hits{0};
@@ -755,6 +761,7 @@ class Online {
         vec3 pos;
         vec3 facing;
         double queued_ms;  // waits (3 s at most) while another machine still has it (a teammate's drag)
+        ObjectID course_anchor = -1;
     };
     bool OwnPlayerCharacter(ObjectID id) const;  // our player's, whoever runs it now
     vector<PendingRevive> pending_revives;
@@ -775,9 +782,9 @@ class Online {
     // itself if it is safe): solid ground at about the same height, room to
     // stand, no drop beside it, not in deep water or a kill or fall-death volume.
     // FindSafeSpot says whether it found one; SafeSpotNear falls back to `base`
-    bool FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3* spot);
+    bool FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3* spot, ObjectID context = -1);
     vec3 SafeSpotNear(const vec3& base, const vec3& facing, int index);
-    bool GroundHazard(const vec3& ground) const;  // a point on the ground in water, a kill or a fall-death volume
+    bool GroundHazard(const vec3& ground, ObjectID context = -1) const;  // a point on the ground in water, a kill or a fall-death volume
     // Hits held until the defender shows its attacker landing them
     struct HeldHit {
         OnlineMessageRef ref;
@@ -962,13 +969,14 @@ class Online {
     void SendMessageObjects();
     void HandleConnectionsToBeClosed();
 
-    void SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush);
+    void SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush, int lane = 0);
 
     struct DelayedSend {
         NetConnectionID conn_id;
         std::vector<char> data;
         bool reliable;
         double release_ms;
+        int lane;
     };
     std::deque<DelayedSend> net_sim_queue;  // network thread only
     void FlushDelayedSends();

@@ -51,6 +51,8 @@
 #include <Online/online_file_transfer_handler.h>
 #include <Online/online_utility.h>
 #include <Online/package_header.h>
+#include <Online/network_scheduling.h>
+#include <unordered_set>
 
 #include <Compat/compat.h>
 #include <Compat/time.h>
@@ -186,6 +188,7 @@ void Online::ClearIDTranslations() {
     pending_unsticks.clear(); pending_drop_orders.clear(); pending_item_launches.clear();
     owner_overrides.clear(); handed_back_ms.clear();
     stream_latest.clear(); stream_sent.clear(); stream_owned.clear(); stream_next_capture_ms = 0.0;
+    item_stream_sent.clear(); pending_hit_requests.clear();
     last_safe_ground.clear(); coop_lost_since_ms = -1.0; client_player_key_states_.clear();
     own_character_applied.clear();
     if (online_session) {
@@ -321,6 +324,7 @@ ObjectID Online::CreateCharacter() {
 
     std::string team = "";
     vec3 position = vec3(0.0f);
+    ObjectID course_anchor = -1;
 
     // Attempt to move character close to an existing one.
     vector<ObjectID> local_avatar_ids = GetLocalAvatarIDs();
@@ -332,6 +336,7 @@ ObjectID Online::CreateCharacter() {
         if (mymo->GetScriptParams()->HasParam("Teams")) team = mymo->GetScriptParams()->GetStringVal("Teams");
         // Overgrowth Online: near the host's character on solid ground (not in the water)
         position = mymo->position;  // a safe fallback, never the world's origin
+        course_anchor = mymo->GetID();
         bool placed = false;
         for (const auto& entry : online_session->player_states) {
             Object* object = scenegraph->GetObjectFromID(entry.second.object_id);
@@ -339,13 +344,13 @@ ObjectID Online::CreateCharacter() {
             MovementObject* anchor = static_cast<MovementObject*>(object);
             for (int candidate = 1; candidate <= 8; ++candidate) {
                 vec3 spot;
-                if (!FindSafeSpot(anchor->position, anchor->GetFacing(), candidate, &spot)) continue;
+                if (!FindSafeSpot(anchor->position, anchor->GetFacing(), candidate, &spot, anchor->GetID())) continue;
                 bool occupied = false;
                 for (Object* character : scenegraph->movement_objects_) {
                     vec3 d = static_cast<MovementObject*>(character)->position - spot;
                     if (std::fabs(d.y()) < 1.5f && d.x()*d.x() + d.z()*d.z() < 1.0f) { occupied = true; break; }
                 }
-                if (!occupied) { position = spot; placed = true; break; }
+                if (!occupied) { position = spot; course_anchor = anchor->GetID(); placed = true; break; }
             }
             if (placed) break;
         }
@@ -365,6 +370,9 @@ ObjectID Online::CreateCharacter() {
 
     // Overgrowth Online: create it everywhere first, or the clients drop its Teams update
     Send<OnlineMessages::CreateEntity>(default_hot_join_characte_path, position, id);
+    if (course_anchor >= 0 && scenegraph->level) {
+        scenegraph->level->Message("coop_course_rebase " + to_string(id) + " " + to_string(course_anchor));
+    }
 
     ScriptParams* sp = mo->GetScriptParams();
     sp->ASSetString("Teams", team);
@@ -398,7 +406,7 @@ ObjectID Online::CreateLobbyBot(PlayerID id) {
         auto* beside = static_cast<MovementObject*>(object);
         for (int candidate = 1; candidate <= 8; ++candidate) {
             vec3 spot;
-            if (!FindSafeSpot(beside->position, beside->GetFacing(), candidate, &spot)) continue;
+            if (!FindSafeSpot(beside->position, beside->GetFacing(), candidate, &spot, beside->GetID())) continue;
             bool occupied = false;
             for (Object* character : graph->movement_objects_) {
                 const vec3 offset = static_cast<MovementObject*>(character)->position - spot;
@@ -1358,7 +1366,11 @@ void Online::StreamCharacters(SceneGraph* sg) {
         }
     }
     double budget = kSnapshotBudget / std::max<size_t>(1, receivers.size());  // bytes a second each
-    vector<CommonObjectID> players_in_stream;  // (filled once, for the first receiver)
+    std::unordered_set<CommonObjectID> players_in_stream;
+    for (const auto& entry : online_session->player_states) {
+        if (!entry.second.is_bot && entry.second.object_id >= 0)
+            players_in_stream.insert(GetOriginalID(entry.second.object_id));
+    }
 
     for (Receiver& rc : receivers) {
         if (IsHosting()) for (const auto& entry : online_session->player_states) {
@@ -1383,17 +1395,9 @@ void Online::StreamCharacters(SceneGraph* sg) {
         // What they'd like (30 Hz times the priority), and the scale that fits their share
         struct Want {
             CommonObjectID cid;
-            double rate;
         };
         vector<Want> wants;
-        double want_bytes = 0.0;
-        if (players_in_stream.empty()) {
-            for (auto& it : stream_latest) {
-                if (it.second.player) {
-                    players_in_stream.push_back(it.first);
-                }
-            }
-        }
+        std::vector<NetworkScheduling::Demand> demands;
         for (auto& it : stream_latest) {
             const StreamRecord& r = it.second;
             if (r.owner == rc.peer || r.bytes.empty()) {
@@ -1401,6 +1405,7 @@ void Online::StreamCharacters(SceneGraph* sg) {
             }
             float dist = rc.views.empty() ? 10.0f : 1e30f;
             double priority = rc.views.empty() ? 1.0 : 0.0;
+            bool critical = !IsHosting();
             // One network connection watches all of its local cameras. A fight
             // next to P2 must retain the same stream priority as one next to P1.
             for (const auto& view : rc.views) {
@@ -1408,14 +1413,17 @@ void Online::StreamCharacters(SceneGraph* sg) {
                 dist = std::min(dist, view_distance);
                 const vec3 direction = r.position - view.cam_pos;
                 const bool visible = !view.has_cam || length_squared(direction) < 144.0f || dot(normalize(direction), view.cam_dir) > 0.0f;
-                const bool engaged = r.target == view.avatar || r.attacker == view.avatar;
+                const auto observer = stream_latest.find(view.avatar);
+                const bool engaged = r.target == view.avatar || r.attacker == view.avatar ||
+                    (observer != stream_latest.end() && (observer->second.target == it.first || observer->second.attacker == it.first));
+                critical = critical || engaged || (players_in_stream.count(it.first) != 0 && view_distance < 12.0f);
                 priority = std::max(priority, StreamPriority(view_distance, visible, engaged));
             }
             // Players, and whoever fights one (a friend's fight is watched):
             // a few of them; full rate within 25 m, smooth however far (the
             // budget below still rules)
-            bool fights_player = std::find(players_in_stream.begin(), players_in_stream.end(), r.target) != players_in_stream.end() ||
-                                 std::find(players_in_stream.begin(), players_in_stream.end(), r.attacker) != players_in_stream.end();
+            bool fights_player = players_in_stream.count(r.target) != 0 ||
+                                 players_in_stream.count(r.attacker) != 0;
             if (r.player || fights_player) {
                 priority = std::max(priority, dist < 25.0f ? 1.0 : 0.5);
             }
@@ -1423,19 +1431,21 @@ void Online::StreamCharacters(SceneGraph* sg) {
                 priority = 1.0;  // to the host: its AI, its hit checks and every relay run on this stream
             }
             double rate = 30.0 * priority;
-            wants.push_back({it.first, rate});
-            want_bytes += rate * (r.lite.empty() ? r.bytes.size() : r.lite.size());
+            wants.push_back({it.first});
+            demands.push_back({rate, critical ? 20.0 : 1.0, (double)(r.lite.empty() ? r.bytes.size() : r.lite.size()), critical});
         }
-        double scale = want_bytes > budget ? budget / want_bytes : 1.0;
+        const auto rates = NetworkScheduling::Rates(demands, budget);
 
-        for (const Want& want : wants) {
+        for (size_t wi = 0; wi < wants.size(); ++wi) {
+            const Want& want = wants[wi];
+            if (rates[wi] <= 0.0) continue;
             const StreamRecord& r = stream_latest[want.cid];
             StreamSent& sent = stream_sent[std::make_pair(rc.peer, want.cid)];
             if (r.src_ms == sent.src_ms) {
                 continue;
             }
 
-            double interval = 1000.0 / std::max(1.0, std::min(30.0, want.rate * scale));
+            double interval = 1000.0 / std::min(30.0, rates[wi]);
             if (now - sent.sent_ms < interval - kStreamSlackMs) {
                 continue;
             }
@@ -2635,7 +2645,9 @@ void Online::SendHitRequest(ObjectID target, const string& type, const string& a
 
     OnlineMessageRef ref = message_handler.Create<OnlineMessages::HitRequest>(
         GetOriginalID(attacker), GetOriginalID(target), type, attack_path, dir, pos, damage_mult, knockback_mult, max_range);
-    static_cast<OnlineMessages::HitRequest*>(ref.GetData())->src_ms = (uint32_t)OnlineClockMs();
+    auto* request = static_cast<OnlineMessages::HitRequest*>(ref.GetData());
+    request->src_ms = (uint32_t)OnlineClockMs();
+    pending_hit_requests[std::make_tuple(request->attacker, request->target, type)] = request->src_ms;
     SendToOwnerOf(target, ref, false);
     ++hits_requested;
 }
@@ -2732,12 +2744,11 @@ void Online::LogLinks() {
 // Held hits whose attacker we now show landing them (main thread, LateUpdate)
 void Online::ResolveHeldHits() {
     double now = OnlineClockMs();
-    size_t done = 0;
-    while (done < held_hits.size() && held_hits[done].resolve_at_ms <= now) {
-        ResolveHitRequest(static_cast<OnlineMessages::HitRequest*>(held_hits[done].ref.GetData()), false);
-        ++done;
+    for (auto it = held_hits.begin(); it != held_hits.end();) {
+        if (it->resolve_at_ms > now) { ++it; continue; }
+        ResolveHitRequest(static_cast<OnlineMessages::HitRequest*>(it->ref.GetData()), false);
+        it = held_hits.erase(it);
     }
-    held_hits.erase(held_hits.begin(), held_hits.begin() + done);
 }
 
 void Online::ResolveHitRequest(OnlineMessages::HitRequest* m, bool peers_locked) {
@@ -2752,8 +2763,20 @@ void Online::ResolveHitRequest(OnlineMessages::HitRequest* m, bool peers_locked)
     int result = 0;  // _miss
     // Within the attacker's reach as it saw it, and within any melee reach here
     // whatever it claims (a guest's word: no hits from across the map)
-    float d = distance(attacker->position, target->position);
-    bool in_melee = d <= kMaxMeleeReach;
+    vec3 attacker_position = attacker->position;
+    bool expired_pose = false;
+    if (attacker->network_proxy && m->src_ms != 0) {
+        // Validate against the received owner pose at this attack, rather than
+        // the older pose chosen solely to make visual playback smooth.
+        uint32_t oldest = 0, newest = 0;
+        if (attacker->net_buffer.SourceTimeRange(oldest, newest)) {
+            expired_pose = (m->src_ms < oldest && oldest - m->src_ms > CharSnapshot::Buffer::kMaxExtrapolateMs) ||
+                           (m->src_ms < newest && newest - m->src_ms > 1500);
+        }
+        if (!expired_pose) attacker->net_buffer.PositionAt(m->src_ms, attacker_position);
+    }
+    float d = distance(attacker_position, target->position);
+    bool in_melee = !expired_pose && d <= kMaxMeleeReach;
     bool reaches = in_melee && (m->max_range <= 0.0f || d <= m->max_range + kHitRangeSlack);
 
     if (!reaches) {
@@ -2766,7 +2789,7 @@ void Online::ResolveHitRequest(OnlineMessages::HitRequest* m, bool peers_locked)
     }
 
     ++hits_resolved;
-    SendToOwnerOf(attacker_id, message_handler.Create<OnlineMessages::HitResult>(m->attacker, m->target, m->type, result), peers_locked);
+    SendToOwnerOf(attacker_id, message_handler.Create<OnlineMessages::HitResult>(m->attacker, m->target, m->type, result, m->src_ms), peers_locked);
 }
 
 // We run the attacker: act on the defender's answer (a block or dodge staggers us)
@@ -2790,6 +2813,16 @@ void Online::ReceiveHitResult(const OnlineMessageRef& ref, OnlineMessages::HitRe
         return;
     }
 
+    if (m->request_ms != 0) {
+        const auto key = std::make_tuple(m->attacker, m->target, m->type);
+        const auto pending = pending_hit_requests.find(key);
+        if (pending == pending_hit_requests.end() || pending->second != m->request_ms ||
+            (uint32_t)((uint32_t)OnlineClockMs() - m->request_ms) > 1500) {
+            ++stale_hit_results;
+            return;
+        }
+        pending_hit_requests.erase(pending);
+    }
     ++hit_results;
 
     string t = to_string(target_id), r = to_string(m->result);
@@ -2914,13 +2947,21 @@ void Online::ReceiveOwnerOverride(CommonObjectID cid, PlayerID owner, bool activ
     if (IsHosting() && active && from != online_session->local_player_id) {
         // A guest takes over what its own character grabs: beside it
         SceneGraph* sg = Engine::Instance()->GetSceneGraph();
-        auto ps = online_session->player_states.find(from);
-        Object* taker = (sg != nullptr && ps != online_session->player_states.end()) ? sg->GetObjectFromID(ps->second.object_id) : nullptr;
         Object* target = sg != nullptr ? sg->GetObjectFromID(GetObjectID(cid)) : nullptr;
-        if (taker == nullptr || target == nullptr || taker->GetType() != _movement_object || target->GetType() != _movement_object ||
-            distance(static_cast<MovementObject*>(taker)->position, static_cast<MovementObject*>(target)->position) > 5.0f) {
-            return;
+        bool nearby_owner = false;
+        if (target && target->GetType() == _movement_object) {
+            for (const auto& entry : online_session->player_states) {
+                const PlayerState& player = entry.second;
+                if (player.peer_id != from) continue;
+                Object* taker = sg->GetObjectFromID(player.object_id);
+                if (taker && taker->GetType() == _movement_object &&
+                    distance(static_cast<MovementObject*>(taker)->position, static_cast<MovementObject*>(target)->position) <= 5.0f) {
+                    nearby_owner = true;
+                    break;
+                }
+            }
         }
+        if (!nearby_owner) return;
     }
 
     if (IsHosting()) {
@@ -3811,7 +3852,7 @@ static bool InBox(const vec3& l) {
 // A fall death checkpoint kills only once the level's progress has reached it (its
 // level script acts on the message only then). Before, its box is air over the climb:
 // Sky Ark's checkpoint 7 box holds checkpoints 0-4, and every spot there was refused
-static bool FallDeathActive(SceneGraph* sg, Hotspot* h) {
+static bool FallDeathActive(SceneGraph* sg, Hotspot* h, ObjectID context) {
     ScriptParams* params = h->GetScriptParams();
     if (!params->HasParam("checkpoint_id") || !params->HasParam("level_hotspot_id")) {
         return true;
@@ -3824,10 +3865,13 @@ static bool FallDeathActive(SceneGraph* sg, Hotspot* h) {
     if (!level->HasScript() || !level->ASHasVar("progress")) {
         return true;
     }
+    if (context >= 0 && level->HasFunction("int CoopCourseProgressForCharacter(int)")) {
+        return level->QueryIntFunction("int CoopCourseProgressForCharacter(int)", context) >= params->ASGetInt("checkpoint_id");
+    }
     return level->ASGetIntVar("progress") >= params->ASGetInt("checkpoint_id");
 }
 
-bool Online::GroundHazard(const vec3& ground) const {
+bool Online::GroundHazard(const vec3& ground, ObjectID context) const {
     SceneGraph* sg = Engine::Instance()->GetSceneGraph();
     if (sg == nullptr) {
         return false;
@@ -3840,7 +3884,7 @@ bool Online::GroundHazard(const vec3& ground) const {
         const string& file = h->GetScriptFile();
         bool water = file.find("wet_cube") != string::npos || file.find("wet_cylinder") != string::npos;
         bool lethal = file.find("kill") != string::npos || file.find("spike") != string::npos ||
-                      (file.find("checkpoint") != string::npos && h->GetScriptParams()->HasParam("fall_death") && FallDeathActive(sg, h));
+                      (file.find("checkpoint") != string::npos && h->GetScriptParams()->HasParam("fall_death") && FallDeathActive(sg, h, context));
         if (water) {
             // Deeper than a wade (the surface is the top of the box), or lethal water
             vec3 l = HotspotLocal(h, ground);
@@ -3862,7 +3906,7 @@ bool Online::GroundHazard(const vec3& ground) const {
     return false;
 }
 
-bool Online::FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3* spot) {
+bool Online::FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3* spot, ObjectID context) {
     SceneGraph* sg = Engine::Instance()->GetSceneGraph();
     if (sg == nullptr || sg->bullet_world_ == nullptr) {
         return false;
@@ -3931,7 +3975,7 @@ bool Online::FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3*
             vec3 g2;
             footing = world->CheckRayCollision(g + o + up * 0.6f, g + o - up * 0.9f, &g2) != nullptr;
         }
-        if (!footing || GroundHazard(g)) {
+        if (!footing || GroundHazard(g, context)) {
             continue;
         }
         *spot = vec3(g.x(), g.y() + above, g.z());
@@ -3965,7 +4009,7 @@ void Online::TrackSafeGround(SceneGraph* sg) {
             continue;
         }
         vec3 g;
-        if (sg->bullet_world_->CheckRayCollision(mo->position, mo->position - vec3(0.0f, 1.5f, 0.0f), &g) != nullptr && !GroundHazard(g)) {
+        if (sg->bullet_world_->CheckRayCollision(mo->position, mo->position - vec3(0.0f, 1.5f, 0.0f), &g) != nullptr && !GroundHazard(g, mo->GetID())) {
             last_safe_ground[id] = mo->position;
         }
     }
@@ -3980,11 +4024,11 @@ static bool SpotBeside(Online* online, SceneGraph* sg, ObjectID anchor_id, int i
     }
     MovementObject* anchor = static_cast<MovementObject*>(o);
     *facing = anchor->GetFacing();
-    if (online->FindSafeSpot(anchor->position, *facing, index, spot)) {
+    if (online->FindSafeSpot(anchor->position, *facing, index, spot, anchor_id)) {
         return true;
     }
     auto it = online->last_safe_ground.find(anchor_id);
-    return it != online->last_safe_ground.end() && online->FindSafeSpot(it->second, *facing, index, spot);
+    return it != online->last_safe_ground.end() && online->FindSafeSpot(it->second, *facing, index, spot, anchor_id);
 }
 
 ObjectID Online::HostAvatarID() const {
@@ -4150,6 +4194,7 @@ void Online::CoopUpdate(SceneGraph* sg) {
                 waiting.push_back(r);
                 continue;
             }
+            if (r.course_anchor >= 0 && sg->level) sg->level->Message("coop_course_rebase " + to_string(r.id) + " " + to_string(r.course_anchor));
             ReviveAvatar(mo, r.pos, r.facing);
         } else if (OwnPlayerCharacter(r.id) && now_ms - r.queued_ms < 5000.0) {
             waiting.push_back(r);
@@ -4231,12 +4276,13 @@ void Online::CoopCheckpoint(ObjectID by) {
             continue;
         }
         LOGI << "Overgrowth Online: checkpoint, player character " << id << " back up beside " << beside << std::endl;
+        if (sg->level) sg->level->Message("coop_course_rebase " + to_string(id) + " " + to_string(beside));
         if (IsLocalAvatar(id)) {
             ReviveAvatar(static_cast<MovementObject*>(o), pos, facing);
         } else {
             Send<OnlineMessages::SendLevelMessage>("ohg revive " + to_string((int)GetOriginalID(id)) + " " +
                                                    to_string(pos.x()) + " " + to_string(pos.y()) + " " + to_string(pos.z()) + " " +
-                                                   to_string(facing.x()) + " " + to_string(facing.z()));
+                                                   to_string(facing.x()) + " " + to_string(facing.z()) + " " + to_string((int)GetOriginalID(beside)));
         }
     }
 }
@@ -4268,6 +4314,7 @@ void Online::CoopZoneRespawn(SceneGraph* sg) {
         for (const auto& anchor : anchors) {
             vec3 position, facing;
             if (SpotBeside(this, sg, anchor.second, std::max(1, GuestIndex(me)), &position, &facing)) {
+                if (sg->level) sg->level->Message("coop_course_rebase " + to_string(me) + " " + to_string(anchor.second));
                 ReviveAvatar(mo, position, facing);
                 lost_since.erase(me);
                 revived = true;
@@ -4363,6 +4410,7 @@ void Online::CoopCutsceneUpdate(SceneGraph* sg) {
         vec3 position, facing;
         const auto slot = placement_slots.find(id);
         if (SpotBeside(this, sg, main, slot != placement_slots.end() ? slot->second : placement_index++, &position, &facing)) {
+            if (sg->level) sg->level->Message("coop_course_rebase " + to_string(id) + " " + to_string(main));
             const vec3 offset = position - actor->position;
             if (actor->rigged_object() && !actor->rigged_object()->animated) {
                 for (auto& bone : actor->rigged_object()->skeleton_.physics_bones) {
@@ -4470,11 +4518,11 @@ void Online::CoopSpectateUpdate(SceneGraph* sg) {
 
 // Client: "ohg revive <common id> x y z"; runs in LateUpdate
 void Online::CoopReviveRequest(const string& msg) {
-    int cid = 0;
+    int cid = 0, anchor = -1;
     float x = 0.0f, y = 0.0f, z = 0.0f, fx = 0.0f, fz = 0.0f;
-    int n = sscanf(msg.c_str(), "ohg revive %d %f %f %f %f %f", &cid, &x, &y, &z, &fx, &fz);
-    if (n == 4 || n == 6) {
-        pending_revives.push_back({GetObjectID(cid), vec3(x, y, z), vec3(fx, 0.0f, fz), OnlineClockMs()});
+    int n = sscanf(msg.c_str(), "ohg revive %d %f %f %f %f %f %d", &cid, &x, &y, &z, &fx, &fz, &anchor);
+    if (n == 4 || n == 6 || n == 7) {
+        pending_revives.push_back({GetObjectID(cid), vec3(x, y, z), vec3(fx, 0.0f, fz), OnlineClockMs(), anchor >= 0 ? GetObjectID(anchor) : -1});
     }
 }
 
@@ -4605,6 +4653,11 @@ void Online::UpdateObjects(SceneGraph* scenegraph_) {
 
     if (IsHosting()) {
         if (is_tick) {
+            for (auto it = item_stream_sent.begin(); it != item_stream_sent.end();) {
+                Object* item = scenegraph_->GetObjectFromID(it->first);
+                if (!item || item->GetType() != _item_object) it = item_stream_sent.erase(it);
+                else ++it;
+            }
             for (Object* o : scenegraph_->objects_) {
                 switch (o->GetType()) {
                     case _env_object:
@@ -4617,8 +4670,22 @@ void Online::UpdateObjects(SceneGraph* scenegraph_) {
 
                     case _item_object: {
                         ItemObject* item = static_cast<ItemObject*>(o);
-                        if (!item->IsHeld() && item->StuckInWhom() == -1) {  // those follow their character everywhere
-                            Send<OnlineMessages::ItemUpdate>(item);
+                        if (!item->IsHeld() && item->StuckInWhom() == -1) {
+                            const mat4 transform = item->GetNetworkTransform();
+                            auto previous = item_stream_sent.find(item->GetID());
+                            bool changed = previous == item_stream_sent.end();
+                            if (!changed) for (int i = 0; i < 16; ++i) {
+                                if (std::fabs(transform.entries[i] - previous->second.transform.entries[i]) > 0.0005f) changed = true;
+                            }
+                            if (changed || OnlineClockMs() - previous->second.sent_ms >= 1000.0) {
+                                Send<OnlineMessages::ItemUpdate>(item);
+                                item_stream_sent[item->GetID()] = {transform, OnlineClockMs()};
+                                ++item_updates_sent;
+                            } else {
+                                ++item_updates_idle_skipped;
+                            }
+                        } else {
+                            item_stream_sent.erase(item->GetID());
                         }
                         break;
                     }
@@ -5022,6 +5089,38 @@ void Online::SendMessages() {
     }
 }
 
+namespace {
+int MessageLane(OnlineMessageType type) {
+    static const std::vector<OnlineMessageType> state = {
+        message_handler.GetMessageType<OnlineMessages::CharacterSnapshots>(),
+        message_handler.GetMessageType<OnlineMessages::ItemUpdate>(),
+        message_handler.GetMessageType<OnlineMessages::EnvObjectUpdate>(),
+        message_handler.GetMessageType<OnlineMessages::MorphTargetUpdate>(),
+        message_handler.GetMessageType<OnlineMessages::CameraTransformMessage>()};
+    static const std::vector<OnlineMessageType> cosmetic = {
+        message_handler.GetMessageType<OnlineMessages::AudioPlaySoundGroupMessage>(),
+        message_handler.GetMessageType<OnlineMessages::AudioPlaySoundGroupGainMessage>(),
+        message_handler.GetMessageType<OnlineMessages::AudioPlaySoundGroupRelativeMessage>(),
+        message_handler.GetMessageType<OnlineMessages::AudioPlaySoundGroupRelativeGainMessage>(),
+        message_handler.GetMessageType<OnlineMessages::AudioPlaySoundGroupVoiceMessage>(),
+        message_handler.GetMessageType<OnlineMessages::AudioPlayGroupPriorityMessage>(),
+        message_handler.GetMessageType<OnlineMessages::AudioPlaySoundLocationMessage>(),
+        message_handler.GetMessageType<OnlineMessages::AudioPlaySoundImpactItemMessage>(),
+        message_handler.GetMessageType<OnlineMessages::AudioPlaySoundMessage>(),
+        message_handler.GetMessageType<OnlineMessages::MaterialSoundEvent>(),
+        message_handler.GetMessageType<OnlineMessages::WhooshSoundMessage>()};
+    if (std::find(state.begin(), state.end(), type) != state.end()) return 1;
+    if (std::find(cosmetic.begin(), cosmetic.end(), type) != cosmetic.end()) return 2;
+    return 0;
+}
+bool ImmediateControl(OnlineMessageType type) {
+    return type == message_handler.GetMessageType<OnlineMessages::HitRequest>() ||
+           type == message_handler.GetMessageType<OnlineMessages::HitResult>() ||
+           type == message_handler.GetMessageType<OnlineMessages::OwnerOverride>() ||
+           type == message_handler.GetMessageType<OnlineMessages::ItemLaunch>();
+}
+}
+
 void Online::SendMessageObjects() {
     online_session->connected_peers_lock.lock();
 
@@ -5084,7 +5183,11 @@ void Online::SendMessageObjects() {
                 }
 
                 if (send_message) {
-                    SendMessageToConnection(peer.conn_id, compressed_serialization_buffer.data(), compressed_size, omb->reliable_delivery, i + 1 == online_session->outgoing_messages.size());
+                    const auto type = message_handler.GetMessageType(outgoing_message.message);
+                    const int lane = MessageLane(type);
+                    SendMessageToConnection(peer.conn_id, compressed_serialization_buffer.data(), compressed_size,
+                                            omb->reliable_delivery && lane != 2,
+                                            ImmediateControl(type) || i + 1 == online_session->outgoing_messages.size(), lane);
                 }
             }
 
@@ -5113,9 +5216,7 @@ void Online::SendMessageObjects() {
     }
 
     online_session->outgoing_messages.clear();
-
     online_session->outgoing_messages_lock.unlock();
-
     online_session->connected_peers_lock.unlock();
 }
 
@@ -5142,7 +5243,7 @@ static double NetSimNowMs() {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-void Online::SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush) {
+void Online::SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush, int lane) {
     int latency = net_sim_latency_ms.load() + net_sim_conn_latency_ms[conn_id].load();
     int jitter = net_sim_jitter_ms.load() + net_sim_conn_jitter_ms[conn_id].load();
     float loss = net_sim_loss.load();
@@ -5150,7 +5251,11 @@ void Online::SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint
     if (latency <= 0 && jitter <= 0 && loss <= 0.0f && net_sim_queue.empty()) {
         net_bytes_out += bytes;
         ++net_msgs_out;
+#ifdef USE_GNS_NETWORK_FRAMEWORK
+        net.SendMessageToConnection(conn_id, buffer, bytes, reliable, flush, lane);
+#else
         net.SendMessageToConnection(conn_id, buffer, bytes, reliable, flush);
+#endif
         return;
     }
 
@@ -5162,13 +5267,13 @@ void Online::SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint
     double release = NetSimNowMs() + latency + (jitter > 0 ? rand() % (jitter + 1) : 0);
 
     for (auto it = net_sim_queue.rbegin(); it != net_sim_queue.rend(); ++it) {
-        if (it->conn_id == conn_id) {
-            release = std::max(release, it->release_ms);  // keep order per connection
+        if (it->conn_id == conn_id && it->lane == lane) {
+            release = std::max(release, it->release_ms);  // keep order within each lane
             break;
         }
     }
 
-    net_sim_queue.push_back({conn_id, std::vector<char>(buffer, buffer + bytes), reliable, release});
+    net_sim_queue.push_back({conn_id, std::vector<char>(buffer, buffer + bytes), reliable, release, lane});
 }
 
 void Online::FlushDelayedSends() {
@@ -5194,7 +5299,11 @@ void Online::FlushDelayedSends() {
         if (connected) {
             net_bytes_out += it->data.size();
             ++net_msgs_out;
+#ifdef USE_GNS_NETWORK_FRAMEWORK
+            net.SendMessageToConnection(it->conn_id, it->data.data(), (uint32_t)it->data.size(), it->reliable, true, it->lane);
+#else
             net.SendMessageToConnection(it->conn_id, it->data.data(), (uint32_t)it->data.size(), it->reliable, true);
+#endif
         }
 
         it = net_sim_queue.erase(it);

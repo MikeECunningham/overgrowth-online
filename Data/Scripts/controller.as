@@ -87,6 +87,52 @@ int current_controller_item_state = kMainController;
 array<IMElement@> controller_items;
 array<IMElement@> sub_controller_items;
 
+// Virtual lists build only their visible rows. Crossing a visible edge should
+// reveal the next row before navigation leaves the list for another control.
+IMElement@ controller_scroll_region;
+int controller_scroll_offset = 0;
+int controller_scroll_visible = 0;
+int controller_scroll_total = 0;
+
+void ConfigureControllerScrollRegion(IMElement@ region, int offset, int visible, int total) {
+	@controller_scroll_region = region;
+	controller_scroll_offset = offset;
+	controller_scroll_visible = visible;
+	controller_scroll_total = total;
+}
+
+bool ControllerElementWithin(IMElement@ element, IMElement@ region) {
+	while(element !is null) {
+		if(element is region) return true;
+		@element = element.getParent();
+	}
+	return false;
+}
+
+bool ControllerScrollAtBoundary(Direction direction, IMElement@ next) {
+	if(current_controller_item_state != kMainController || controller_scroll_region is null ||
+	   !ControllerElementWithin(current_item, controller_scroll_region) ||
+	   ControllerElementWithin(next, controller_scroll_region)) return false;
+	int shift = direction == UP ? -1 : direction == DOWN ? 1 : 0;
+	if((shift < 0 && controller_scroll_offset > 0) ||
+	   (shift > 0 && controller_scroll_offset + controller_scroll_visible < controller_scroll_total)) {
+		imGUI.receiveMessage(IMMessage("controller_scroll", shift));
+		return true;
+	}
+	return false;
+}
+
+void FocusControllerScrollEdge(IMElement@ region, int direction) {
+	vec2 position = current_item is null ? vec2(0) : current_item.getScreenPosition();
+	IMElement@ next = GetElementMatchComponent(region, position, X, direction < 0 ? FORWARDS : BACKWARDS);
+	if(next !is null) {
+		DeactivateCurrentItem();
+		current_item_locked = false;
+		controller_stored = false;
+		SetItemActive(next, false);
+	}
+}
+
 bool controller_paused = false;
 
 bool GetControllerActive() {
@@ -134,6 +180,7 @@ void DisableControllerSubmenu() {
 }
 
 void ResetController() {
+	@controller_scroll_region = null;
 	//Log(info, "ResetController");
 	DeactivateCurrentItem();
 	@current_item = null;
@@ -186,6 +233,7 @@ void AddControllerItem(ControllerItem @item){
 
 // Also stores the currently active controller item if it is removed
 void ClearControllerItems(int start_at = 0){
+	@controller_scroll_region = null;
 	//Log(info, "Clearing controller items starting at " + start_at);
 	start_at = max(0, min(start_at, int(controller_items.size())));
 	if(current_controller_item_state != kMainController) {
@@ -1017,8 +1065,9 @@ void GetNextItem(Direction direction){
 		if(parent !is null) {
 			//Log(info, "Parent is not null");
 			IMElement@ next = GetNextElement(direction, current_item, current_item.getParent(), current_item.getScreenPosition());
+			if(ControllerScrollAtBoundary(direction, next)) return;
 			if(next is null) {
-				Area next_area;
+				Area next_area = current_area;
 				// Header/main/footer are vertically stacked, so only up/down
 				// can be used to cycle between them
 				if(direction == UP) {

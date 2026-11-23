@@ -700,6 +700,20 @@ int Hotspot::QueryIntFunction(const std::string& function) {
     }
 }
 
+int Hotspot::QueryIntFunction(const std::string& function, int argument) {
+    if (as_context && as_context->HasFunction(function)) {
+        ASArglist args;
+        args.Add(argument);
+        int val = -1;
+        ASArg return_val;
+        return_val.type = _as_int;
+        return_val.data = &val;
+        as_context->CallScriptFunction(function, &args, &return_val);
+        return val;
+    }
+    return -1;
+}
+
 bool Hotspot::QueryBoolFunction(const std::string& function) {
     if (as_context) {
         ASArglist args;
@@ -796,7 +810,10 @@ void DefineHotspotTypePublic(ASContext* as_context) {
                                      asMETHOD(Hotspot, HasFunction), asCALL_THISCALL);
     as_context->RegisterObjectMethod("Hotspot",
                                      "int QueryIntFunction(const string &in function)",
-                                     asMETHOD(Hotspot, QueryIntFunction), asCALL_THISCALL);
+                                     asMETHODPR(Hotspot, QueryIntFunction, (const std::string&), int), asCALL_THISCALL);
+    as_context->RegisterObjectMethod("Hotspot",
+                                     "int QueryIntFunction(const string &in function, int argument)",
+                                     asMETHODPR(Hotspot, QueryIntFunction, (const std::string&, int), int), asCALL_THISCALL);
     as_context->RegisterObjectMethod("Hotspot",
                                      "bool QueryBoolFunction(const string &in function)",
                                      asMETHOD(Hotspot, QueryBoolFunction), asCALL_THISCALL);

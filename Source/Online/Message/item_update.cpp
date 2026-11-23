@@ -33,11 +33,13 @@ ItemUpdate::ItemUpdate() : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSI
                            id(-1),
                            timestamp(0),
                            transform(mat4()) {
+    reliable_delivery = false;
 }
 
 ItemUpdate::ItemUpdate(ItemObject* object) : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT),
                                              timestamp(game_timer.GetWallTime()),
                                              transform(object->GetNetworkTransform()) {
+    reliable_delivery = false;
     this->id = Online::Instance()->GetOriginalID(object->GetID());
 }
 

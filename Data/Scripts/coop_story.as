@@ -107,12 +107,20 @@ void CoopArm(int id) {
             continue;
         }
 
-        // This guest's copy for the slot again, if nobody holds it; else a new one
+        // Reuse the same loadout item, including a copy already held by this
+        // player. During a reset or a hand/sheath network update its script
+        // slot can briefly be empty while the physical attachment still exists.
+        // That is a repair, not a reason to manufacture another weapon.
+        // A copy held by somebody else remains theirs.
         int item = -1;
         for(uint c = 0; c < coop_copy_item.length(); ++c) {
             if(coop_copy_owner[c] == id && coop_copy_slot[c] == slot && ObjectExists(coop_copy_item[c]) &&
-               !ReadItemID(coop_copy_item[c]).IsHeld()) {
-                item = coop_copy_item[c];
+               ReadObjectFromID(coop_copy_item[c]).GetType() == _item_object) {
+                ItemObject@ copy = ReadItemID(coop_copy_item[c]);
+                if(!copy.IsHeld() || copy.HeldByWhom() == id) {
+                    item = coop_copy_item[c];
+                    break;
+                }
             }
         }
         if(item == -1) {

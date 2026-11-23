@@ -26,7 +26,7 @@ void version::test<1>() {
 template <> template <>
 void version::test<2>() {
     set_test_name("network compatibility requires the exact release and protocol, including prerelease");
-    ensure_equals("bot roster protocol", GetOnlineProtocol(), 7);
+    ensure_equals("prioritized traffic protocol", GetOnlineProtocol(), 8);
     ensure("matching peers connect", IsNetworkVersionCompatible(GetNetworkVersion()));
     ensure("unversioned peers rejected", !IsNetworkVersionCompatible(""));
     ensure("old mod-disabled identity rejected", !IsNetworkVersionCompatible("+local-lobby4"));

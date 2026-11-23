@@ -162,6 +162,13 @@ class Buffer {
     // Morphs are not interpolated (applied on arrival).
     bool Sample(double now_ms, Frame& out);
 
+    // Received root position at owner-clock time, independently of visual
+    // playback. Reject queries before retained history or >100 ms ahead.
+    // Failure leaves out untouched; this never advances the jitter buffer.
+    bool PositionAt(uint32_t source_ms, vec3& out) const;
+    // False when empty, leaving both outputs untouched.
+    bool SourceTimeRange(uint32_t& oldest, uint32_t& newest) const;
+
     // Diagnostics
     double RenderSrcMs() const { return render_src_; }  // owner time shown by the last Sample
     double DelayMs() const;                              // playback offset over the fastest path
@@ -171,6 +178,8 @@ class Buffer {
 
    private:
     std::deque<Frame> frames_;  // oldest first
+    struct RootPose { uint32_t src_ms; vec3 position; vec3 velocity; };
+    std::deque<RootPose> root_history_;  // bounded received poses, not rendered/synthetic frames
     std::deque<double> lags_;   // arrival - src
     std::deque<double> gaps_;   // src deltas between frames
 

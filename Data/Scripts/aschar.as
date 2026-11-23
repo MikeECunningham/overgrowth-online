@@ -6918,6 +6918,13 @@ void HandleEditorAttachment(int which, int attachment_type, bool mirror) {
         weapon_slots[weap_slot] = -1;  // (Overgrowth Online: it was deleted under us)
     }
 
+    // Replayed/reset attachment messages must not put one object in both a
+    // hand and a sheath, or try to fit an item inside itself.
+    for(int i = 0; i < int(weapon_slots.length()); ++i) {
+        if(i != weap_slot && weapon_slots[i] == which) weapon_slots[i] = -1;
+    }
+    if(weapon_slots[weap_slot] == which) return;
+
     if(weapon_slots[weap_slot] != -1) {
         Log(info, "Slot already has item " + weapon_slots[weap_slot]);
         bool new_goes_in_old = DoesItemFitInItem(which, weapon_slots[weap_slot]);
@@ -6930,11 +6937,7 @@ void HandleEditorAttachment(int which, int attachment_type, bool mirror) {
         } else if(old_goes_in_new) {
             Log(info, "Item " + weapon_slots[weap_slot] + " could fit in item " + which);
 
-            if(which < int(weapon_slots.length())) {
-                weapon_slots[weap_slot + 2] = weapon_slots[which];
-            } else {
-                Log(error, "Tried to reference weapon_slots out of array bounds");
-            }
+            weapon_slots[weap_slot + 2] = which;
         } else {
             Log(info, "Neither item can fit in the other");
         }

@@ -108,6 +108,7 @@ class Hotspot : public Object {
 
     bool HasFunction(const std::string& function_definition);
     int QueryIntFunction(const std::string& function);
+    int QueryIntFunction(const std::string& function, int argument);
     bool QueryBoolFunction(const std::string& function);
     float QueryFloatFunction(const std::string& function);
     std::string QueryStringFunction(const std::string& function);

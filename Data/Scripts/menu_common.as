@@ -166,7 +166,9 @@ class GUIElement{
     void ToggleElement(){};
     void EnableElement(){};
     void DisableElement(){};
-    void CloseOptionMenu(){};
+    void CloseOptionMenu(){ if(element_open) { DisableElement(); element_open = false; } };
+    bool HasTextDraft(){ return false; };
+    void DiscardValue(){ PutCurrentValue(); };
     void SwitchOption(string value){};
     void SwitchOption(uint32 value){};
     void PutCurrentValue(){};
@@ -937,10 +939,7 @@ void ResetAllKeyBindings(){
 
 void CloseAllOptionMenus(){
     for(uint i = 0; i < gui_elements.size(); i++){
-        if(gui_elements[i].element_open){
-            gui_elements[i].DisableElement();
-            gui_elements[i].element_open = false;
-        }
+        gui_elements[i].CloseOptionMenu();
     }
 }
 
@@ -1890,8 +1889,9 @@ void AddTextboxNumeric(IMDivider@ parent, string textbox_name, string config_val
     
     IMText text("0", button_font_small);
 
-    IMContainer text_container(textbox_width, textbox_height);
+    IMContainer text_container("numeric_" + config_value, textbox_width, textbox_height);
     text_container.addLeftMouseClickBehavior(IMFixedMessageOnClick("enable_element", textbox_name), "");
+    AddControllerItem(text_container, IMMessage("enable_element", textbox_name));
 
     IMDivider text_divider(DOHorizontal);
     text_divider.setAlignment(CACenter, CACenter);
@@ -1903,8 +1903,10 @@ void AddTextboxNumeric(IMDivider@ parent, string textbox_name, string config_val
     parent.append(text_container);
 
     TextboxNumeric textbox(textbox_name, config_value, min_value, max_value);
+    @textbox.container = text_container;
     textbox.SetText(@text);
     textbox.PutCurrentValue();
+    RestoreNumericTextDraft(textbox);
 
     gui_elements.insertLast(@textbox);
 }
@@ -1999,7 +2001,7 @@ void AddKeyRebind(string text, IMDivider@ parent, string binding_category, strin
     IMText title(text, button_font_small);
     left_divider.append(title);
     
-    IMContainer rebind_holder(button_width, button_height + vertical_trailing_space);
+    IMContainer rebind_holder("rebind_" + binding_category + "_" + binding, button_width, button_height + vertical_trailing_space);
     rebind_holder.setAlignment(CACenter, CACenter);
     IMMessage rebind_message("rebind_activate", gui_elements.size());
     rebind_holder.addLeftMouseClickBehavior( IMFixedMessageOnClick(rebind_message), "");
@@ -3479,6 +3481,7 @@ class TextboxNumeric : GUIElement {
     string old_query = "";
     string query = "";
     string config_value = "";
+    string original_value;
     int min_value;
     int max_value;
     float long_press_input_timer = 0.0f;
@@ -3488,6 +3491,7 @@ class TextboxNumeric : GUIElement {
     TextboxNumeric(string _name, string _config_value, int _min_value, int _max_value){
         name = _name;
         config_value = _config_value;
+        original_value = GetConfigValueString(config_value);
         min_value = _min_value;
         max_value = _max_value;
     }
@@ -3521,14 +3525,29 @@ class TextboxNumeric : GUIElement {
         @text = @_text;
     }
     void SaveValueToConfig() {
+        DisableElement();
         SetConfigValueString(config_value, query);
+        original_value = query;
         unsaved_values = false;
     }
-    void PutCurrentValue() {
-        query = GetConfigValueString(config_value);
+    // Slider hover and dropdown dismissal are not text-edit cancellation.
+    void CloseOptionMenu() {}
+    bool HasTextDraft() { return element_open || unsaved_values; }
+    void DiscardValue() {
+        element_open = false;
+        unsaved_values = false;
+        original_value = GetConfigValueString(config_value);
+        query = original_value;
+        old_query = query;
         text.setText(query);
     }
+    void PutCurrentValue() {
+        if(HasTextDraft() && original_value == GetConfigValueString(config_value)) return;
+        DiscardValue();
+    }
     void Update(){
+        // A real external edit wins over a draft of the previous value.
+        if(original_value != GetConfigValueString(config_value)) DiscardValue();
         if(element_open){
             if(long_press_timer > long_press_threshold){
                 if(GetInputDown(controller_player, "backspace")){
@@ -3637,6 +3656,7 @@ class TextboxNumeric : GUIElement {
     void Backspace() {
         if(query.length() > 0){
             query.erase(query.length() - 1, 1);
+            unsaved_values = true;
             text.setText(query);
         }
         return;
@@ -3650,6 +3670,53 @@ class TextboxNumeric : GUIElement {
             return "" + max_value;
         else
             return query;
+    }
+}
+
+class NumericTextDraft {
+    string config_value;
+    string original_value;
+    string query;
+    string old_query;
+    bool active;
+    bool unsaved;
+}
+array<NumericTextDraft> numeric_text_drafts;
+
+void CaptureNumericTextDrafts() {
+    for(uint i = 0; i < gui_elements.length(); ++i) {
+        TextboxNumeric@ field = cast<TextboxNumeric>(gui_elements[i]);
+        if(field is null) continue;
+        for(int j = int(numeric_text_drafts.length()) - 1; j >= 0; --j)
+            if(numeric_text_drafts[j].config_value == field.config_value) numeric_text_drafts.removeAt(j);
+        if(!field.HasTextDraft()) continue;
+        NumericTextDraft draft;
+        draft.config_value = field.config_value;
+        draft.original_value = field.original_value;
+        draft.query = field.query;
+        draft.old_query = field.old_query;
+        draft.active = field.element_open;
+        draft.unsaved = field.unsaved_values;
+        numeric_text_drafts.insertLast(draft);
+    }
+}
+
+void RestoreNumericTextDraft(TextboxNumeric@ field) {
+    for(int i = int(numeric_text_drafts.length()) - 1; i >= 0; --i) {
+        if(numeric_text_drafts[i].config_value != field.config_value) continue;
+        NumericTextDraft draft = numeric_text_drafts[i];
+        numeric_text_drafts.removeAt(i);
+        if(draft.original_value != GetConfigValueString(field.config_value)) return;
+        field.original_value = draft.original_value;
+        field.query = draft.query;
+        field.old_query = draft.old_query;
+        field.element_open = draft.active;
+        field.unsaved_values = draft.unsaved;
+        field.text.setText(field.query);
+        array<KeyboardPress> inputs = GetRawKeyboardInputs();
+        if(inputs.length() > 0) field.initial_sequence_id = int(inputs[inputs.length() - 1].s_id);
+        else field.initial_sequence_id = -1;
+        return;
     }
 }
 

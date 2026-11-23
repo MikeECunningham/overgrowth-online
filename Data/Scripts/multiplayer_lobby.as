@@ -419,10 +419,8 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
         focus_lobby_form = false;
     }
     bool can_edit = LobbyIsHost() && !LobbyMigrationBusy();
-    float footer_height = (LobbyCanLeave() ? 176.0f : 214.0f) * scale;
-    float options_height = max(80.0f, ImGui_GetContentRegionAvail().y - footer_height);
-    ImGui_BeginChild("hosting_options", vec2(0.0f, options_height), false);
-    MPWindowScale(1.0f);
+    // The form itself scrolls. A nested child would be a separate controller
+    // navigation scope, trapping focus between its options and Start/Close.
     ImGui_PushTextWrapPos(0.0f);
     ImGui_BeginDisabled(!can_edit);
     bool all_pause = LobbyGetAllowAllPause();
@@ -488,8 +486,6 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     }
     ImGui_EndDisabled();
     ImGui_PopTextWrapPos();
-    ImGui_EndChild();
-    MPWindowScale(scale);
     ImGui_Spacing();
     ImGui_Separator();
     bool ready = can_edit && !LobbyMigrationBusy() && LobbyCanStart();

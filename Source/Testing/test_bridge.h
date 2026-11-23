@@ -19,6 +19,10 @@
 
 class Engine;
 
+// Opt-in bridge pointer injection affects only this engine's GUI. It never
+// warps the desktop pointer or synthesizes input in another process.
+bool TestBridgePointerState(int& x, int& y, uint32_t& buttons);
+
 namespace Json {
 class Value;
 }

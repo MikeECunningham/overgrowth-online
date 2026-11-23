@@ -275,9 +275,10 @@ void GNSNetFramework::GetConnectionStatus(NetConnectionID conn_id, ConnectionSta
         return;
     }
 
-    SteamNetConnectionRealTimeStatus_t s;
+    SteamNetConnectionRealTimeStatus_t s{};
+    SteamNetConnectionRealTimeLaneStatus_t control{};
 
-    if (isns->GetConnectionRealTimeStatus(handle, &s, 0, nullptr) != k_EResultOK) {
+    if (isns->GetConnectionRealTimeStatus(handle, &s, 1, &control) != k_EResultOK) {
         return;
     }
 
@@ -292,7 +293,9 @@ void GNSNetFramework::GetConnectionStatus(NetConnectionID conn_id, ConnectionSta
     status->pending_unreliable = s.m_cbPendingUnreliable;
     status->pending_reliable = s.m_cbPendingReliable;
     status->sent_unacked_reliable = s.m_cbSentUnackedReliable;
-    status->usec_queue_time = s.m_usecQueueTime;
+    // The aggregate queue-time field is undefined with multiple lanes.
+    // Report the gameplay control lane; pending byte totals above cover all lanes.
+    status->usec_queue_time = control.m_usecQueueTime;
 }
 
 void GNSNetFramework::OnStatusChangedStatic(SteamNetConnectionStatusChangedCallback_t* data) {
@@ -339,6 +342,15 @@ void GNSNetFramework::OnStatusChanged(SteamNetConnectionStatusChangedCallback_t*
             connection_id_map[changed.conn_id] = k_HSteamNetConnection_Invalid;
             connection_id_map_reverse.erase(it);
         }
+    }
+
+    if (isns && data->m_info.m_eState == k_ESteamNetworkingConnectionState_Connected) {
+        // Keep causal game events in one reliable lane. Pose streams and
+        // disposable one-shot sounds cannot block its ordered delivery.
+        const int priorities[] = {0, 0, 0};
+        const uint16 weights[] = {64, 32, 1};
+        const EResult lanes = isns->ConfigureConnectionLanes(data->m_hConn, 3, priorities, weights);
+        if (lanes != k_EResultOK) LOGE << "GNS: could not configure traffic lanes: " << (int)lanes << std::endl;
     }
 
     changed.conn_info.end_reason = static_cast<ConnectionClosedReason>(data->m_info.m_eEndReason);
@@ -439,7 +451,7 @@ std::string GNSNetFramework::GetResultString(int result) {
     return "EResult " + std::to_string(result);
 }
 
-void GNSNetFramework::SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush) {
+void GNSNetFramework::SendMessageToConnection(NetConnectionID conn_id, char* buffer, uint32_t bytes, bool reliable, bool flush, int lane) {
     // Match receive/close: a Steam callback may also arrive on the main
     // thread, so keep the handle alive for the duration of the send itself.
     std::lock_guard<std::recursive_mutex> guard(maps_lock);
@@ -456,7 +468,20 @@ void GNSNetFramework::SendMessageToConnection(NetConnectionID conn_id, char* buf
         flags |= k_nSteamNetworkingSend_NoNagle;
     }
 
-    EResult result = isns->SendMessageToConnection(handle, buffer, bytes, flags, nullptr);
+    EResult result;
+    if (lane == 0) {
+        result = isns->SendMessageToConnection(handle, buffer, bytes, flags, nullptr);
+    } else {
+        SteamNetworkingMessage_t* message = utils->AllocateMessage(bytes);
+        if (!message) return;
+        memcpy(message->m_pData, buffer, bytes);
+        message->m_conn = handle;
+        message->m_nFlags = flags;
+        message->m_idxLane = lane;
+        int64 number = 0;
+        isns->SendMessages(1, &message, &number);  // transfers ownership, including on failure
+        result = number >= 0 ? k_EResultOK : static_cast<EResult>(-number);
+    }
 
     // NoConnection: the peer just dropped; the close is on its way (no spam)
     if (result != k_EResultOK && result != k_EResultIgnored && result != k_EResultNoConnection) {

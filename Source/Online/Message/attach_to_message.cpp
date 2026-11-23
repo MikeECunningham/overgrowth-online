@@ -71,6 +71,7 @@ void AttachToMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID 
     }
 
     SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    if (graph == nullptr) return;
 
     // We need to make sure that we actually know what objects
     // the sender is referencing

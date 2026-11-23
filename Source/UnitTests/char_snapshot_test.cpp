@@ -410,4 +410,54 @@ void charsnap::test<9>() {
     ensure("new throw starts immediately", buffer.Sample(7000.0, out));
     ensure("new throw has no old pose", distance(out.position, b.position) < 1e-5f);
 }
+template <> template <>
+void charsnap::test<10>() {
+    set_test_name("attack-time root queries interpolate and bound extrapolation without changing playback");
+    Buffer buffer;
+    vec3 out(99.0f);
+    uint32_t oldest = 77, newest = 88;
+    ensure("empty source range rejects", !buffer.SourceTimeRange(oldest, newest));
+    ensure("empty range preserves outputs", oldest == 77 && newest == 88);
+    ensure("empty history rejects", !buffer.PositionAt(1000, out));
+    ensure("failure leaves output alone", out == vec3(99.0f));
+    buffer.Push(Walker(1000, 2.0f), 5000);
+    buffer.Push(Walker(1100, 2.0f), 5100);
+    ensure("source range uses received timestamps", buffer.SourceTimeRange(oldest, newest) && oldest == 1000 && newest == 1100);
+    ensure("oldest endpoint", buffer.PositionAt(1000, out) && distance(out, vec3(2.0f, 1.0f, 0.0f)) < 1e-5f);
+    ensure("bracket interpolation", buffer.PositionAt(1050, out) && distance(out, vec3(2.1f, 1.0f, 0.0f)) < 1e-5f);
+    ensure("newest endpoint", buffer.PositionAt(1100, out) && distance(out, vec3(2.2f, 1.0f, 0.0f)) < 1e-5f);
+    ensure("100 ms velocity extrapolation", buffer.PositionAt(1200, out) && distance(out, vec3(2.4f, 1.0f, 0.0f)) < 1e-5f);
+    const vec3 saved = out;
+    ensure("no unbounded rewind", !buffer.PositionAt(999, out));
+    ensure("no unbounded future", !buffer.PositionAt(1201, out));
+    ensure("rejected timestamps preserve output", out == saved);
+    ensure_equals("queries do not consume visual frames", buffer.Size(), 2);
+    ensure_equals("queries do not start playback", buffer.RenderSrcMs(), 0.0);
+}
+
+template <> template <>
+void charsnap::test<11>() {
+    set_test_name("received root history survives visual playback and expires at its bounded oldest pose");
+    Buffer buffer;
+    for (int i = 0; i < 70; ++i) buffer.Push(Walker(1000 + i * 25, 2.0f), 5000 + i * 25);
+    Frame rendered;
+    buffer.Sample(7000, rendered);
+    uint32_t oldest = 0, newest = 0;
+    ensure("source range survives playback pruning", buffer.SourceTimeRange(oldest, newest) && oldest == 1150 && newest == 2725);
+    const int count = buffer.Size();
+    const double rendered_time = buffer.RenderSrcMs();
+    const bool extrapolating = buffer.Extrapolating();
+    vec3 out;
+    ensure("oldest bounded root still available after Sample prunes frames", buffer.PositionAt(1150, out));
+    ensure("received position, independent of rendered extrapolation", distance(out, Walker(1150, 2.0f).position) < 1e-5f);
+    ensure("expired received root rejected", !buffer.PositionAt(1149, out));
+    buffer.Push(Walker(1100, 50.0f), 7050);  // out of order, not a new history entry
+    ensure("late packet cannot replace history", !buffer.PositionAt(1100, out));
+    ensure_equals("query leaves playback frame count", buffer.Size(), count);
+    ensure_equals("query leaves render time", buffer.RenderSrcMs(), rendered_time);
+    ensure_equals("query leaves extrapolation state", buffer.Extrapolating(), extrapolating);
+    buffer.Clear();
+    ensure("scene/reset clear removes root history", !buffer.PositionAt(1150, out));
+    ensure("scene/reset clear removes timestamp range", !buffer.SourceTimeRange(oldest, newest));
+}
 }  // namespace tut

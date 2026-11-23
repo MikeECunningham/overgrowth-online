@@ -270,15 +270,18 @@ void BuildPlayerTeamsMenu() {
     for(uint i = 0; i < players.length(); ++i) if(players[i].local && !players[i].bot) ++local_count;
     for(int row = team_scroll_offset; row < min(int(players.length()), team_scroll_offset + kVisibleTeamRows); ++row) {
         LobbyPlayer player = players[row];
+        IMDivider row_content("team_row_" + row, DOVertical);
+        row_content.setAlignment(CALeft, CATop);
+        uint controls_before = controller_items.length();
         string name = player.name;
         if(player.bot) name += " (bot)";
         if(player.host) name += " (host)";
         if(player.leader) name += " (local leader)";
-        PlayerTeamsLabel(name, rows);
+        PlayerTeamsLabel(name, row_content);
         if(LobbyCanSetPlayerTeam(player.id)) {
-            AddDropDown("Player " + (row + 1), rows, DropdownConfiguration(PlayerTeamConfiguration(player.id, int(players.length()))));
+            AddDropDown("Player " + (row + 1), row_content, DropdownConfiguration(PlayerTeamConfiguration(player.id, int(players.length()))));
         } else {
-            PlayerTeamsNote("Team " + player.team, rows);
+            PlayerTeamsNote("Team " + player.team, row_content);
         }
         if(player.bot) {
             if(LobbyIsHost()) {
@@ -289,17 +292,20 @@ void BuildPlayerTeamsMenu() {
                 if(LobbyCanRemovePlayer(player.id))
                     AddButton("Remove", actions, "null", button_background_diamond, false, 300.0f,
                               10.0f, mouseover_scale_button, IMMessage("remove_bot", int(player.id)));
-                rows.append(actions);
+                row_content.append(actions);
             }
         } else if(player.local && LobbyCanManageLocal()) {
-            AddDropDown("Screen P" + (player.local_index + 1), rows,
+            AddDropDown("Screen P" + (player.local_index + 1), row_content,
                         DropdownConfiguration(PlayerScreenConfiguration(player.id, local_count)));
         } else {
-            PlayerTeamsNote(player.local ? "Screen " + player.screen : "Screen: remote client", rows);
+            PlayerTeamsNote(player.local ? "Screen " + player.screen : "Screen: remote client", row_content);
         }
-        rows.appendSpacer(15.0f);
+        if(controller_items.length() == controls_before) AddControllerItem(row_content, IMMessage("controller_row"));
+        row_content.appendSpacer(15.0f);
+        rows.append(row_content);
     }
     AddScrollBar(list_and_scroll, 60.0f, 840.0f, int(players.length()), kVisibleTeamRows, team_scroll_offset);
+    ConfigureControllerScrollRegion(rows, team_scroll_offset, kVisibleTeamRows, int(players.length()));
     content.append(list_and_scroll);
     content.appendSpacer(30.0f);
     AddButton("Back", content, arrow_icon, button_back, true, 350.0f, 10.0f);
@@ -309,14 +315,16 @@ void BuildPlayerTeamsMenu() {
 
 void ProcessPlayerTeamsMessage(IMMessage@ message) {
     if(message.name == "Back" || message.name == "back") MenuBack();
+    else if(message.name == "controller_row") {} // Read-only rows remain reachable for scrolling.
     else if(message.name == "rename_bot") OpenBotNameMenu(uint(message.getInt(0)));
     else if(message.name == "remove_bot") {
         if(LobbyIsHost()) LobbyRemovePlayer(uint(message.getInt(0)));
         BuildPlayerTeamsMenu();
     }
-    else if(message.name == "shift_menu") {
+    else if(message.name == "shift_menu" || message.name == "controller_scroll") {
         team_scroll_offset += message.getInt(0);
         BuildPlayerTeamsMenu();
+        if(message.name == "controller_scroll") FocusControllerScrollEdge(controller_scroll_region, message.getInt(0));
     } else if(message.name == "ui_element_clicked") {
         CloseAllOptionMenus();
         ToggleUIElement(message.getString(0));
