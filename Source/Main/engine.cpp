@@ -5780,7 +5780,7 @@ void Engine::LoadLevel(Path queued_level) {
         loading_screen_og_logo = loading_screen_og_logo_casual;
     } else if (difficulty == "Hardcore") {
         loading_screen_og_logo = loading_screen_og_logo_hardcore;
-    } else if (difficulty == "Expert") {
+    } else if (difficulty == "Expert" || difficulty == "Nightmare") {
         loading_screen_og_logo = loading_screen_og_logo_expert;
     }
 

@@ -53,4 +53,19 @@ void settingschanges::test<3>() {
     Graphics::Instance()->SetDetailObjectsReduced(value);
     g_detail_objects_reduced_dirty = dirty;
 }
+template <> template <>
+void settingschanges::test<4>() {
+    set_test_name("campaign match settings are shared runtime state, without graphics rebuilds");
+    SettingsChanges::Pending pending;
+    for (const char* key : {"difficulty_preset", "game_difficulty", "global_time_scale_mult", "tutorials",
+                           "auto_ledge_grab", "campaign_mp_scaling", "campaign_mp_nightmare"}) {
+        ensure("host authority covers every campaign control", SettingsChanges::CampaignMatchSetting(key));
+        ensure("personal menus cannot own match settings", SettingsChanges::SharedClientSetting(key));
+        pending.Changed(key);
+        ensure("difficulty cannot rebuild grass or render targets", !pending.TakeGraphicsReload());
+    }
+    ensure("audio stays client-local", !SettingsChanges::CampaignMatchSetting("master_volume"));
+    ensure("graphics stay client-local", !SettingsChanges::CampaignMatchSetting("renderer"));
+    ensure("bindings stay personal", !SettingsChanges::CampaignMatchSetting("gamepad_5[jump]"));
+}
 }

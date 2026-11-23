@@ -6,6 +6,12 @@
 // Personal controls and settings consumed directly at runtime do not require
 // rebuilding render targets or preloading the scene's shaders.
 namespace SettingsChanges {
+inline bool CampaignMatchSetting(const std::string& key) {
+    return key == "difficulty_preset" || key == "game_difficulty" ||
+           key == "global_time_scale_mult" || key == "tutorials" || key == "auto_ledge_grab" ||
+           key == "campaign_mp_scaling" || key == "campaign_mp_nightmare";
+}
+
 inline bool StartsWith(const std::string& value, const char* prefix) {
     return value.compare(0, std::char_traits<char>::length(prefix), prefix) == 0;
 }
@@ -18,7 +24,8 @@ inline bool NeedsGraphicsReload(const std::string& key) {
         "mouse_sensitivity", "invert_x_mouse_look", "invert_y_mouse_look", "use_raw_input",
         "music_volume", "master_volume", "motion_blur_amount", "brightness",
         "temporal_aa_sharpness", "dlss_sharpness", "fsr_sharpness",
-        "difficulty_preset", "game_difficulty", "global_time_scale_mult", "tutorials",
+        "difficulty_preset", "difficulty_preset_value", "game_difficulty", "global_time_scale_mult", "tutorials",
+        "campaign_mp_scaling", "campaign_mp_nightmare",
         "auto_ledge_grab", "auto_camera", "fps_label", "language", "custom_resolution", "last_ip"
     };
     for (const char* value : runtime) if (key == value) return false;
@@ -38,6 +45,7 @@ inline bool SharedClientSetting(const std::string& key) {
         "simple_water", "custom_level_shaders", "particle_field", "particle_field_simple",
         "depth_of_field", "depth_of_field_reduced", "music_volume", "master_volume",
         "difficulty_preset", "game_difficulty", "global_time_scale_mult", "tutorials",
+        "campaign_mp_scaling", "campaign_mp_nightmare",
         "auto_ledge_grab", "fps_label", "language", "blood", "blood_color", "split_screen",
         "auto_camera", "custom_resolution"
     };

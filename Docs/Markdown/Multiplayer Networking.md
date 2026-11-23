@@ -59,8 +59,10 @@ attacker/target/event, and replies older than 1.5 seconds are discarded. This
 limits delayed corrections from a backlog. It is not full historical
 defender/collision rollback.
 
-All peers need the same release and native protocol. Protocol 8 introduces
-the traffic lanes and correlated hit replies; older binaries are incompatible.
+All peers need the same release and native protocol. Protocol 8 introduced
+the traffic lanes and correlated hit replies. Protocol 9 adds host-authoritative
+campaign scaling factors and shared match difficulty settings; older binaries
+are incompatible.
 
 ## Campaign and inventory consistency
 

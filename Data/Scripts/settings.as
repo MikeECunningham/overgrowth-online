@@ -57,6 +57,7 @@ IMContainer@ main_container;
 bool controller_connected = false;
 uint settings_revision = 0;
 bool settings_personal_only = false;
+bool settings_match_host = true;
 
 bool popup_open = false;
 const string popup_name = "popup";
@@ -101,6 +102,10 @@ int SettingsOwnerPlayer() {
 
 bool PersonalSettingsOnly() {
     return !LobbyCanManageLocal();
+}
+
+bool CanEditCampaignSettings() {
+    return !Online_IsActive() || LobbyIsHost();
 }
 
 bool MenuOwnsKeyboard() {
@@ -193,8 +198,8 @@ void BuildUI(string landing_screen){
         AddCategoryButton("Graphics", buttons_holder);
         AddCategoryButton("Ray Tracing", buttons_holder);
         AddCategoryButton("Audio", buttons_holder);
-        AddCategoryButton("Game", buttons_holder);
     }
+    if(!PersonalSettingsOnly() || CanEditCampaignSettings()) AddCategoryButton("Game", buttons_holder);
     if((!IsPlayerMenuContext() && !PersonalSettingsOnly()) || MenuOwnsKeyboard()) AddCategoryButton("Controls", buttons_holder);
     controller_connected = ControllerSettingsAvailable();
     if(controller_connected && (!PersonalSettingsOnly() || !MenuOwnsKeyboard())) {
@@ -231,6 +236,7 @@ void BuildUI(string landing_screen){
     controller_wraparound = false;
     settings_revision = GetSettingsRevision();
     settings_personal_only = PersonalSettingsOnly();
+    settings_match_host = CanEditCampaignSettings();
 }
 
 void RestoreCategoryButtons(){
@@ -252,7 +258,7 @@ void SetActiveCategory(string name){
 
 void SwitchSettingsScreen(string screen_name){
     CaptureNumericTextDrafts();
-    if(PersonalSettingsOnly()) screen_name = MenuOwnsKeyboard() ? "Controls" : "Gamepad";
+    if(PersonalSettingsOnly() && !(screen_name == "Game" && CanEditCampaignSettings())) screen_name = MenuOwnsKeyboard() ? "Controls" : "Gamepad";
     if(IsPlayerMenuContext() && screen_name == "Controls" && !MenuOwnsKeyboard()) screen_name = "Gamepad";
     if(IsPlayerMenuContext() && screen_name == "Gamepad" && MenuOwnsKeyboard() && !IsControllerConnected()) screen_name = "Controls";
     if(screen_name == "Advanced"){
@@ -571,20 +577,28 @@ void AddAudioScreen(){
 void AddGameScreen(){
     current_screen = "Game";
 
-    AddCheckBox("Show frame rate and frame time", settings_content, "fps_label");
-
-    array<string> locale_values = GetLocaleShortcodes();
-    array<string> locale_names = GetLocaleNames();
-    AddDropDown("Language", settings_content, DropdownConfiguration( locale_values, locale_names, "language", " (English)" ));
-
-    array<string> difficulty_options = GetConfigValueOptions("difficulty_preset");
-    AddDropDown("Difficulty Preset", settings_content, DropdownConfiguration( difficulty_options, difficulty_options, "difficulty_preset" ));
-
-    AddSlider("Game Speed", settings_content, "global_time_scale_mult", 1.0f, 100.0f, 0.5f, 50.0f);
-    AddSlider("Game Difficulty", settings_content, "game_difficulty", 1.0f);
-
-    AddCheckBox("Tutorials", settings_content, "tutorials");
-    AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab"); 
+    if(!PersonalSettingsOnly()) {
+        AddCheckBox("Show frame rate and frame time", settings_content, "fps_label");
+        array<string> locale_values = GetLocaleShortcodes();
+        array<string> locale_names = GetLocaleNames();
+        AddDropDown("Language", settings_content, DropdownConfiguration( locale_values, locale_names, "language", " (English)" ));
+    }
+    if(CanEditCampaignSettings()) {
+        array<string> difficulty_options = GetConfigValueOptions("difficulty_preset");
+        AddDropDown("Difficulty Preset", settings_content, DropdownConfiguration( difficulty_options, difficulty_options, "difficulty_preset" ));
+        AddCheckBox("Scale campaign encounters for party size", settings_content, "campaign_mp_scaling");
+        AddSlider("Game Speed", settings_content, "global_time_scale_mult", 1.0f, 100.0f, 0.5f, 50.0f);
+        AddSlider("Game Difficulty", settings_content, "game_difficulty", 1.0f);
+        AddCheckBox("Tutorials", settings_content, "tutorials");
+        AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab");
+    } else {
+        settings_content.append(IMText("The host controls match difficulty.", button_font_small));
+        settings_content.appendSpacer(12.0f);
+        settings_content.append(IMText("Difficulty: " + GetConfigValueString("difficulty_preset"), button_font_small));
+        settings_content.append(IMText("Party encounter scaling: " + (GetConfigValueBool("campaign_mp_scaling") ? "On" : "Off"), button_font_small));
+        settings_content.appendSpacer(20.0f);
+    }
+    if(PersonalSettingsOnly()) return;
     array<int> blood_amount_values = { 0, 1, 2};
     array<string> blood_amount_options = {"None", "No dripping", "Full"};
     AddDropDown("Blood Amount", settings_content, DropdownConfiguration( blood_amount_values, blood_amount_options, "blood" ));
@@ -937,13 +951,14 @@ void ApplyBind() {
 }
 
 void UpdateSettings(bool auto_exit_rebind = false){
-    if(settings_personal_only != PersonalSettingsOnly()) {
+    if(settings_personal_only != PersonalSettingsOnly() || settings_match_host != CanEditCampaignSettings()) {
         // A promoted leader gains client settings; the former leader loses
         // them immediately, even when both settings menus were already open.
         ExitRebindMode(false);
         DiscardUnsavedChanges();
         CloseAllOptionMenus();
         settings_personal_only = PersonalSettingsOnly();
+        settings_match_host = CanEditCampaignSettings();
         imGUI.receiveMessage(IMMessage("rebuild_settings"));
         return;
     }
@@ -954,7 +969,7 @@ void UpdateSettings(bool auto_exit_rebind = false){
         bool editing = false;
         for(uint i = 0; i < gui_elements.size(); ++i) editing = editing || gui_elements[i].unsaved_values;
         if(!editing) {
-            if(current_screen == "Screen" || current_screen == "Ray Tracing") SwitchSettingsScreen(current_screen);
+            if(current_screen == "Screen" || current_screen == "Ray Tracing" || current_screen == "Game") SwitchSettingsScreen(current_screen);
             else RefreshAllOptions();
             settings_revision = GetSettingsRevision();
         }

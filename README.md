@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.5** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.6** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -40,6 +40,9 @@ and the remaining Steam friends/relay checks.
 - Mode-managed Arena team/FFA matchups and cooperative campaign teams, with an
   optional **Force lobby teams** override. End game returns the connected group
   to its lobby for another match.
+- Optional campaign party scaling with capped same-species reinforcements, stronger bosses,
+  and a fourth **Nightmare** difficulty with additional co-op AI pressure. See
+  [Campaign difficulty](Docs/Markdown/Campaign%20Difficulty.md) for rules and limits.
 - Font rasterization, controller focus, GUI texture loading and Linux
   compatibility fixes. The lobby uses the game's menu artwork and fonts.
 
@@ -87,7 +90,7 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 | Who may change what | Any connected player could delete, spawn or move any object and rewrite player states and settings | The host checks every message: a player can only affect their own character; hits and grabs must be in reach |
 | Malformed packets | Could crash the game | Dropped unread; tested with forged attacks |
 
-See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **8** requires matching updated binaries on every computer.
+See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **9** requires matching updated binaries on every computer.
 
 ## Multiplayer lobby
 

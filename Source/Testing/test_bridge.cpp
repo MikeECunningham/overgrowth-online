@@ -516,6 +516,10 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                     c["item_connections"].append(entry);
                 }
                 c["char_path"] = mo->character_path;
+                c["campaign_scaling_source"] = mo->GetScriptParams()->HasParam("Campaign Scaling Source") ?
+                    mo->GetScriptParams()->ASGetInt("Campaign Scaling Source") : -1;
+                c["campaign_boss_override"] = mo->GetScriptParams()->HasParam("Campaign Boss") ?
+                    mo->GetScriptParams()->ASGetInt("Campaign Boss") : -1;
                 c["palette"] = Json::Value(Json::arrayValue);
                 for (const LabeledColor& lc : *mo->GetPalette()) {
                     Json::Value e(Json::arrayValue);
@@ -560,6 +564,22 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 if (mo->ASHasVar("permanent_health")) {
                     c["permanent_health"] = mo->ASGetFloatVar("permanent_health");
                 }
+
+                c["combat_stats"] = Json::Value(Json::objectValue);
+                for (const char* name : {"p_damage_multiplier", "p_attack_damage_mult", "p_attack_knockback_mult",
+                                         "p_attack_speed_mult", "p_speed_mult", "p_aggression", "p_ground_aggression",
+                                         "p_block_skill", "p_block_followup", "g_weapon_catch_skill", "g_throw_counter_probability", "game_difficulty",
+                                         "campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus",
+                                         "campaign_authored_resistance", "campaign_authored_damage", "campaign_authored_aggression",
+                                         "campaign_authored_ground_aggression", "campaign_authored_block_skill", "campaign_authored_block_followup",
+                                         "campaign_authored_attack_speed", "campaign_authored_throw_counter", "campaign_authored_weapon_catch"}) {
+                    if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetFloatVar(name);
+                }
+                for (const char* name : {"species", "ko_shield", "max_ko_shield"}) {
+                    if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetIntVar(name);
+                }
+                if (mo->ASHasVar("g_wearing_metal_armor"))
+                    c["combat_stats"]["metal_armor"] = mo->ASGetBoolVar("g_wearing_metal_armor");
 
                 out["characters"].append(c);
             }

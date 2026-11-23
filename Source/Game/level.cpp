@@ -583,6 +583,8 @@ void Level::Message(const std::string& msg) {
         return;  // Overgrowth Online: a request for the host
     }
 
+    if (msg == "reset") online->ResetCampaignDifficulty();
+
     TestBridge::Instance()->NoteLevelMessage(msg);
 
     for (auto& as_context : as_contexts_) {

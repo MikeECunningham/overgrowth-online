@@ -5970,6 +5970,9 @@ vec3 AS_Online_SafeSpotNear(const vec3& base, const vec3& facing, int index) {
 }
 
 // ... and whether there is one (Online::FindSafeSpot; `spot` is set only then)
+bool AS_Online_CampaignEncounterDefeated(int hotspot, int goal) { return Online::Instance()->CampaignEncounterDefeated(hotspot, goal); }
+int AS_Online_CampaignHumanCount() { return Online::Instance()->CampaignHumanCount(); }
+
 bool AS_Online_FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3& spot) {
     return Online::Instance()->FindSafeSpot(base, facing, index, &spot);
 }
@@ -6210,6 +6213,8 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("bool Online_BuildMode()", asFUNCTION(AS_Online_BuildMode), asCALL_CDECL);
     context->RegisterGlobalFunction("array<string>@ Online_SavedLevels()", asFUNCTION(AS_Online_SavedLevels), asCALL_CDECL);
     context->RegisterGlobalFunction("vec3 Online_SafeSpotNear(const vec3 &in base, const vec3 &in facing, int index)", asFUNCTION(AS_Online_SafeSpotNear), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_CampaignEncounterDefeated(int hotspot, int goal)", asFUNCTION(AS_Online_CampaignEncounterDefeated), asCALL_CDECL);
+    context->RegisterGlobalFunction("int Online_CampaignHumanCount()", asFUNCTION(AS_Online_CampaignHumanCount), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_FindSafeSpot(const vec3 &in base, const vec3 &in facing, int index, vec3 &out spot)", asFUNCTION(AS_Online_FindSafeSpot), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_ObjectFile(int id)", asFUNCTION(AS_Online_ObjectFile), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_Spectating()", asFUNCTION(AS_Online_Spectating), asCALL_CDECL);
@@ -6694,15 +6699,38 @@ bool AS_GetConfigValueBool(const std::string& string) {
 namespace {
 SettingsChanges::Pending settings_changes;
 
+PlayerID ScriptSettingsActor() {
+    Online* online = Online::Instance();
+    int local = config["controller_menu_owner"].toNumber<int>();
+    if (const auto* menu = PlayerMenuUI::Current()) local = menu->local_index;
+    else {
+        Engine* engine = Engine::Instance();
+        if (engine->current_engine_state_.type != kEngineScriptableUIState && engine->current_menu_player >= 0) {
+            const int mapped = Input::Instance()->LocalPlayerIndexForInputID(engine->current_menu_player);
+            if (mapped >= 0) local = mapped;
+        }
+    }
+    local = std::max(0, std::min(static_cast<int>(std::max(1u, Input::Instance()->GetNumLocalPlayers())) - 1, local));
+    return online->LobbyPlayerIDForLocalIndex(local);
+}
+
 bool CanEditClientSetting(const std::string& key) {
+    Online* online = Online::Instance();
+    if (online->IsActive() && SettingsChanges::CampaignMatchSetting(key))
+        return online->IsLobbyHost(ScriptSettingsActor());
     const PlayerMenuUI::Context* menu = PlayerMenuUI::Current();
     if (!menu || !SettingsChanges::SharedClientSetting(key)) return true;
-    Online* online = Online::Instance();
     return online->IsLobbyLeader(online->LobbyPlayerIDForLocalIndex(menu->local_index));
 }
 
 template <typename T>
 bool SetScriptSetting(const std::string& key, const T& value) {
+    Online* online = Online::Instance();
+    if (online->IsActive() && SettingsChanges::CampaignMatchSetting(key)) {
+        const bool accepted = online->SetCampaignMatchSetting(key, StringVariant(value).str(), ScriptSettingsActor());
+        if (accepted) settings_changes.Changed(key);
+        return accepted;
+    }
     if (!CanEditClientSetting(key) || config[key] == StringVariant(value)) return false;
     config.GetRef(key) = value;
     settings_changes.Changed(key);
@@ -6719,10 +6747,29 @@ bool SetScriptSetting(const std::string& key, const T& value) {
     return true;
 }
 
-uint32_t AS_GetSettingsRevision() { return settings_changes.Revision(); }
+uint32_t AS_GetSettingsRevision() {
+    // Authoritative lobby snapshots and the native settings panel write config
+    // directly. Retained menus must observe those updates without feeding the
+    // client's old choices back to the host or rebuilding any render targets.
+    static std::string previous_match_settings;
+    std::string current;
+    for (const char* key : {"game_difficulty", "global_time_scale_mult", "tutorials", "auto_ledge_grab",
+                            "campaign_mp_scaling", "campaign_mp_nightmare"}) {
+        current += config[key].str(); current += '\n';
+    }
+    if (current != previous_match_settings) {
+        previous_match_settings = current;
+        settings_changes.Changed("campaign_mp_scaling");
+    }
+    return settings_changes.Revision();
+}
 }
 
 void AS_SetConfigValueString(std::string key, std::string value) {
+    if (Online::Instance()->IsActive() && SettingsChanges::CampaignMatchSetting(key)) {
+        SetScriptSetting(key, value);
+        return;
+    }
     if (!CanEditClientSetting(key)) return;
     if (key == "overall") {
         const Config before = config;

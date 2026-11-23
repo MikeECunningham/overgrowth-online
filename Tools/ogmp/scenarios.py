@@ -1217,3 +1217,19 @@ def _campaign_hazards(ctx):
 
 
 SCENARIOS["campaign_hazards"] = _campaign_hazards
+
+
+def _difficulty_ui(ctx):
+    from .difficulty_ui_suite import difficulty_ui
+    return difficulty_ui(ctx)
+
+
+SCENARIOS["difficulty_ui"] = _difficulty_ui
+
+
+def _campaign_scaling(ctx):
+    from .campaign_scaling_suite import campaign_scaling
+    return campaign_scaling(ctx)
+
+
+SCENARIOS["campaign_scaling"] = _campaign_scaling

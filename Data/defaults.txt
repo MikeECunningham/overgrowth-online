@@ -79,6 +79,8 @@ tet_mesh_lighting:      0
 light_volume_lighting:  false
 global_time_scale_mult: 1.0
 game_difficulty:        1.0
+campaign_mp_scaling:    true
+campaign_mp_nightmare:  false
 tutorials:              true
 difficulty_set:         false
 volume_shadows:         false

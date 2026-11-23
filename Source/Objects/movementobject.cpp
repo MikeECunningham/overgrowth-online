@@ -1805,6 +1805,14 @@ int MovementObject::GetWaypointTarget() {
 }
 
 void MovementObject::Reset() {
+    // Scaling is authoritative match metadata, not an actor's initial script
+    // default. Keep it through ResetGlobals on hosts and network replicas.
+    const bool keep_campaign_scale = !Online::Instance()->IsPlayerCharacter(GetID()) &&
+        HasFunction("void SetCampaignScaling(float, float, float, float)");
+    float campaign_scale[4] = {1, 1, 1, 0};
+    const char* campaign_names[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
+    if (keep_campaign_scale) for (int i = 0; i < 4; ++i)
+        if (ASHasVar(campaign_names[i])) campaign_scale[i] = ASGetFloatVar(campaign_names[i]);
     as_context->CallScriptFunction(as_funcs.reset);
     position = GetTranslation();
     char_sphere->SetPosition(position);
@@ -1816,6 +1824,11 @@ void MovementObject::Reset() {
     as_context->ResetGlobals();
     as_context->CallScriptFunction(as_funcs.set_parameters);
     as_context->CallScriptFunction(as_funcs.post_reset);
+    if (keep_campaign_scale) {
+        ASArglist scaling_args;
+        for (float factor : campaign_scale) scaling_args.Add(factor);
+        as_context->CallScriptFunction("void SetCampaignScaling(float, float, float, float)", &scaling_args);
+    }
     for (auto& item_connection : item_connections) {
         if (item_connection.attachment_type != _at_unspecified) {
             int which = item_connection->GetID();

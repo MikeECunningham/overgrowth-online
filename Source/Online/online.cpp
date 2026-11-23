@@ -180,6 +180,7 @@ void Online::ClearIDTranslations() {
     // This hook runs after scene disposal on hosts and clients, including
     // same-map retries. Object IDs can be reused by the next scene; saved
     // cutscene physics and ownership must never follow those numeric IDs.
+    ResetCampaignDifficulty(true);
     coop_cutscene_players.clear();
     coop_hidden.clear();
     coop_cutscene = false;
@@ -643,6 +644,7 @@ void Online::LateUpdate(SceneGraph* scenegraph) {
 
         AssignLobbyBots();
         CoopUpdate(scenegraph);
+        UpdateCampaignDifficulty(scenegraph);
         CoopSpectateUpdate(scenegraph);
         ResolveHeldHits();
 
@@ -1160,6 +1162,7 @@ bool Online::HostOnlyMessage(OnlineMessageType type) const {
         message_handler.GetMessageType<OnlineMessages::CutLine>(),
         message_handler.GetMessageType<OnlineMessages::AngelscriptData>(),
         message_handler.GetMessageType<OnlineMessages::HostSessionFlag>(),
+        message_handler.GetMessageType<OnlineMessages::CampaignScale>(),
         message_handler.GetMessageType<OnlineMessages::TimedSlowMotion>(),
         message_handler.GetMessageType<OnlineMessages::CreateEntity>(),
         message_handler.GetMessageType<OnlineMessages::RemoveObject>(),
@@ -5206,6 +5209,14 @@ void Online::SendMessageObjects() {
                                 stored.erase(stored.begin() + k);
                             }
                         }
+                    }
+                    if (message_handler.GetMessageType(outgoing_message.message) == message_handler.GetMessageType<OnlineMessages::CampaignScale>()) {
+                        auto& stored = online_session->persistent_outgoing_messages;
+                        const auto character = static_cast<OnlineMessages::CampaignScale*>(omb)->character;
+                        stored.erase(std::remove_if(stored.begin(), stored.end(), [character](const OnlineMessageRef& old) {
+                            return message_handler.GetMessageType(old) == message_handler.GetMessageType<OnlineMessages::CampaignScale>() &&
+                                static_cast<OnlineMessages::CampaignScale*>(old.GetData())->character == character;
+                        }), stored.end());
                     }
                     online_session->persistent_outgoing_messages.push_back(outgoing_message.message);
                 }

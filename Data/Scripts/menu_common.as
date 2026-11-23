@@ -1180,7 +1180,7 @@ void CreateMenuItem(IMDivider@ row, LevelInfo@ level, bool unlocked, bool last_p
         level_container.addFloatingElement(text_holder_holder, "title_text", vec2(middle_x - (text_holder.getSizeX() / 2.0f), level_container.getSizeY() - text_holder.getSizeY()), 4);
 
         if( level.disabled == false ) {
-            uint star_count = 3;
+            uint star_count = GetConfigValueOptions("difficulty_preset").length();
             uint highest_star_index = level.highest_diff;
 
             if( show_stars && level.hide_stars == false ) {
@@ -1212,7 +1212,7 @@ void CreateMenuItem(IMDivider@ row, LevelInfo@ level, bool unlocked, bool last_p
                         if( i == 1 ) {
                             used_image = head_faded;
                         }
-                        if( i == 2 ) {
+                        if( i >= 2 ) {
                             used_image = skull_faded;
                         }
 
@@ -1221,14 +1221,15 @@ void CreateMenuItem(IMDivider@ row, LevelInfo@ level, bool unlocked, bool last_p
                             if( i == 1 ) {
                                 used_image = head_filled;
                             }
-                            if( i == 2 ) {
+                            if( i >= 2 ) {
                                 used_image = skull_filled;
                             }
                         }
                         IMImage level_star( used_image );
+                        if(i == 3) level_star.setColor(HexColor("#A765D9"));
 
                         if( fade_stars ) {
-                            level_star.setColor(vec4(1.0f,1.0f,1.0f,0.5f));
+                            level_star.setColor(i == 3 ? vec4(0.65f,0.40f,0.85f,0.5f) : vec4(1.0f,1.0f,1.0f,0.5f));
                             level_star.addMouseOverBehavior(mouseover_pulse_full, "");
                         }
                         if(kAnimateMenu){
@@ -1280,11 +1281,12 @@ void CreateMenuItem(IMDivider@ row, LevelInfo@ level, bool unlocked, bool last_p
                 if( level.highest_diff == 2 ) {
                     used_image = head_filled;
                 }
-                if( level.highest_diff == 3 ) {
+                if( level.highest_diff >= 3 ) {
                     used_image = skull_filled;
                 }
 
                 IMImage level_number( used_image );
+                if(level.highest_diff >= 4) level_number.setColor(HexColor("#A765D9"));
 
                 float number_width = level_item_width / 10.0f;
 
@@ -1591,7 +1593,7 @@ void AddBackButton(bool change_diff = false, bool single_star = false, string cr
         float width = 580.0f;
         string difficulty = GetConfigValueString("difficulty_preset");
         AddButton("Change Difficulty", right_panel, "null", button_background_diamond, animated, width, 40.0f, move_button_background, IMMessage("change_difficulty"), 30.0f);
-        uint star_count = 3;
+        uint star_count = GetConfigValueOptions("difficulty_preset").length();
         uint highest_star_index = GetCurrentDifficulty()-1;
 
         float star_width = 70.0f;
@@ -1621,7 +1623,7 @@ void AddBackButton(bool change_diff = false, bool single_star = false, string cr
                 if( i == 1 ) {
                     used_image = head_faded;
                 }
-                if( i == 2 ) {
+                if( i >= 2 ) {
                     used_image = skull_faded;
                 }
                 if( int(i) < GetCurrentDifficulty() ) {
@@ -1629,11 +1631,12 @@ void AddBackButton(bool change_diff = false, bool single_star = false, string cr
                     if( i == 1 ) {
                         used_image = head_filled;
                     }
-                    if( i == 2 ) {
+                    if( i >= 2 ) {
                         used_image = skull_filled;
                     }
                 }
                 IMImage level_star( used_image );
+                if(i == 3) level_star.setColor(HexColor("#A765D9"));
                 if(kAnimateMenu){
                     level_star.addUpdateBehavior(IMFadeIn( fade_in_time, inSineTween ), "");
                 }

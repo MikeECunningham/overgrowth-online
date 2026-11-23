@@ -51,6 +51,8 @@
 #include <Math/vec3math.h>
 #include <UserInput/keyTranslator.h>
 #include <Compat/fileio.h>
+#include <GUI/player_menu_context.h>
+#include <Online/online.h>
 
 #include <SDL_keycode.h>
 
@@ -85,6 +87,31 @@ const vec3 kRedBloodColor(0.4f, 0.0f, 0.0f);
 const vec3 kGreenBloodColor(0.0f, 0.4f, 0.0f);
 const vec3 kCyanBloodColor(0.0f, 0.4f, 0.4f);
 const vec3 kBlackBloodColor(0.1f, 0.1f, 0.1f);
+
+static PlayerID MatchSettingsActor() {
+    unsigned local = 0;
+    if (const auto* menu = PlayerMenuUI::Current()) {
+        local = static_cast<unsigned>(std::max(0, menu->local_index));
+    } else {
+        Engine* engine = Engine::Instance();
+        const int input_owner = engine->current_engine_state_.type != kEngineScriptableUIState ? engine->current_menu_player : -1;
+        const int logical = input_owner >= 0 ? Input::Instance()->LocalPlayerIndexForInputID(input_owner) : -1;
+        const int count = std::max(1u, Input::Instance()->GetNumLocalPlayers());
+        local = static_cast<unsigned>(logical >= 0 ? logical : std::max(0, std::min(count - 1, config["controller_menu_owner"].toNumber<int>())));
+    }
+    return Online::Instance()->LobbyPlayerIDForLocalIndex(local);
+}
+
+static void SetMatchSetting(const std::string& key, const std::string& value) {
+    Online* online = Online::Instance();
+    if (online->IsActive()) {
+        online->SetCampaignMatchSetting(key, value, MatchSettingsActor());
+    } else {
+        if (key == "difficulty_preset") config.SetDifficultyPreset(value);
+        else config.GetRef(key) = value;
+        config.ReloadDynamicSettings();
+    }
+}
 
 static void UpdateFullscreenMode(FullscreenMode::Mode val) {
     config.GetRef("fullscreen") = static_cast<int>(val);
@@ -673,14 +700,17 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
             Graphics::Instance()->config_.SetSplitScreen(checkbox_val);
         }
 
+        const bool can_edit_match = !Online::Instance()->IsActive() || Online::Instance()->IsLobbyHost(MatchSettingsActor());
+        if (!can_edit_match) ImGui::TextDisabled("The host controls match difficulty.");
+        ImGui::BeginDisabled(!can_edit_match);
         bool tutorials = config["tutorials"].toBool();
         if (ImGui::Checkbox("Tutorials", &tutorials)) {
-            config.GetRef("tutorials") = tutorials;
+            SetMatchSetting("tutorials", tutorials ? "true" : "false");
         }
 
         checkbox_val = config["auto_ledge_grab"].toNumber<bool>();
         if (ImGui::Checkbox("Automatic ledge grab", &checkbox_val)) {
-            config.GetRef("auto_ledge_grab") = checkbox_val;
+            SetMatchSetting("auto_ledge_grab", checkbox_val ? "true" : "false");
         }
 
         std::vector<std::string> diff_presets = config.GetDifficultyPresets();
@@ -704,19 +734,25 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
         }
 
         if (ImGui::Combo("Difficulty Preset", &dropdown_item, &diff_presets_c[0], diff_presets.size())) {
-            config.SetDifficultyPreset(diff_presets[dropdown_item]);
-            config.ReloadDynamicSettings();
+            SetMatchSetting("difficulty_preset", diff_presets[dropdown_item]);
         }
+
+        checkbox_val = config["campaign_mp_scaling"].toBool();
+        if (ImGui::Checkbox("Scale campaign encounters for party size", &checkbox_val)) {
+            SetMatchSetting("campaign_mp_scaling", checkbox_val ? "true" : "false");
+        }
+        ImGui::TextWrapped("Enemy stats and limited matching reinforcements scale with human players. Solo encounters stay unchanged; only Nightmare adds extra AI pressure. Existing reinforcements stay in the fight and enemies keep damage already taken.");
 
         float global_time_scale_mult = config["global_time_scale_mult"].toNumber<float>();
         if (ImGui::SliderFloat("Game Speed", &global_time_scale_mult, 0.5f, 1.0f)) {
-            SetGameSpeed(global_time_scale_mult, true);
+            SetMatchSetting("global_time_scale_mult", std::to_string(global_time_scale_mult));
         }
 
         float game_difficulty = config["game_difficulty"].toNumber<float>();
         if (ImGui::SliderFloat("Game Difficulty", &game_difficulty, 0.0f, 1.0f)) {
-            config.GetRef("game_difficulty") = game_difficulty;
+            SetMatchSetting("game_difficulty", std::to_string(game_difficulty));
         }
+        ImGui::EndDisabled();
 
         ImGui::EndMenu();
     }

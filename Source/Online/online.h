@@ -30,6 +30,7 @@
 #include <Online/online_message_handler.h>
 #include <Online/state_machine.h>
 #include <Online/lobby_authority.h>
+#include <memory>
 
 #include <Online/Message/audio_play_sound_group_relative_gain_message.h>
 #include <Online/Message/audio_play_sound_group_gain_message.h>
@@ -64,6 +65,7 @@
 #include <Online/Message/test_message.h>
 #include <Online/Message/character_snapshots.h>
 #include <Online/char_snapshot.h>
+#include <Online/Message/campaign_scale.h>
 #include <Objects/riggedobject.h>
 #include <Objects/movementobject.h>
 #include <Online/Message/morph_target_update.h>
@@ -211,13 +213,16 @@ typedef OnlineMessageHandlerTemplate<
     BuilderPresence,
     BuildRequest,
     LevelFileChunk,
-    LobbyControl>
+    LobbyControl,
+    CampaignScale>
     OnlineMessageHandler;
 
 extern OnlineMessageHandler message_handler;
 
 // Overgrowth Online: the Steam lobby to join at start ("+connect_lobby <id>": an accepted invite)
 extern std::string g_launch_lobby;
+
+struct CampaignDifficultyState;
 
 class Online {
    public:
@@ -699,6 +704,12 @@ class Online {
     // Co-op rules (story campaigns)
     bool delivering_network_level_message = false;  // Level::Message is passing on the host's message
     bool AllowScriptReset();                        // a level script here asked for "reset"
+    std::shared_ptr<CampaignDifficultyState> campaign_difficulty_state;
+    void UpdateCampaignDifficulty(SceneGraph* graph);
+    void ResetCampaignDifficulty(bool scene_disposed = false);
+    int CampaignHumanCount() const;
+    bool CampaignEncounterDefeated(ObjectID hotspot, int goal) const;
+    void ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai);
     bool CoopCampaign();                            // the level belongs to a linear (story) campaign
     vector<ObjectID> PlayerAvatarIDs();             // every player's character here
     void CoopUpdate(SceneGraph* sg);                // host: everyone down for 5 s -> reset
@@ -896,6 +907,7 @@ class Online {
     static vec3 LobbyTeamColor(int team);
     bool SetLobbySelection(const std::string& mode, const std::string& campaign, const std::string& map, bool build, PlayerID actor = LobbyAuthority::InvalidPlayer);
     bool SetLobbyAllowAllPause(bool allow, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool SetCampaignMatchSetting(const std::string& key, const std::string& value, PlayerID actor = LobbyAuthority::InvalidPlayer);
     bool SetLobbyForceTeams(bool force, PlayerID actor = LobbyAuthority::InvalidPlayer);
     bool SetLobbyHostControlsTeams(bool controls, PlayerID actor = LobbyAuthority::InvalidPlayer);
     bool LobbyHostControlsTeams() const { return lobby_host_controls_teams_; }

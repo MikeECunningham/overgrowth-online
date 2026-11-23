@@ -558,6 +558,7 @@ void PossibleWinEvent(const string &in event, int val, int goal_check, int recur
                             }
                         }
                     }
+                    if(success && !Online_CampaignEncounterDefeated(hotspot.GetID(), goal_check)) success = false;
                     if(success){
                         int player_id = GetPlayerCharacterID();
                         if(Online_IsActive()){

@@ -359,21 +359,25 @@ static const char* difficulty_presets[] = {
     "Casual",
     "Hardcore",
     "Expert",
+    "Nightmare",
     NULL};
 
 static const float difficulty_preset_values[] = {
     0.0f, 0.8f,
     0.5f, 1.0f,
+    1.0f, 1.0f,
     1.0f, 1.0f};
 
 static const bool difficulty_tutorials_preset_values[] = {
     true,
     true,
+    false,
     false};
 
 static const bool difficulty_ledge_grab_preset_values[] = {
     true,
     true,
+    false,
     false};
 
 std::vector<std::string> Config::GetDifficultyPresets() {
@@ -390,7 +394,8 @@ std::string Config::GetDifficultyPreset() {
         if ((*this)["game_difficulty"].toNumber<float>() == difficulty_preset_values[i * 2] &&
             (*this)["global_time_scale_mult"].toNumber<float>() == difficulty_preset_values[i * 2 + 1] &&
             (*this)["tutorials"].toBool() == difficulty_tutorials_preset_values[i] &&
-            (*this)["auto_ledge_grab"].toBool() == difficulty_ledge_grab_preset_values[i]) {
+            (*this)["auto_ledge_grab"].toBool() == difficulty_ledge_grab_preset_values[i] &&
+            (*this)["campaign_mp_nightmare"].toBool() == (i == 3)) {
             return difficulty_presets[i];
         }
     }
@@ -401,6 +406,9 @@ std::string Config::GetDifficultyPreset() {
 std::string Config::GetClosestDifficulty() {
     std::string difficulty = "Custom";
     for (int i = 0; difficulty_presets[i] != NULL; ++i) {
+        // Nightmare shares Expert's base values, but only an explicit choice
+        // with that complete preset earns its own progress/difficulty label.
+        if (i == 3 && GetDifficultyPreset() != "Nightmare") continue;
         if ((*this)["game_difficulty"].toNumber<float>() >= difficulty_preset_values[i * 2] &&
             (*this)["global_time_scale_mult"].toNumber<float>() >= difficulty_preset_values[i * 2 + 1]) {
             difficulty = difficulty_presets[i];
@@ -418,6 +426,7 @@ void Config::SetDifficultyPreset(std::string name) {
             GetRef("global_time_scale_mult") = difficulty_preset_values[i * 2 + 1];
             GetRef("tutorials") = difficulty_tutorials_preset_values[i];
             GetRef("auto_ledge_grab") = difficulty_ledge_grab_preset_values[i];
+            GetRef("campaign_mp_nightmare") = i == 3;
         }
     }
 }

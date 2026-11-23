@@ -203,6 +203,24 @@ float p_fat;
 float p_muscle;
 float p_ear_size;
 
+// Campaign scaling stays separate from authored stats. Health remains in its
+// normal 0..1 range; vitality changes damage received without healing an actor
+// when another player joins, or when difficulty is changed during a fight.
+float campaign_vitality_mult = 1.0f;
+float campaign_damage_mult = 1.0f;
+float campaign_armor_mult = 1.0f;
+float campaign_ai_bonus = 0.0f;
+bool campaign_authored_valid = false;
+float campaign_authored_resistance = 1.0f;
+float campaign_authored_damage = 1.0f;
+float campaign_authored_aggression = 0.5f;
+float campaign_authored_ground_aggression = 0.5f;
+float campaign_authored_block_skill = 0.5f;
+float campaign_authored_block_followup = 0.5f;
+float campaign_authored_attack_speed = 1.0f;
+float campaign_authored_throw_counter = 0.4f;
+float campaign_authored_weapon_catch = 1.0f;
+
 bool g_stick_to_nav_mesh;
 float g_weapon_catch_skill;
 
@@ -5783,7 +5801,7 @@ int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float a
     }
 
     // Apply damage to passive block health
-    float block_damage = attack_getter2.GetBlockDamage() * max(1.0, p_damage_multiplier) * max(1.0, attack_damage_mult);
+    float block_damage = attack_getter2.GetBlockDamage() * max(1.0, p_damage_multiplier) * max(1.0, attack_damage_mult) / campaign_armor_mult;
     block_health -= block_damage;
 
     if(char.GetIntVar("species") == _dog && (species != _dog && species != _wolf)) {
@@ -15463,6 +15481,41 @@ void ApplyPhysics(const Timestep &in ts) {
     }
 }
 
+void CampaignRememberAuthoredParameters() {
+    campaign_authored_resistance = p_damage_multiplier;
+    campaign_authored_damage = p_attack_damage_mult;
+    campaign_authored_aggression = p_aggression;
+    campaign_authored_ground_aggression = p_ground_aggression;
+    campaign_authored_block_skill = p_block_skill;
+    campaign_authored_block_followup = p_block_followup;
+    campaign_authored_attack_speed = p_attack_speed_mult;
+    campaign_authored_throw_counter = g_throw_counter_probability;
+    campaign_authored_weapon_catch = g_weapon_catch_skill;
+    campaign_authored_valid = true;
+}
+
+void CampaignApplyAuthoredScaling() {
+    if(!campaign_authored_valid) CampaignRememberAuthoredParameters();
+    p_damage_multiplier = campaign_authored_resistance / campaign_vitality_mult;
+    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult;
+    // ai == 0 is exactly the authored value, including explicit zero skills.
+    p_aggression = campaign_authored_aggression + (1.0f - campaign_authored_aggression) * campaign_ai_bonus;
+    p_ground_aggression = campaign_authored_ground_aggression + (1.0f - campaign_authored_ground_aggression) * campaign_ai_bonus;
+    p_block_skill = campaign_authored_block_skill + (1.0f - campaign_authored_block_skill) * campaign_ai_bonus;
+    p_block_followup = campaign_authored_block_followup + (1.0f - campaign_authored_block_followup) * campaign_ai_bonus;
+    p_attack_speed_mult = min(2.0f, campaign_authored_attack_speed * (1.0f + campaign_ai_bonus * 0.3f));
+    g_throw_counter_probability = campaign_authored_throw_counter + (1.0f - campaign_authored_throw_counter) * campaign_ai_bonus;
+    g_weapon_catch_skill = campaign_authored_weapon_catch + (1.0f - campaign_authored_weapon_catch) * campaign_ai_bonus;
+}
+
+void SetCampaignScaling(float vitality, float damage, float armor, float ai) {
+    campaign_vitality_mult = max(1.0f, min(6.0f, vitality));
+    campaign_damage_mult = max(1.0f, min(2.0f, damage));
+    campaign_armor_mult = max(1.0f, min(2.0f, armor));
+    campaign_ai_bonus = max(0.0f, min(0.35f, ai));
+    CampaignApplyAuthoredScaling();
+}
+
 void SetParameters() {
     CheckSpecies();
 
@@ -15645,6 +15698,8 @@ void SetParameters() {
     g_weapon_catch_skill = min(1.0f, max(0.0f, params.GetFloat("Weapon Catch Skill")));
 
     ApplyBoneInflation();
+    CampaignRememberAuthoredParameters();
+    CampaignApplyAuthoredScaling();
 }
 
 //pose animation for when the player types some emote command in the chatt

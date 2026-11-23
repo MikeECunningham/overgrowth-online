@@ -5,6 +5,7 @@
 #include <Main/scenegraph.h>
 #include <JSON/json.h>
 #include <Internal/config.h>
+#include <Internal/settings_changes.h>
 #include <Graphics/camera.h>
 #include <Editors/map_editor.h>
 #include <Internal/modloading.h>
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <sstream>
 
 namespace {
 std::string Encode(const Json::Value& value) { return Json::FastWriter().write(value); }
@@ -28,8 +30,47 @@ std::string natural_team_level;
 const SceneGraph* natural_team_graph = nullptr;
 const char* const migration_match_settings[] = {
     "oo_arena_bots", "oo_arena_random", "oo_public_game", "game_difficulty",
-    "global_time_scale_mult", "tutorials", "auto_ledge_grab"
+    "global_time_scale_mult", "tutorials", "auto_ledge_grab", "campaign_mp_scaling", "campaign_mp_nightmare"
 };
+const char* const campaign_match_settings[] = {
+    "game_difficulty", "global_time_scale_mult", "tutorials", "auto_ledge_grab",
+    "campaign_mp_scaling", "campaign_mp_nightmare"
+};
+
+bool NormalizeCampaignMatchSetting(const std::string& key, const std::string& value, std::string* normalized) {
+    if (!SettingsChanges::CampaignMatchSetting(key) || value.size() > 64) return false;
+    if (key == "difficulty_preset") {
+        const auto presets = config.GetDifficultyPresets();
+        if (std::find(presets.begin(), presets.end(), value) == presets.end()) return false;
+        *normalized = value;
+    } else if (key == "game_difficulty" || key == "global_time_scale_mult") {
+        std::istringstream input(value);
+        float number;
+        if (!(input >> number) || !std::isfinite(number)) return false;
+        input >> std::ws;
+        if (!input.eof() || number < (key == "game_difficulty" ? 0.0f : 0.1f) ||
+            number > (key == "game_difficulty" ? 1.0f : 2.0f)) return false;
+        *normalized = StringVariant(number).str();
+    } else {
+        if (value != "0" && value != "1" && value != "false" && value != "true") return false;
+        *normalized = value == "1" || value == "true" ? "1" : "0";
+    }
+    return true;
+}
+
+void ApplyCampaignMatchSnapshot(const Json::Value& settings) {
+    if (!settings.isObject()) return;
+    bool changed = false;
+    for (const char* key : campaign_match_settings) {
+        std::string value;
+        if (!settings[key].isString() || !NormalizeCampaignMatchSetting(key, settings[key].asString(), &value)) continue;
+        if (config[key].str() != value) {
+            config.GetRef(key) = value;
+            changed = true;
+        }
+    }
+    if (changed) config.ReloadDynamicSettings();
+}
 void SeedLocalView(SceneGraph* graph, const PlayerState& player, ObjectID anchor_id) {
     Object* target = graph ? graph->GetObjectFromID(player.object_id) : nullptr;
     Object* anchor_object = graph ? graph->GetObjectFromID(anchor_id) : nullptr;
@@ -403,6 +444,8 @@ std::string Online::LobbyPayload() const {
     message["build"] = lobby_build_; message["allow_all_pause"] = lobby_allow_all_pause_;
     message["force_teams"] = lobby_force_teams_;
     message["host_controls_teams"] = lobby_host_controls_teams_;
+    message["match_settings"] = Json::Value(Json::objectValue);
+    for (const char* key : campaign_match_settings) message["match_settings"][key] = config[key].str();
     message["decision_host"] = lobby_authority_.host;
     SceneGraph* scene = Engine::Instance()->GetSceneGraph();
     message["cutscene"] = host_started_level && !loading && scene && scene->level && scene->level->DialogueCameraControl();
@@ -862,6 +905,28 @@ bool Online::SetLobbyHostControlsTeams(bool controls, PlayerID actor) {
     lobby_host_controls_teams_ = controls; BroadcastLobby(); return true;
 }
 
+bool Online::SetCampaignMatchSetting(const std::string& key, const std::string& value, PlayerID actor) {
+    actor = ResolveLobbyActor(actor);
+    std::string normalized;
+    if (!IsActive() || LobbyMigrationBusy() || !IsLobbyHost(actor) ||
+        !NormalizeCampaignMatchSetting(key, value, &normalized)) return false;
+    if (IsClient()) {
+        Json::Value request;
+        request["action"] = "match_setting"; request["actor"] = actor;
+        request["key"] = key; request["value"] = normalized;
+        SubmitLobbyRequest(Encode(request));
+        return true;
+    }
+    const Config before = config;
+    if (key == "difficulty_preset") config.SetDifficultyPreset(normalized);
+    else config.GetRef(key) = normalized;
+    if (config != before) {
+        config.ReloadDynamicSettings();
+        BroadcastLobby();
+    }
+    return true;
+}
+
 void Online::ApplyManualTeam(PlayerID id) {
     if (lobby_waiting_ || !online_session) return;
     const auto player = online_session->player_states.find(id);
@@ -1005,6 +1070,7 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         lobby_allow_all_pause_ = message.get("allow_all_pause", false).asBool();
         lobby_force_teams_ = message.get("force_teams", false).asBool();
         lobby_host_controls_teams_ = message.get("host_controls_teams", true).asBool();
+        ApplyCampaignMatchSnapshot(message["match_settings"]);
         lobby_authority_.host = message.get("decision_host", 255).asUInt();
         remote_cutscene_active_ = message.get("cutscene", false).asBool();
         campaign_main_player_id_ = message.get("campaign_main_player", 255).asUInt();
@@ -1083,6 +1149,11 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     // A reliable control message may act only for a logical player owned by
     // its sending machine. No role grant or fabricated ID bypasses this gate.
     const bool valid_actor = acting_player != online_session->player_states.end() && !acting_player->second.is_bot && acting_player->second.peer_id == from;
+    if (action == "match_setting") {
+        if (valid_actor && message["key"].isString() && message["value"].isString())
+            SetCampaignMatchSetting(message["key"].asString(), message["value"].asString(), actor);
+        return;
+    }
     if (action == "pause") {
         const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         auto player = online_session->player_states.find(id);
