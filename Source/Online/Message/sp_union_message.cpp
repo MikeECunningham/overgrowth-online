@@ -94,6 +94,9 @@ void SPUnionMessage::Deserialize(void* object, binn* l) {
 
 void SPUnionMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {
     SPUnionMessage* t = static_cast<SPUnionMessage*>(object);
+    const bool gear_metadata = t->key_name.compare(0, 16, "Campaign Weapon ") == 0 ||
+        t->key_name.compare(0, 17, "Campaign Scaling ") == 0;
+    if (gear_metadata && Online::Instance()->IsHosting()) return;  // reserved authoritative provenance
     ObjectID object_id = Online::Instance()->GetObjectID(t->param_id);
     if (!Online::Instance()->PeerMayChange(from, object_id)) {
         return;  // (a guest: only its own character)
@@ -112,7 +115,8 @@ void SPUnionMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID f
     ScriptParams* params = Online::Instance()->GetScriptParamsFromID(object_id);
     if (params != nullptr) {
         params->InsertScriptParam(t->key_name, param);
-        Online::Instance()->UpdateMovementObjectFromID(object_id);
+        // Bookkeeping must not rerun SetParameters and restore KO shields.
+        if (!gear_metadata) Online::Instance()->UpdateMovementObjectFromID(object_id);
     } else {
         LOGW << "Unable to apply script param update for param_id: " << object_id << " (" << t->param_id << ")" << endl;
     }

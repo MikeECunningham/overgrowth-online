@@ -325,6 +325,16 @@ void UpdateLocalLobbyInput() {
     Engine* engine = Engine::Instance();
     const bool world = engine->IsLevelLoaded() || engine->current_engine_state_.type == kEngineLevelState ||
         engine->current_engine_state_.type == kEngineEditorLevelState;
+    static bool scaling_adoption_blocked = false;
+    static bool had_session = false;
+    if (!engine->IsLevelLoaded()) scaling_adoption_blocked = false;
+    else if ((had_session && !online->IsActive()) || online->IsAwaitingShutdown()) scaling_adoption_blocked = true;
+    if (!scaling_adoption_blocked && online->CanAdoptLocalSession() && engine->IsLevelLoaded() && config["difficulty_scaling"].toBool()) {
+        online->EnsureLocalSession();  // reuse the private simulation for solo scaling; no listen socket
+    }
+    // Explicit Leave must finish its transition out of this world before the
+    // automatic solo fallback is allowed to create another private session.
+    had_session = online->online_session != nullptr;
     if (world && !was_world) {
         world_primary_device = previous_button_time > input->last_keyboard_event_time &&
             previous_button_time > input->last_mouse_event_time ? previous_button_instance : -1;

@@ -81,6 +81,12 @@ global_time_scale_mult: 1.0
 game_difficulty:        1.0
 campaign_mp_scaling:    true
 campaign_mp_nightmare:  false
+difficulty_scaling:     false
+campaign_ai_scaling:    false
+campaign_armor_scaling: true
+campaign_weapon_scaling: true
+armor_localized:        true
+show_difficulty_readout: true
 tutorials:              true
 difficulty_set:         false
 volume_shadows:         false

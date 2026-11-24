@@ -275,7 +275,7 @@ class MapEditor {
 
     const TerrainInfo* GetPreviewTerrainInfo() const;
     bool GetTerrainPreviewMode() const { return terrain_preview_mode; }
-    bool CreateObjectFromHost(const std::string& path, const vec3& pos, CommonObjectID host_id);
+    bool CreateObjectFromHost(const std::string& path, const vec3& pos, CommonObjectID host_id, bool stripped_npc = false);
 
    private:
     void UpdateTransformTool(SceneGraph* scenegraph, EditorTypes::Tool type, const LineSegment& mouseray, const Collision& c, GameCursor* cursor);

@@ -264,6 +264,7 @@ class MovementObject : public Object {
 
     void UpdatePaused();
     int AboutToBeHitByItem(int id);
+    bool CampaignArmorDeflectItem(int id, const vec3& point);
 
     int InputFromAngelScript();
 
@@ -319,6 +320,7 @@ class MovementObject : public Object {
         ASFunctionHandle receive_message;
         ASFunctionHandle update_paused;
         ASFunctionHandle about_to_be_hit_by_item;
+        ASFunctionHandle campaign_armor_deflect_item;
         ASFunctionHandle InputToEngine;
         ASFunctionHandle apply_host_input;
         ASFunctionHandle apply_host_camera_flat_facing;

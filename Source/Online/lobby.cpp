@@ -30,11 +30,11 @@ std::string natural_team_level;
 const SceneGraph* natural_team_graph = nullptr;
 const char* const migration_match_settings[] = {
     "oo_arena_bots", "oo_arena_random", "oo_public_game", "game_difficulty",
-    "global_time_scale_mult", "tutorials", "auto_ledge_grab", "campaign_mp_scaling", "campaign_mp_nightmare"
+    "global_time_scale_mult", "tutorials", "auto_ledge_grab", "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized"
 };
 const char* const campaign_match_settings[] = {
     "game_difficulty", "global_time_scale_mult", "tutorials", "auto_ledge_grab",
-    "campaign_mp_scaling", "campaign_mp_nightmare", "oo_arena_random"
+    "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized", "oo_arena_random"
 };
 
 bool NormalizeCampaignMatchSetting(const std::string& key, const std::string& value, std::string* normalized) {
@@ -207,8 +207,15 @@ ObjectID Online::CampaignMainAvatarID() const {
     return campaign_main_avatar_id_;
 }
 
+bool Online::CanAdoptLocalSession() const {
+    return mode.load() == MultiplayerMode::NoMultiplayer && online_session == nullptr;
+}
+
 bool Online::EnsureLocalSession() {
     if (IsActive()) return true;
+    // AwaitingShutdown is deliberately inactive, but its old session and
+    // worker still exist until StopMultiplayer finishes on the main thread.
+    if (!CanAdoptLocalSession()) return false;
     Engine* engine = Engine::Instance();
     SceneGraph* graph = engine->GetSceneGraph();
     const bool loaded = engine->IsLevelLoaded() && graph && graph->level;
@@ -227,6 +234,7 @@ bool Online::EnsureLocalSession() {
     lobby_waiting_ = false;
     lobby_authority_ = LobbyAuthority::State();
     StartMultiplayer(MultiplayerMode::Host);  // simulation only; no listen socket
+    ResetModeChallenge();  // a fresh private run must not inherit a closed session's ledger
     local_only_session_ = true;
     loading = !loaded;
     lobby_start_pending_ = !loaded;

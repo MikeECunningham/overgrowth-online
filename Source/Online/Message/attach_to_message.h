@@ -23,6 +23,9 @@
 #pragma once
 
 #include "online_message_base.h"
+#include <Objects/envobjectattach.h>
+#include <Math/vec3.h>
+#include <array>
 
 namespace OnlineMessages {
 class AttachToMessage : public OnlineMessageBase {
@@ -32,9 +35,16 @@ class AttachToMessage : public OnlineMessageBase {
     uint32_t bone_id;
     bool attach;
     bool mirrored;
+    bool exact_env = false;
+    bool runtime_item = false;
+    std::array<BoneConnect, kMaxBoneConnects> env_bones;
+    vec3 env_scale = vec3(1.0f);
+    int env_region = 0;
 
    public:
-    AttachToMessage(ObjectID parent_id, ObjectID child_id, uint32_t bone_id, bool attach, bool mirrored);
+    AttachToMessage(ObjectID parent_id, ObjectID child_id, uint32_t bone_id, bool attach, bool mirrored,
+                    const AttachedEnvObject* exact_attachment = nullptr, const vec3& scale = vec3(1.0f), int armor_region = 0,
+                    bool runtime_item = false);
 
     static binn* Serialize(void* object);
     static void Deserialize(void* object, binn* source);

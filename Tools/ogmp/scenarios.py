@@ -1235,6 +1235,14 @@ def _difficulty_checkbox_transition(ctx):
 SCENARIOS["difficulty_checkbox_transition"] = _difficulty_checkbox_transition
 
 
+def _difficulty_hud(ctx):
+    from .difficulty_hud_suite import difficulty_hud
+    return difficulty_hud(ctx)
+
+
+SCENARIOS["difficulty_hud"] = _difficulty_hud
+
+
 def _campaign_scaling(ctx):
     from .campaign_scaling_suite import campaign_scaling
     return campaign_scaling(ctx)
@@ -1325,3 +1333,25 @@ def _tutorial_bot_overlap(ctx):
 
 
 SCENARIOS["tutorial_bot_overlap"] = _tutorial_bot_overlap
+
+
+def _campaign_menu_resume(ctx):
+    from .menu_resume_suite import campaign_menu_resume
+    return campaign_menu_resume(ctx)
+
+
+def _performance_solo(ctx):
+    from .mode_settings_suite import performance_solo
+    return performance_solo(ctx)
+
+
+SCENARIOS["campaign_menu_resume"] = _campaign_menu_resume
+SCENARIOS["performance_solo"] = _performance_solo
+
+
+def _campaign_equipment(ctx):
+    from .campaign_equipment_suite import campaign_equipment
+    return campaign_equipment(ctx)
+
+
+SCENARIOS["campaign_equipment"] = _campaign_equipment

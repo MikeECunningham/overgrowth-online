@@ -1,4 +1,4 @@
-"""Four difficulty cards and independently committed party-scaling controls."""
+"""Original difficulty presets, the mode selector, and durable checkbox artwork."""
 
 import math
 import os
@@ -14,40 +14,47 @@ def difficulty_ui(ctx):
     g = GUI(ctx, 'campaign_difficulty_ui')
     metrics = {}
     try:
-        g.code('SetConfigValueInt("difficulty_preset_value",0);SetConfigValueBool("campaign_mp_scaling",true);')
+        g.code('SetConfigValueInt("difficulty_preset_value",0);SetConfigValueBool("difficulty_scaling",false);'
+               'SetConfigValueBool("campaign_ai_scaling",false);SetConfigValueBool("campaign_mp_nightmare",false);'
+               'SetConfigValueBool("tutorials",false);SetConfigValueBool("auto_ledge_grab",false);')
         g.inst.bridge.call('menu', script='difficulty_menu.as')
-        g.wait(lambda: g.probe('play_menu.length()') == '4', 'four actual difficulty cards')
-        assert g.probe('play_menu[3].name') == 'Nightmare'
+        g.wait(lambda: g.probe('play_menu.length()') == '3', 'three original difficulty cards')
+        assert g.probe('play_menu[0].name+"|"+play_menu[1].name+"|"+play_menu[2].name') == 'Casual|Hardcore|Expert'
         g.inst.bridge.call('virtual_pad', action='attach', slot=0)
         time.sleep(0.2)
-        g.pad(14)
+        g.pad(14)  # activate controller navigation before selecting a widget
 
-        def focus_message(name, argument=None):
+        def focus_message(name, argument=None, value=None):
             test = f'm.name=="{name}"'
             if argument is not None:
                 test += f'&&m.getString(0)=="{argument}"'
-            g.code('for(uint i=0;i<controller_items.length();++i){'
-                   'IMMessage@ m=controller_items[i].controllerItem.getMessage();'
+            if value is not None:
+                test += f'&&m.getString(1)=="{value}"'
+            g.code('array<IMElement@> choices=controller_items;'
+                   'if(current_controller_item_state==kSubmenuControllerItems)choices=sub_controller_items;'
+                   'for(uint i=0;i<choices.length();++i){'
+                   'IMMessage@ m=choices[i].controllerItem.getMessage();'
                    f'if(m !is null&&{test})' + '{SetCurrentControllerItem(i);break;}}')
 
-        # This draft may be edited before selecting a first-time preset.
-        focus_message('option_changed', 'Scale campaign encounters for party size')
+        # The real dropdown edits the optional mode independently of the base
+        # preset. It works before a first-time user has chosen a card.
+        focus_message('ui_element_clicked', 'Difficulty mode')
         g.pad(0)
-        assert g.probe('campaign_scaling') == 'false'
-        assert g.probe('GetConfigValueBool("campaign_mp_scaling")') == 'true', 'draft applied before Continue'
+        focus_message('option_changed', 'Difficulty mode', 'Scaling')
+        g.pad(0)
+        g.wait(lambda: g.probe('GetConfigValueBool("difficulty_scaling")') == 'true', 'controller selects Scaling mode')
         assert g.probe('current_difficulty') == '-1'
+        assert g.probe('GetConfigValueBool("campaign_ai_scaling")') == 'false'
 
         g.code('SetCurrentControllerItem("menu_item0");')
         navigation = []
-        for _ in range(3):
+        for _ in range(2):
             g.pad(14)
             navigation.append(g.probe('GetCurrentControllerItemName()'))
-        assert navigation == ['menu_item1', 'menu_item2', 'menu_item3'], navigation
+        assert navigation == ['menu_item1', 'menu_item2'], navigation
         g.pad(0)
-        g.wait(lambda: g.probe('current_difficulty') == '3', 'controller chooses Nightmare')
-        assert g.probe('campaign_scaling') == 'false', 'preset choice changed the separate scaling draft'
-
-        # Follow the actual vertical controller route to the added checkbox.
+        g.wait(lambda: g.probe('current_difficulty') == '2', 'controller chooses Expert')
+        assert g.probe('GetConfigValueBool("difficulty_scaling")') == 'true'
         down = []
         for _ in range(8):
             g.pad(12)
@@ -56,31 +63,36 @@ def difficulty_ui(ctx):
                                '(current_item.controllerItem.getMessage().name=="option_changed" ? '
                                'current_item.controllerItem.getMessage().getString(0) : "") : ""')
             down.append(selected)
-            if selected == 'option_changed|Scale campaign encounters for party size':
+            if selected in ('option_changed|Automatic Ledge Grab', 'option_changed|Tutorials'):
                 break
-        assert 'option_changed|Scale campaign encounters for party size' in down, down
-        metrics['screenshot'] = g.shot('nightmare_and_party_scaling')
+        assert any(n.startswith('option_changed|') for n in down), down
+        focus_message('option_changed', 'Tutorials')
+        g.pad(0)
+        assert g.probe('tutorials') == 'true'
+        assert g.probe('GetConfigValueBool("tutorials")') == 'false', 'checkbox draft applied before Continue'
+        g.pad(0)
+        assert g.probe('tutorials') == 'false'
+        metrics['screenshot'] = g.shot('three_presets_and_scaling_mode')
         focus_message('Continue')
         g.pad(0)
-        g.wait(lambda: g.probe('GetConfigValueInt("difficulty_preset_value")') == '4', 'apply fourth preset')
-        assert g.probe('GetConfigValueString("difficulty_preset")') == 'Nightmare'
-        assert g.probe('GetConfigValueBool("campaign_mp_nightmare")') == 'true'
-        assert g.probe('GetConfigValueBool("campaign_mp_scaling")') == 'false'
+        g.wait(lambda: g.probe('GetConfigValueInt("difficulty_preset_value")') == '3', 'apply Expert preset')
+        assert g.probe('GetConfigValueString("difficulty_preset")') == 'Expert'
+        assert g.probe('GetConfigValueBool("campaign_ai_scaling")') == 'false'
+        assert g.probe('GetConfigValueBool("difficulty_scaling")') == 'true'
         assert g.probe('GetConfigValueFloat("game_difficulty")') == '1'
         assert g.probe('GetConfigValueFloat("global_time_scale_mult")') == '1'
-
-        # Reopening uses the current native preset; Back cancels its new draft.
         g.inst.bridge.call('menu', script='difficulty_menu.as')
-        g.wait(lambda: g.probe('current_difficulty') == '3', 'reopen authoritative fourth preset')
-        focus_message('option_changed', 'Scale campaign encounters for party size')
+        g.wait(lambda: g.probe('current_difficulty') == '2', 'reopen authoritative Expert preset')
+        focus_message('option_changed', 'Tutorials')
         g.pad(0)
-        assert g.probe('campaign_scaling') == 'true'
+        assert g.probe('tutorials') == 'true'
         focus_message('Back')
         g.pad(0)
-        assert g.probe('GetConfigValueBool("campaign_mp_scaling")') == 'false', 'Back committed a draft'
+        assert g.probe('GetConfigValueBool("tutorials")') == 'false', 'Back committed a checkbox draft'
         assert not script_errors(g.inst), script_errors(g.inst)
         metrics.update({'right_navigation': navigation, 'down_navigation': down,
-                        'nightmare_expert_base': True, 'scaling_commit_and_cancel': True})
+                        'original_three_presets': True, 'mode_independent_of_base': True,
+                        'checkbox_commit_and_cancel': True})
         return {'passed': True, 'metrics': metrics, 'notes': []}
     except Exception:
         return {'passed': False, 'metrics': metrics, 'notes': [traceback.format_exc()]}
@@ -105,7 +117,7 @@ def difficulty_checkbox_transition(ctx):
                               "limit_fps_in_game": "true", "max_frame_rate": "30",
                               "custom_resolution": "true"})
     metrics = {}
-    names = ("Automatic Ledge Grab", "Tutorials", "Scale campaign encounters for party size")
+    names = ("Automatic Ledge Grab", "Tutorials")
 
     def code(text, target="menu", **options):
         return inst.bridge.call("exec", target=target, code=text, **options)
@@ -121,6 +133,7 @@ def difficulty_checkbox_transition(ctx):
 
     def boxes():
         code('string rows;for(uint i=0;i<gui_elements.length();++i){GUIElement@ e=gui_elements[i];'
+             'if(e.name!="Automatic Ledge Grab"&&e.name!="Tutorials")continue;'
              'vec2 p=e.parent.getScreenPosition();'
              # The legacy renderer centers its 16:9 canvas on wider windows.
              'p.x+=max(0.0f,(GetScreenWidth()-GetScreenHeight()*16.0f/9.0f)*0.5f);'
@@ -147,8 +160,8 @@ def difficulty_checkbox_transition(ctx):
                 code('IMMessage m("option_changed");m.addString("' + name + '");'
                      'm.addString("");imGUI.receiveMessage(m);')
         wait(lambda: all(row["checked"] == checked for row in boxes().values()), "checkbox GUI state")
-        assert probe('ledge_grab&&tutorials&&campaign_scaling' if checked else
-                     '!ledge_grab&&!tutorials&&!campaign_scaling') == "true"
+        assert probe('ledge_grab&&tutorials' if checked else
+                     '!ledge_grab&&!tutorials') == "true"
 
     def capture(tag):
         time.sleep(0.2)
@@ -180,7 +193,7 @@ def difficulty_checkbox_transition(ctx):
         return off, on
 
     try:
-        code('SetConfigValueString("difficulty_preset","Nightmare");SetConfigValueInt("difficulty_preset_value",4);'
+        code('SetConfigValueString("difficulty_preset","Expert");SetConfigValueInt("difficulty_preset_value",3);'
              'SetConfigValueBool("auto_ledge_grab",false);SetConfigValueBool("tutorials",false);'
              'SetConfigValueBool("campaign_mp_scaling",true);')
         inst.bridge.call("menu", script="difficulty_menu.as")

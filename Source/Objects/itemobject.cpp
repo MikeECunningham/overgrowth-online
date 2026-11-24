@@ -1125,7 +1125,12 @@ void ItemObject::CheckThrownCollisionLine(int line_id, const mat4& cur_transform
             bool remote_victim = mo->network_proxy && Online::Instance()->IsActive();
             vec3 stick_start, stick_end;
             mat4 stick_at;
-            if (!remote_victim) {
+            // The host knows the weapon's actual contact, including against a
+            // remotely simulated victim. Check physical armor before making
+            // cuts, blood decals or sticking the weapon into the character.
+            if (mo->CampaignArmorDeflectItem(GetID(), point)) {
+                accept_hit = -1;
+            } else if (!remote_victim) {
                 accept_hit = mo->AboutToBeHitByItem(GetID());
             }
             if (accept_hit == 1) {
@@ -1232,12 +1237,19 @@ void ItemObject::CheckThrownCollisionLine(int line_id, const mat4& cur_transform
                             RangedRandomFloat(-1.0f, 1.0f),
                             RangedRandomFloat(-1.0f, 1.0f));
         } while (length_squared(rand_vec) > 1.0f);
-        rand_vec = normalize(rand_vec);
+        const float random_length = length_squared(rand_vec);
+        rand_vec = random_length > 0.000001f ? normalize(rand_vec) : vec3(0.0f, 1.0f, 0.0f);
         vec3 vel = bullet_object_->GetLinearVelocity();
-        vec3 reflect_norm = normalize(vel) * -1.0f;
-        reflect_norm[1] *= 0.2f;
-        reflect_norm = normalize(mix(rand_vec, reflect_norm, 0.6f));
-        vel = reflect(vel, reflect_norm);
+        if (length_squared(vel) > 0.000001f) {
+            vec3 reflect_norm = normalize(vel) * -1.0f;
+            reflect_norm[1] *= 0.2f;
+            reflect_norm = mix(rand_vec, reflect_norm, 0.6f);
+            reflect_norm = length_squared(reflect_norm) > 0.000001f ? normalize(reflect_norm) : rand_vec;
+            vel = reflect(vel, reflect_norm);
+        } else {
+            // A successful parry can stop the item with a stationary victim.
+            vel = vec3(0.0f);
+        }
         vel *= RangedRandomFloat(0.1f, 0.25f);
         bullet_object_->SetLinearVelocity(vel);
         // bullet_object->SetAngularVelocity(bullet_object->GetAngularVelocity()*-0.5f);

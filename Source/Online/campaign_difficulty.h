@@ -35,8 +35,11 @@ inline AITweak TweakForUnit(uint32_t shared_id) {
     return static_cast<AITweak>(1u + ((identity >> 3u) % 3u));
 }
 
-inline float NightmareAIAmount(int participants) {
+inline float HumanAIAmount(int participants) {
     return participants < 4 ? 0.0f : participants < 8 ? 0.01f : participants < 16 ? 0.02f : 0.03f;
+}
+inline float AIAmount(int humans, double pressure) {
+    return std::max(HumanAIAmount(humans), pressure < 0.6 ? 0.0f : pressure < 1.1 ? 0.01f : pressure < 1.5 ? 0.02f : 0.03f);
 }
 
 inline float ExtraPlayers(int participants) {
@@ -63,7 +66,7 @@ inline float ExtraPlayersForParty(int humans, int bots) {
 
 // Preserve authored species, stats and difficulty. These are independent
 // multipliers; vitality is effective health, not health bars above 100%.
-inline Factors ForExtraPlayers(float extra, int ai_humans, bool boss, int strength, bool stats, bool nightmare,
+inline Factors ForExtraPlayers(float extra, int ai_humans, bool boss, int strength, bool stats, bool ai_enabled,
                               uint32_t shared_id) {
     Factors out;
     const int rank = std::max(int(Rat), std::min(int(Wolf), strength));
@@ -71,21 +74,21 @@ inline Factors ForExtraPlayers(float extra, int ai_humans, bool boss, int streng
         const float vitality_step = (boss ? 0.65f + 0.08f * rank : 0.18f + 0.035f * rank) * 0.85f;
         out.vitality = std::min(boss ? 6.0f : 3.0f, 1.0f + vitality_step * extra);
         out.damage = std::min(boss ? 1.9f : 1.6f, 1.0f + (boss ? 0.12f : 0.075f) * 0.85f * extra);
-        out.armor = std::min(boss ? 1.9f : 1.5f, 1.0f + (boss ? 0.15f : 0.07f) * 0.85f * extra);
+        // Armor is supplied as real pieces, not a passive-block multiplier.
     }
-    if (nightmare && TweakForUnit(shared_id) != NoTweak) out.ai = NightmareAIAmount(ai_humans);
+    if (ai_enabled && TweakForUnit(shared_id) != NoTweak) out.ai = HumanAIAmount(ai_humans);
     return out;
 }
 
 // Legacy callers retain the original unweighted participant model.
-inline Factors ForPlayers(int participants, bool boss, int strength, bool stats, bool nightmare,
+inline Factors ForPlayers(int participants, bool boss, int strength, bool stats, bool ai_enabled,
                           uint32_t shared_id = kUnspecifiedUnit) {
-    return ForExtraPlayers(ExtraPlayers(participants), participants, boss, strength, stats, nightmare, shared_id);
+    return ForExtraPlayers(ExtraPlayers(participants), participants, boss, strength, stats, ai_enabled, shared_id);
 }
 
-inline Factors ForParty(int humans, int bots, bool boss, int strength, bool stats, bool nightmare,
+inline Factors ForParty(int humans, int bots, bool boss, int strength, bool stats, bool ai_enabled,
                         uint32_t shared_id = kUnspecifiedUnit) {
-    return ForExtraPlayers(ExtraPlayersForParty(humans, bots), humans, boss, strength, stats, nightmare, shared_id);
+    return ForExtraPlayers(ExtraPlayersForParty(humans, bots), humans, boss, strength, stats, ai_enabled, shared_id);
 }
 
 // Counts grow eagerly, then logarithmically. Unlike stat scaling, another

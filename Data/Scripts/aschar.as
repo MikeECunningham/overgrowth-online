@@ -209,6 +209,9 @@ float p_ear_size;
 float campaign_vitality_mult = 1.0f;
 float campaign_damage_mult = 1.0f;
 float campaign_armor_mult = 1.0f;
+int campaign_armor_regions = 0;  // generated physical gear coverage, replicated by host
+int campaign_authored_armor_regions = -1;  // positive results cached per actor/reset
+float campaign_authored_armor_check_time = -1.0f;
 float campaign_ai_bonus = 0.0f;
 int campaign_ai_tweak = 0;  // 0: authored AI, 1/2/3: one small offensive variation
 bool campaign_authored_valid = false;
@@ -1056,7 +1059,13 @@ void ParryItem(int id) {
     vec3 item_pos = io.GetPhysicsPosition();
 
     vec3 char_to_item = io.GetPhysicsPosition() - this_mo.position;
-    vec3 dir_char_to_item = normalize(char_to_item);
+    // A swept blade can cross the character's center exactly. Keep the block
+    // direction finite even when its center coincides with the body origin.
+    vec3 dir_char_to_item = char_to_item;
+    if(length_squared(dir_char_to_item) < 0.000001f) dir_char_to_item = io.GetLinearVelocity() * -1.0f;
+    if(length_squared(dir_char_to_item) < 0.000001f) dir_char_to_item = this_mo.GetFacing();
+    if(length_squared(dir_char_to_item) < 0.000001f) dir_char_to_item = vec3(0,0,1);
+    dir_char_to_item = normalize(dir_char_to_item);
     vec3 vel = io.GetLinearVelocity();
     vel -= 1.2f * dot(vel, dir_char_to_item) * dir_char_to_item;
     // io.SetLinearVelocity(char_to_item * 5.0f);
@@ -1172,6 +1181,9 @@ int CanPlayDialogue() {
 }
 
 void HitByItem(string material, vec3 point, int id, int type) {
+    // Native thrown collisions ask before stabbing/sticking. Keep direct and
+    // replicated impact callbacks consistent with that same actual hit point.
+    if(!Online_IsClient() && CampaignArmorDeflectItem(id, point)) return;
     // Get force of object movement
     ItemObject@ io = ReadItemID(id);
     vec3 lin_vel = io.GetLinearVelocity();
@@ -5688,6 +5700,81 @@ void TakeSharpDamage(float sharp_damage, vec3 pos, int attacker_id, bool allow_h
     }
 }
 
+// Coverage follows body regions, not an invisible global defense multiplier.
+// Recognized authored and added pieces use current-pose body capsules. The
+// legacy host option restores whole-body protection, not mesh-exact collision.
+void CampaignArmorNearest(const vec3 &in point, const vec3 &in a, const vec3 &in b,
+                          float radius, int region, float &inout best, int &inout selected) {
+    vec3 ab = b - a;
+    float len2 = dot(ab, ab);
+    float t = len2 > 0.000001f ? min(1.0f, max(0.0f, dot(point - a, ab) / len2)) : 0.0f;
+    float score = distance_squared(point, a + ab * t) / (radius * radius);
+    if(score < best) { best = score; selected = region; }
+}
+
+bool CampaignArmorProtectsAt(const vec3 &in point) {
+    // Zero is retried: a late join may receive its authored attachments later.
+    if(campaign_authored_armor_regions <= 0) campaign_authored_armor_regions = Online_AuthoredArmorRegions(this_mo.GetID());
+    if(!GetConfigValueBool("armor_localized")) return g_wearing_metal_armor || campaign_armor_regions != 0;
+    if(g_wearing_metal_armor && campaign_authored_armor_regions == 0) return true;
+    int armor_regions = campaign_armor_regions | max(0, campaign_authored_armor_regions);
+    if(armor_regions == 0) return false;
+    float scale = max(0.1f, this_mo.rigged_object().GetCharScale());
+    float best = 1.0f;
+    int region = 0;
+    vec3 head = this_mo.rigged_object().GetAvgIKChainPos("head");
+    vec3 torso = this_mo.rigged_object().GetAvgIKChainPos("torso");
+    CampaignArmorNearest(point, head, head, 0.25f * scale, 4, best, region);
+    int side = dot(point - torso, this_mo.GetFacing()) >= 0 ? 1 : 2;
+    CampaignArmorNearest(point, this_mo.rigged_object().GetIKChainPos("torso", 0),
+        this_mo.rigged_object().GetIKChainPos("torso", 1), 0.28f * scale, side, best, region);
+    CampaignArmorNearest(point, this_mo.rigged_object().GetIKChainPos("leftarm", 0),
+        this_mo.rigged_object().GetIKChainPos("leftarm", 1), 0.15f * scale, 8, best, region);
+    CampaignArmorNearest(point, this_mo.rigged_object().GetIKChainPos("rightarm", 0),
+        this_mo.rigged_object().GetIKChainPos("rightarm", 1), 0.15f * scale, 16, best, region);
+    vec3 left_shoulder = this_mo.rigged_object().GetIKChainPos("leftarm", 2);
+    vec3 right_shoulder = this_mo.rigged_object().GetIKChainPos("rightarm", 2);
+    CampaignArmorNearest(point, left_shoulder, left_shoulder, 0.19f * scale, 32, best, region);
+    CampaignArmorNearest(point, right_shoulder, right_shoulder, 0.19f * scale, 64, best, region);
+    vec3 left_thigh = this_mo.rigged_object().GetIKChainPos("left_leg", 2);
+    vec3 right_thigh = this_mo.rigged_object().GetIKChainPos("right_leg", 2);
+    CampaignArmorNearest(point, left_thigh, left_thigh, 0.21f * scale, 128, best, region);
+    CampaignArmorNearest(point, right_thigh, right_thigh, 0.21f * scale, 256, best, region);
+    return (armor_regions & region) != 0;
+}
+
+void CampaignArmorParryItem(int id, const vec3 &in point) {
+    HandleAIEvent(_damaged);
+    MakeMetalSparks(point);
+    PlaySoundGroup("Data/Sounds/weapon_foley/impact/weapon_metal_hit_metal_strong.xml", point, _sound_priority_high);
+    if(this_mo.network_proxy) {
+        // The host owns the thrown item, while this human's controller owns
+        // their animation. Reflect the blade without replacing their state.
+        ItemObject@ item = ReadItemID(id);
+        item.SetLinearVelocity(this_mo.velocity);
+        item.SetSafe();
+        item.SetAngularVelocity(vec3(RangedRandomFloat(-1,1),RangedRandomFloat(-1,1),RangedRandomFloat(-1,1))*20.0f);
+    } else {
+        // Proxy actors do not run the regular update that expires these lights.
+        int flash_obj_id = CreateObject("Data/Objects/default_light.xml", true);
+        Object@ obj = ReadObjectFromID(flash_obj_id);
+        flash_obj_ids.push_back(flash_obj_id);
+        obj.SetTranslation(point);
+        obj.SetTint(vec3(0.5));
+        ParryItem(id);
+    }
+}
+
+// Optional native callback, evaluated before a thrown blade cuts or embeds.
+// Legacy mode retains the game's original whole-body proximity parry.
+bool CampaignArmorDeflectItem(int id, const vec3 &in point) {
+    if(!GetConfigValueBool("armor_localized") || !ItemExists(id)) return false;
+    ItemObject@ item = ReadItemID(id);
+    if(item.last_held_char_id_ == this_mo.GetID() || !CampaignArmorProtectsAt(point)) return false;
+    CampaignArmorParryItem(id, point);
+    return true;
+}
+
 void MakeMetalSparks(vec3 pos) {
     int num_sparks = rand() % 20;
 
@@ -5703,6 +5790,7 @@ void MakeMetalSparks(vec3 pos) {
 }
 
 int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float attack_damage_mult, float attack_knockback_mult) {
+    const bool armor_at_hit = CampaignArmorProtectsAt(pos);
     bool was_unaware = (IsUnaware() == 1);
 
     if(!situation.KnowsAbout(attacker_id) && species == _wolf) {
@@ -5807,7 +5895,7 @@ int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float a
     }
 
     // Apply damage to passive block health
-    float block_damage = attack_getter2.GetBlockDamage() * max(1.0, p_damage_multiplier) * max(1.0, attack_damage_mult) / campaign_armor_mult;
+    float block_damage = attack_getter2.GetBlockDamage() * max(1.0, p_damage_multiplier) * max(1.0, attack_damage_mult);
     block_health -= block_damage;
 
     if(char.GetIntVar("species") == _dog && (species != _dog && species != _wolf)) {
@@ -5853,9 +5941,9 @@ int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float a
 
     if(species != _wolf || attacker_is_wolf == 1) {
         if((startled && !this_mo.controlled && species != _dog) ||
-                (state == _attack_state && (!blockable_weapon_attack || (!has_blocking_weapon && !g_wearing_metal_armor)) && species != _dog && RangedRandomFloat(0.0, 0.99) < defender_difficulty) ||
+                (state == _attack_state && (!blockable_weapon_attack || (!has_blocking_weapon && !armor_at_hit)) && species != _dog && RangedRandomFloat(0.0, 0.99) < defender_difficulty) ||
                 (dot(dir, this_mo.GetFacing()) > angle_tolerance && species != _dog) ||
-                (sharp_damage > 0.0f && (!blockable_weapon_attack || (!has_blocking_weapon && !g_wearing_metal_armor)))) {
+                (sharp_damage > 0.0f && (!blockable_weapon_attack || (!has_blocking_weapon && !armor_at_hit)))) {
             can_gameplay_passive_block = false;
         }
     }
@@ -5903,7 +5991,7 @@ int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float a
         }
 
         if(sharp_damage > 0.0f) {
-            if(g_wearing_metal_armor && attacking_with_knife) {
+            if(armor_at_hit && attacking_with_knife) {
                 if(rand() % 2 == 0) {
                     PlaySoundGroup("Data/Sounds/weapon_foley/impact/weapon_metal_hit_metal.xml", pos, _sound_priority_high);
                     MakeMetalSparks(pos);
@@ -5915,7 +6003,7 @@ int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float a
                 }
 
                 TakeSharpDamage(sharp_damage * attack_damage_mult * 0.5, pos, attacker_id, true);
-            } else if(g_wearing_metal_armor && !attacking_with_knife) {
+            } else if(armor_at_hit && !attacking_with_knife) {
                 PlaySoundGroup("Data/Sounds/weapon_foley/cut/flesh_hit.xml", pos, _sound_priority_high);
                 level.SendMessage("cut " + this_mo.getID() + " " + attacker_id);
 
@@ -6062,7 +6150,7 @@ int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float a
             PlaySoundGroup("Data/Sounds/hit/hit_normal.xml", pos, sound_priority);
         }
 
-        if(g_wearing_metal_armor && rand() % 3 != 0) {
+        if(armor_at_hit && rand() % 3 != 0) {
             PlaySoundGroup("Data/Sounds/weapon_foley/impact/weapon_staff_hit_metal_strong.xml", pos, sound_priority);
         }
 
@@ -6080,7 +6168,7 @@ int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float a
             }
         }
 
-        if((weapon_slots[primary_weapon_slot] != -1 || g_wearing_metal_armor) && can_passive_block) {
+        if((weapon_slots[primary_weapon_slot] != -1 || armor_at_hit) && can_passive_block) {
             level.SendMessage("passive_blocked " + this_mo.getID() + " " + attacker_id);
 
             if(weapon_slots[primary_weapon_slot] != -1) {
@@ -6116,7 +6204,7 @@ int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float a
             }
         }
 
-        if(can_passive_block && g_wearing_metal_armor && weapon_slots[primary_weapon_slot] == -1) {
+        if(can_passive_block && armor_at_hit && weapon_slots[primary_weapon_slot] == -1) {
             PlaySoundGroup("Data/Sounds/weapon_foley/impact/weapon_metal_hit_metal_strong.xml", pos, sound_priority);
             MakeMetalSparks(pos);
             int flash_obj_id = CreateObject("Data/Objects/default_light.xml", true);
@@ -10694,6 +10782,12 @@ bool CanGrabWeaponFromBody(ItemObject@ item_obj) {
 }
 
 void HandlePickUp() {
+    // Authored partial armor also catches thrown blades before its first melee
+    // hit. Retry missing attachments at a bounded rate for late joiners.
+    if(campaign_authored_armor_regions <= 0 && time >= campaign_authored_armor_check_time) {
+        campaign_authored_armor_regions = Online_AuthoredArmorRegions(this_mo.GetID());
+        campaign_authored_armor_check_time = time + 1.0f;
+    }
     if((WantsToDropItem() && throw_knife_layer_id == -1) || knocked_out != _awake) {
         DropWeapon();
     }
@@ -10721,24 +10815,15 @@ void HandlePickUp() {
             }
         }
 
-        if(g_wearing_metal_armor) {
+        if(g_wearing_metal_armor || campaign_armor_regions != 0 || campaign_authored_armor_regions > 0) {
             int nearest_thrown_id = GetNearestThrownWeapon(this_mo.position, 2.0f);
 
             if(nearest_thrown_id != -1) {
                 ItemObject@ io = ReadItemID(nearest_thrown_id);
                 vec3 vel = io.GetLinearVelocity();
 
-                if(io.last_held_char_id_ != this_mo.GetID() && length_squared(vel) > 5.0f) {
-                    HandleAIEvent(_damaged);
-                    vec3 point = io.GetPhysicsPosition();
-                    MakeMetalSparks(point);
-                    PlaySoundGroup("Data/Sounds/weapon_foley/impact/weapon_metal_hit_metal_strong.xml", point, _sound_priority_high);
-                    int flash_obj_id = CreateObject("Data/Objects/default_light.xml", true);
-                    Object@ obj = ReadObjectFromID(flash_obj_id);
-                    flash_obj_ids.push_back(flash_obj_id);
-                    obj.SetTranslation(point);
-                    obj.SetTint(vec3(0.5));
-                    ParryItem(nearest_thrown_id);
+                if(io.last_held_char_id_ != this_mo.GetID() && length_squared(vel) > 5.0f && CampaignArmorProtectsAt(io.GetPhysicsPosition())) {
+                    CampaignArmorParryItem(nearest_thrown_id, io.GetPhysicsPosition());
                 }
             }
         }
@@ -15531,7 +15616,7 @@ void CampaignApplyAuthoredScaling() {
     if(!campaign_authored_valid) CampaignRememberAuthoredParameters();
     p_damage_multiplier = campaign_authored_resistance / campaign_vitality_mult;
     p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult;
-    // Restore all authored values first. Nightmare no longer stacks defense,
+    // Restore all authored values first. AI scaling does not stack defense,
     // counters, catching and faster animations across the entire encounter.
     p_aggression = campaign_authored_aggression;
     p_ground_aggression = campaign_authored_ground_aggression;
@@ -15559,9 +15644,9 @@ void CampaignApplyAuthoredScaling() {
 }
 
 void SetCampaignScaling(float vitality, float damage, float armor, float ai) {
-    campaign_vitality_mult = max(1.0f, min(6.0f, vitality));
-    campaign_damage_mult = max(1.0f, min(2.0f, damage));
-    campaign_armor_mult = max(1.0f, min(2.0f, armor));
+    campaign_vitality_mult = max(0.75f, min(6.0f, vitality));
+    campaign_damage_mult = max(0.9625f, min(2.0f, damage));
+    campaign_armor_mult = 1.0f;  // defense follows actual equipped regions
     campaign_ai_bonus = max(0.0f, min(0.03f, ai));
     CampaignApplyAuthoredScaling();
 }

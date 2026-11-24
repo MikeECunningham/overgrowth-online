@@ -1,62 +1,75 @@
-# Mode challenge settings
+# Difficulty modes and progression
 
-Select a mode in the lobby to populate **Mode settings**. The **Enemy difficulty
-increases** section makes opponents tougher over time or after the listed events. The host chooses these
-rules; other clients see the same values. Each mode remembers its choices during
-the application's session. Arena options and campaign party scaling live here;
-Hosting options contains session permissions and Start/Leave. Hover a lobby
-control or focus it with a controller to read its description.
+Choose **Traditional** or **Scaling** at the top of the lobby, then open
+**Difficulty** to configure that mode. The same controls are under
+**Settings → Game → Difficulty** during play. Traditional uses the original
+Casual, Hardcore and Expert presets. Scaling keeps the selected preset as its
+base and enables optional party, physical equipment, AI and progression factors.
+The old Nightmare choice is replaced by the independent **AI scaling** checkbox.
 
-All progression options start **Off**. Each driver offers Gentle, Standard and
-Brisk, worth half, normal and one-and-a-half the listed Standard rate:
+The host owns shared difficulty choices. They are replicated to late joiners
+and preserved through a host handoff. Fresh installations start in Traditional;
+existing enabled party/Nightmare settings migrate to Scaling. Scaling also
+uses the private local simulation when a solo game has no multiplayer lobby.
+No network listener is opened for that private session.
 
-| Driver | Standard change | Available in |
-| --- | --- | --- |
-| Active time | +5% durability per five active minutes, continuously | Every play mode |
-| Level / match completion | +8% per completed chapter or Arena match | Campaign and Arena |
-| Encounter win | +4% per reference-side encounter victory | Every play mode |
-| Player defeats | +5% per human teammate down or death | Every play mode |
+## Progression rules
 
-The original story player anchors the reference side. In Arena and other modes,
-its current effective team determines which NPCs are opponents and which round
-wins count. Promoting a decision host does not change this reference.
+All optional progression drivers start Off. Gentle is half the Standard rate;
+Brisk is one and a half times Standard. Time counts active gameplay and excludes
+loading, ready screens, shared pauses, editor sessions and cinematics.
 
-**Adaptive win difficulty** disables the separate player-defeat pressure driver. Each human defeat
-in that encounter reduces its eventual win award by 25%, floored at zero. At the
-Standard win rate, zero, one, two, three, and four deaths give +4%, +3%, +2%, +1%,
-and +0%. Failed attempts at the same encounter retain their deaths. A knockout
-followed by death counts once; recovery and a later defeat count again. Bot
-losses do not advance the player-defeat driver. Turning encounter wins Off also
-turns adaptive wins Off.
+| Rule | Standard behavior |
+| --- | --- |
+| Active time | +5% enemy durability per five active minutes |
+| Level / match completion | +8% per completed campaign level or Arena match |
+| Performance: On win | +4% per encounter victory |
+| Performance: On loss | +5% per complete human-party wipe |
+| Performance: Forced-50 | +8% per victory; each wipe eases that encounter's retries by 2.5%, up to 25% |
 
-All enabled drivers strengthen enemy NPCs; player defeats never buff players.
-Adaptive wins reduce only the pending victory award, never already accumulated
-pressure. Awards are counted once and do not change retroactively. Completed encounters
-cannot farm repeated awards by retrying. Time excludes loading, shared pauses,
-editor/build sessions, ready screens and cinematics; opening a private menu
-while the world continues playing still advances it.
+A loss means every human on the reference side is down. Friendly bots do not
+prevent it, and individual human knockouts do not count as separate losses.
+An attempt is rearmed after the human party recovers. Repeated dead frames and
+knockout-to-death transitions cannot count another wipe.
 
-Progression primarily increases hostile NPC durability, with damage and passive
-armor receiving 15% and 10% as much growth. It adds no AI bonuses or human stat
-advantages. Friendly NPCs, human players and allied lobby bots retain their own stats.
-Enemy lobby bots receive progression stats; their party-size and AI bonuses
-remain disabled. Arena's mode-created NPC opponents can also scale. A pure human-versus-human match
-has no NPC stats for these rules to change.
+**Forced-50** replaces the old adaptive option. Its retry relief belongs only
+to that unfinished encounter, applies to its subsequent attempts, and clears
+when the encounter is won. It can make an initial encounter easier even before
+any run pressure has accumulated. The name describes the feedback option;
+its asymmetric adjustments do not guarantee a measured 50% victory rate.
 
-Challenge pressure caps at +150% durability, with combined party/progression
-multipliers capped at 6× durability, 2× damage and 2× passive armor. Existing
-injuries and knockout shields are preserved. Enemy additions remain the capped
-campaign party-size system; these progression drivers do not flood the map with
-new actors or replace Arena's population rules.
+General run pressure survives retries and level transitions, and caps at +150%.
+It primarily changes enemy durability, with damage growing at 15% of that rate.
+Physical armor and extra-enemy weapons use their own delayed equipment curves;
+there is no numerical armor/passive-block multiplier. The optional AI factor is
+separate. Human stats and allied bots retain their base values.
 
-The main campaign uses authored defeat objectives; Arena uses round results and
-completed matches. Hosting a campaign map as sandbox uses sandbox combat groups
-instead of importing the map's campaign-wide objective. Challenge campaigns use their combat/objective outcomes.
-Other modes detect a combat group and count victory when its opponents are down
-and a human on the reference side remains up. This fallback has less authored
-encounter structure than the campaign and Arena integrations.
+The original story player anchors the reference side. In other modes its
+current effective team determines the relevant opponents. Campaign objectives
+and Arena results provide authored encounters; modes without those events use
+combat groups. Only future events use changed settings: enabling a driver does
+not reprice old wins or losses, and retries cannot farm a credited victory.
+Starting a fresh game from the lobby or adopting a fresh solo run resets the
+ledger. Host snapshots carry the current run and retry relief to other clients.
 
-Progress and adaptive deaths survive retries and chapter transitions. Starting
-a new game from the lobby resets the run; mode preferences remain. Host snapshots
-carry the settings and progress to late clients and through a lobby handoff.
-Every participant needs the same updated release and native protocol.
+## Host readout
+
+**Settings → Game → Show difficulty readout** controls the larger Cella/edosz
+readout in the designated host's view. It follows that player's screen
+assignment and remains hidden in unscaled contexts, regardless of the checkbox.
+Cinematics, loading and the host's personal menu hide it too.
+
+Current encounters use installed actor modifiers and actual equipment and
+reinforcements. The next forecast assumes the present party and the pending
+victory result; it does not assume extra elapsed time, losses or level awards.
+An unknown upcoming lineup is labeled as an estimate.
+
+**Threat ~2.0x** estimates twice the enemy burden of that same authored encounter
+at the selected preset without scaling. It multiplies the enemy-count ratio by
+the average durability-times-damage multiplier. Armor coverage, weapon matchups,
+AI, terrain, player skill and the additional strength of allies are outside this
+estimate. The configured wave includes its defeated members; it is not a
+remaining-enemy counter. Actual equipment is reported separately.
+
+All participants need the matching prerelease and protocol. The new progression
+and equipment replication are incompatible with older clients.

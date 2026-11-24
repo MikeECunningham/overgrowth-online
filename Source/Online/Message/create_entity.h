@@ -42,9 +42,10 @@ class CreateEntity : public OnlineMessageBase {
     string path;
     vec3 pos;
     ObjectID entity_object_id;
+    bool stripped_npc = false;
 
    public:
-    CreateEntity(const string& path, const vec3& pos, ObjectID entity_object_id);
+    CreateEntity(const string& path, const vec3& pos, ObjectID entity_object_id, bool stripped_npc = false);
 
     static binn* Serialize(void* object);
     static void Deserialize(void* object, binn* l);

@@ -6008,6 +6008,10 @@ bool AS_Online_OwnPlayerCharacter(int avatar) {
     return Online::Instance()->OwnPlayerCharacter(avatar);
 }
 
+int AS_Online_AuthoredArmorRegions(int avatar) {
+    return Online::Instance()->AuthoredArmorRegions(avatar);
+}
+
 // Our own character choice and colours (mp_character, mp_fur, mp_cloth) again
 void AS_Online_RestoreOwnCharacter() {
     Online::Instance()->RestoreOwnCharacter();
@@ -6252,6 +6256,7 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("void Online_SpectatePrevious()", asFUNCTION(AS_Online_SpectatePrevious), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_RequestCheckpointRestart(int avatar = -1)", asFUNCTION(AS_Online_RequestCheckpointRestart), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_OwnPlayerCharacter(int avatar)", asFUNCTION(AS_Online_OwnPlayerCharacter), asCALL_CDECL);
+    context->RegisterGlobalFunction("int Online_AuthoredArmorRegions(int avatar)", asFUNCTION(AS_Online_AuthoredArmorRegions), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_RestoreOwnCharacter()", asFUNCTION(AS_Online_RestoreOwnCharacter), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_PlaceAvatar(int char_id, const vec3 &in pos, const vec3 &in facing)", asFUNCTION(AS_Online_PlaceAvatar), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_IsPlayerCharacter(int char_id)", asFUNCTION(AS_Online_IsPlayerCharacter), asCALL_CDECL);
@@ -6787,7 +6792,8 @@ uint32_t AS_GetSettingsRevision() {
     static std::string previous_match_settings;
     std::string current;
     for (const char* key : {"game_difficulty", "global_time_scale_mult", "tutorials", "auto_ledge_grab",
-                            "campaign_mp_scaling", "campaign_mp_nightmare"}) {
+                            "campaign_mp_scaling", "campaign_mp_nightmare", "difficulty_scaling", "campaign_ai_scaling",
+                            "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized"}) {
         current += config[key].str(); current += '\n';
     }
     if (current != previous_match_settings) {

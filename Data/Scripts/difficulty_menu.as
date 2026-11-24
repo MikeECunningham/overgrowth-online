@@ -33,35 +33,30 @@ array<LevelInfo@> play_menu = {};
 array<array<string> > difficulty_description = {
 {"Experience the story of Overgrowth", " ", "Reduced enemy difficulty, 80% speed, countering attacks is easier"},
 {"Fight like a ninja rabbit", " ", "Normal enemy difficulty, 100% speed"},
-{"Prove your mastery of combat", " ", "Maximum enemy difficulty, 100% speed, countering attacks is harder"},
-{"Face the campaign as a coordinated party", " ", "Expert settings, with rare, small AI variations in larger parties"}
+{"Prove your mastery of combat", " ", "Maximum enemy difficulty, 100% speed, countering attacks is harder"}
 };
 
 array<string> difficulty_logos = {
     "Textures/Thumbnails/difficulty/casual.png",
     "Textures/Thumbnails/difficulty/hardcore.png",
-    "Textures/Thumbnails/difficulty/expert.png",
     "Textures/Thumbnails/difficulty/expert.png"
 };
 
 array<vec4> difficulty_colors = {
     HexColor("#49EA86"),
     HexColor("#FFD53D"),
-    HexColor("#C00000"),
-    HexColor("#A765D9")
+    HexColor("#C00000")
 };
 
 array<bool> tutorials_preset_values = {
     true,
     true,
-    false,
     false
 };
 
 array<bool> ledge_grab_preset_values = {
     true,
     true,
-    false,
     false
 };
 
@@ -76,7 +71,6 @@ int current_difficulty_description = -1;
 int current_difficulty = -1;
 bool ledge_grab = false;
 bool tutorials = false;
-bool campaign_scaling = true;
 
 bool settings_changed = false;
 
@@ -97,7 +91,6 @@ void Initialize() {
         // First-time setup
         ledge_grab = GetConfigValueBool("auto_ledge_grab");
         tutorials = GetConfigValueBool("tutorials");
-        campaign_scaling = GetConfigValueBool("campaign_mp_scaling");
         current_difficulty_value = GetConfigValueInt("difficulty_preset_value");
         if(current_difficulty_value != 0 || Online_IsActive() || GetConfigValueBool("campaign_mp_nightmare")) {
             array<string> presets = GetConfigValueOptions("difficulty_preset");
@@ -152,6 +145,13 @@ void BuildMain() {
 
     subtitle_divider.append(IMText("Note: You can change the difficulty at any point." , subtitle_font));
 
+    IMDivider mode_options("difficulty_mode_options", DOVertical);
+    AddDropDown("Difficulty mode", mode_options, DropdownConfiguration(DifficultyModeConfiguration()));
+    FontSetup mode_font("Cella", 30, HexColor("#CCCCCC"), true);
+    mode_options.append(IMText("Scaling factors are configured together under Difficulty in the lobby or Game settings.", mode_font));
+    upperMainDiv.appendSpacer(25.0f);
+    upperMainDiv.append(mode_options);
+
     upperMainDiv.append(subtitle_container);
 
 	CreateDifficultyButtons(mainDiv, play_menu, "play_menu", 2000.0f, 300.0f);
@@ -179,20 +179,6 @@ void BuildMain() {
     upperMainDiv.append(mainDiv);
     upperMainDiv.append(description_container);
     upperMainDiv.append(checkbox_container);
-
-    IMDivider scaling_options("scaling_options", DOVertical);
-    AddCheckBox("Scale campaign encounters for party size", scaling_options, "");
-    if(!campaign_scaling) gui_elements[gui_elements.length() - 1].SwitchOption("");
-    scaling_options.appendSpacer(10.0f);
-    FontSetup scaling_font("Cella", 28, HexColor("#CCCCCC"), true);
-    scaling_options.append(IMText("Adjust enemy stats and add limited reinforcements for local and online parties.", scaling_font));
-    scaling_options.append(IMText("An extra human counts as four friendly bots for stats, or two for enemy numbers.", scaling_font));
-    scaling_options.append(IMText("Extra enemies arrive early; number growth tapers off in larger parties.", scaling_font));
-    scaling_options.append(IMText("Solo encounters stay unchanged. Nightmare adds rare, small AI variations from four humans.", scaling_font));
-    scaling_options.append(IMText("Existing reinforcements stay in the fight. Enemies keep damage already taken.", scaling_font));
-    if(!CanEditDifficultySettings()) scaling_options.append(IMText("The host controls these match settings.", scaling_font));
-    upperMainDiv.appendSpacer(30.0f);
-    upperMainDiv.append(scaling_options);
 
     imGUI.getMain().setElement( @upperMainDiv );
 
@@ -245,7 +231,7 @@ void CreateDifficultyButtons(IMDivider@ menu_holder, array<LevelInfo@>@ _levels,
     @button_row = @row_container;
 
     for(uint i = 0; i < levels.size(); i++){
-        AddButton(row_container, levels[i], i, _menu_width / 4, _menu_height);
+        AddButton(row_container, levels[i], i, _menu_width / max(1, int(levels.length())), _menu_height);
     }
 
     menu_holder.append(menu_container);
@@ -349,6 +335,7 @@ void Dispose() {
 }
 
 bool CanGoBack() {
+    if(OptionMenuOpen()) { CloseAllOptionMenus(); return false; }
     return true;
 }
 
@@ -358,7 +345,9 @@ void Update() {
     while( imGUI.getMessageQueueSize() > 0 ) {
         IMMessage@ message = imGUI.getNextMessage();
         if(!CanEditDifficultySettings() && (message.name == "run_file" || message.name == "Continue" || message.name == "option_changed")) continue;
-        if( message.name == "run_file" ) {
+        if(message.name == "ui_element_clicked") { ToggleUIElement(message.getString(0)); }
+        else if(message.name == "close_all_open_menus") { CloseAllOptionMenus(); }
+        else if( message.name == "run_file" ) {
             settings_changed = true;
             current_difficulty = int(message.getInt(0));
 
@@ -387,7 +376,6 @@ void Update() {
             SetConfigValueInt("difficulty_preset_value", current_difficulty + 1);
             SetConfigValueBool("auto_ledge_grab", ledge_grab);
             SetConfigValueBool("tutorials", tutorials);
-            SetConfigValueBool("campaign_mp_scaling", campaign_scaling);
             this_ui.SendCallback( "back" );
         } else if( message.name == "option_changed" ) {
             if(!settings_changed && current_difficulty != -1)
@@ -397,8 +385,6 @@ void Update() {
                 ledge_grab = !ledge_grab;
             } else if(message.getString(0) == "Tutorials") {
                 tutorials = !tutorials;
-            } else if(message.getString(0) == "Scale campaign encounters for party size") {
-                campaign_scaling = !campaign_scaling;
             }
             for(uint i = 0; i < gui_elements.size(); i++){
                 if(gui_elements[i].name == message.getString(0)){

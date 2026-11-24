@@ -33,10 +33,15 @@ class LocalPlayerMenus {
     std::map<unsigned, std::unique_ptr<Menu>> menus_;
     std::vector<std::pair<unsigned, std::string>> pending_;
     bool last_pause_ = false;
+    // Arm on a close/retry, then inspect only a short period of normal play.
+    // Loading, cutscenes and explicit shared pauses defer the inspection.
+    std::map<unsigned, double> resume_checks_;
+    double next_resume_check_ms_ = 0.0;
 
     PlayerMenuUI::Context ContextFor(unsigned local_index) const;
     static void Callback(void* instance, const std::string& message);
     void Close(unsigned local_index);
     void ApplyCommands();
     void RefreshPause();
+    void UpdateResumeChecks();
 };

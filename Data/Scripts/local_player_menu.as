@@ -93,6 +93,12 @@ void BuildPlayerPauseMenu() {
     buttons.append(title);
     buttons.appendSpacer(25.0f);
 
+    const bool shared_session = (Online_IsActive() && !LobbyIsLocalOnly()) || GetLocalPlayerCount() > 1;
+    if(shared_session && world_paused) {
+        buttons.append(IMText("World paused", button_font_small));
+        buttons.appendSpacer(15.0f);
+    }
+
     const bool primary = LobbyCanManageLocal();
     const bool host = LobbyIsHost();
     AddButton("Continue", buttons, "null", button_background_diamond, false, 650.0f,
@@ -103,7 +109,7 @@ void BuildPlayerPauseMenu() {
         AddButton("Teams", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("Teams"));
     }
-    if(((Online_IsActive() && !LobbyIsLocalOnly()) || GetLocalPlayerCount() > 1) && LobbyCanPause()) {
+    if(shared_session && LobbyCanPause()) {
         AddButton(world_paused ? "Resume world" : "Pause world", buttons, "null", button_background_diamond,
                   false, 650.0f, 30.0f, mouseover_scale_button, IMMessage("toggle_world_pause"));
     }

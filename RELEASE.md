@@ -1,9 +1,18 @@
 # Publishing this fork
 
 This fork is published at <https://github.com/MikeECunningham/overgrowth-online>.
-The current version is **0.42.0-alpha.10**, a testing prerelease. See [VERSION](VERSION)
+The current version is **0.42.0-alpha.11**, a testing prerelease. See [VERSION](VERSION)
 for the authoritative version, [FRIENDS.md](FRIENDS.md) for building and playing,
 and [COMPILING.md](COMPILING.md) for dependency details.
+
+Alpha.11 adds unified Traditional/Scaling difficulty menus, physical armor and
+staged weapons for extra enemies, independent AI scaling, and performance rules
+based on complete human-party wipes. Forced-50 replaces adaptive scaling and
+eases retries of the current encounter. The host readout uses larger game fonts
+and menu artwork. Host Retry resumes the new attempt; menu recovery diagnostics
+cover empty animation poses. Protocol **12** carries the new progression ledger,
+armor coverage and exact armor attachments; distribute matching builds and Data
+files to every participant.
 
 ## Versioning
 
@@ -28,7 +37,7 @@ maintained local-multiplayer protocol revision.
   compatibility is determined by the fork version and protocol, not that ID.
 
 Once a release commit has passed its checks, create its corresponding version
-tag, such as `v0.42.0-alpha.10`. Create a GitHub **prerelease** from that tag and
+tag, such as `v0.42.0-alpha.11`. Create a GitHub **prerelease** from that tag and
 attach the tested artifacts.
 Do not move a published tag to different code; publish another version instead.
 
@@ -69,6 +78,8 @@ clean-machine installation and Steam-specific behavior are separate checks.
    python3 Tools/ogmp.py run newcampaign_cinematic_retry
    python3 Tools/ogmp.py run lobby_bots roster_bots_arena bot_migration
    python3 Tools/ogmp.py run lobby_role_ui connection_cancel
+   python3 Tools/ogmp.py run difficulty_ui difficulty_hud mode_settings_lobby mode_challenge
+   python3 Tools/ogmp.py run performance_solo campaign_equipment campaign_menu_resume
    ```
 
    Close a normally running game before using the test runner. Repeat relevant

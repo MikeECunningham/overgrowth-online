@@ -26,7 +26,8 @@ from ogmp.scenarios import SCENARIOS, SUITES, Context  # noqa: E402
 KNOWN_FATAL = ("Got invalid mod id",
                # VFormatString truncated a string (common.h:36), once at level load in online
                # sessions since Phase 1; harmless (a cut label), source not pinned down yet
-               'Internal/common.h:  36: Failed assert "false"')
+               'Internal/common.h:  36: Failed assert "false"',
+               'common.h:  36: Failed assert "false"')
 
 
 def run_one(name, out_root):

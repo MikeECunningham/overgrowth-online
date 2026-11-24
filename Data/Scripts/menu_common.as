@@ -723,6 +723,19 @@ class DropdownConfigurationBaseClass{
     void SetCurrentValue(IMText@ label){}
     void SetConfigValue(string value){}
 }
+class DifficultyModeConfiguration : DropdownConfigurationBaseClass {
+    DifficultyModeConfiguration() {
+        config_name = "difficulty_scaling";
+        @display_values = array<string>();
+        display_values.insertLast("Traditional");
+        display_values.insertLast("Scaling");
+    }
+    void SetCurrentValue(IMText@ label) {
+        current_option_index = GetConfigValueBool(config_name) ? 1 : 0;
+        label.setText(display_values[current_option_index]);
+    }
+    void SetConfigValue(string value) { SetConfigValueBool(config_name, value == "Scaling"); }
+}
 class DropdownConfigurationStringArray : DropdownConfigurationBaseClass{
     array<string>@ config_values;
     DropdownConfigurationStringArray(array<string> _config_values, array<string> _display_values){

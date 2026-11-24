@@ -225,6 +225,8 @@ extern std::string g_launch_lobby;
 struct CampaignDifficultyState;
 struct CampaignFactionState;
 struct ChallengeRuntimeState;
+struct DifficultyHUDState;
+namespace Json { class Value; }
 
 class Online {
    public:
@@ -388,6 +390,7 @@ class Online {
     bool IsActive() const;
     bool IsHosting() const;
     bool IsAwaitingShutdown() const;
+    bool CanAdoptLocalSession() const;
     uint32_t GetPlayerCount();
 
     void StartMultiplayer(MultiplayerMode multiplayerMode);
@@ -721,7 +724,13 @@ class Online {
     void ResetModeChallenge();
     void ChallengeSceneChanged();
     void UpdateModeChallenge(SceneGraph* graph);
+    bool DifficultyScalingEnabled() const;
+    float ModeChallengeGeneralPressure() const;
     float ModeChallengePressure() const;
+    // Cached read-only presentation data; no gameplay state is changed.
+    std::string DifficultyHUDSnapshot();
+    void DescribeChallengeHUD(Json::Value& result) const;
+    std::shared_ptr<DifficultyHUDState> difficulty_hud_state;
     ObjectID ChallengeReferenceAvatar() const;
     void ChallengeEncounterBegin(const std::string& key);
     void ChallengeEncounterWin(const std::string& key);
@@ -729,7 +738,8 @@ class Online {
     bool CampaignCharacterOnMainTeam(ObjectID avatar);
     std::string CampaignWaitingText();
     bool CampaignEncounterDefeated(ObjectID hotspot, int goal) const;
-    void ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai);
+    void ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions = -1);
+    int AuthoredArmorRegions(ObjectID actor) const;
     bool CoopCampaign();                            // the level belongs to a linear (story) campaign
     vector<ObjectID> PlayerAvatarIDs();             // every player's character here
     void CoopUpdate(SceneGraph* sg);                // host: all main-team humans down for 5s -> checkpoint restart

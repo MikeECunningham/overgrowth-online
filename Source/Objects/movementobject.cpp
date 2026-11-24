@@ -179,6 +179,19 @@ int MovementObject::AboutToBeHitByItem(int id) {
     return return_val_int;
 }
 
+bool MovementObject::CampaignArmorDeflectItem(int id, const vec3& point) {
+    if (!as_context) return false;
+    bool deflected = false;
+    ASArg result;
+    result.type = _as_bool;
+    result.data = &deflected;
+    ASArglist args;
+    args.Add(id);
+    args.AddObject((void*)&point);
+    // Optional: custom character scripts retain their existing collision path.
+    return as_context->CallScriptFunction(as_funcs.campaign_armor_deflect_item, &args, &result) && deflected;
+}
+
 void MovementObject::PreDrawFrame(float curr_game_time) {
     Online* online = Online::Instance();
 
@@ -4467,6 +4480,7 @@ bool MovementObject::Initialize() {
     as_funcs.pre_draw_camera_no_cull = as_context->RegisterExpectedFunction("void PreDrawCameraNoCull(float curr_game_time)", false);
     as_funcs.update_paused = as_context->RegisterExpectedFunction("void UpdatePaused()", true);
     as_funcs.about_to_be_hit_by_item = as_context->RegisterExpectedFunction("int AboutToBeHitByItem(int id)", true);
+    as_funcs.campaign_armor_deflect_item = as_context->RegisterExpectedFunction("bool CampaignArmorDeflectItem(int id, const vec3 &in point)", false);
     as_funcs.InputToEngine = as_context->RegisterExpectedFunction("uint InputToEngine(int input", false);
     as_funcs.attach_misc = as_context->RegisterExpectedFunction("void AttachMisc(int)", false);
     as_funcs.was_blocked = as_context->RegisterExpectedFunction("void WasBlocked()", false);

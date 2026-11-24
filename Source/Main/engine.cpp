@@ -37,6 +37,7 @@
 #include <GUI/widgetframework.h>
 #include <GUI/scriptable_ui.h>
 #include <GUI/local_player_menus.h>
+#include <GUI/difficulty_hud.h>
 #include <GUI/dimgui/dimgui.h>
 #include <GUI/dimgui/modmenu.h>
 #include <GUI/dimgui/imgui_impl_sdl_gl3.h>
@@ -559,6 +560,7 @@ Engine* Engine::instance_ = NULL;
 Engine::~Engine() = default;
 
 void Engine::Dispose() {
+    DifficultyHUD::Dispose();
     player_menus_.reset();
     ModLoading::Instance().DeRegisterCallback(this);
     ModLoading::Instance().Dispose();
@@ -4514,6 +4516,7 @@ static void DrawShaderNotice(Graphics* graphics) {
 
 // Draw the current frame
 void Engine::Draw() {
+    DifficultyHUD::BeginFrame();
     Graphics* graphics = Graphics::Instance();
     Keyboard& keyboard = Input::Instance()->getKeyboard();
 
@@ -4939,6 +4942,7 @@ void Engine::Draw() {
             CHECK_GL_ERROR();
             if (!view_override_ || view_override_gui_) {  // (the test bridge's fixed view: no dialogue boxes)
                 scenegraph_->level->Draw();
+                DifficultyHUD::Draw(*this);
                 if (player_menus_) player_menus_->Draw();
                 CHECK_GL_ERROR();
             }
@@ -5594,6 +5598,14 @@ void Engine::LoadConfigFile() {
         // If config file is found, then fill in missing values with the defaults
         Config old_config = config;
         config.Load(defaults_path, true);
+        // Preserve existing scaling choices when introducing the top-level mode.
+        if (!old_config.HasKey("difficulty_scaling")) {
+            config.GetRef("difficulty_scaling") =
+                (old_config.HasKey("campaign_mp_scaling") && old_config["campaign_mp_scaling"].toBool()) ||
+                (old_config.HasKey("campaign_mp_nightmare") && old_config["campaign_mp_nightmare"].toBool());
+        }
+        if (!old_config.HasKey("campaign_ai_scaling") && old_config.HasKey("campaign_mp_nightmare") &&
+            old_config["campaign_mp_nightmare"].toBool()) config.GetRef("campaign_ai_scaling") = true;
         if (old_config != config) {
             config.Save(config_path);
         }

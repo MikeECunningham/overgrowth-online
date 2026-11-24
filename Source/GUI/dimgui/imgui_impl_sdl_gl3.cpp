@@ -283,13 +283,13 @@ bool ImGui_ImplSdlGL3_Init(SDL_Window* window) {
     // Retain the editor's default font; game menus opt into their own faces.
     io.FontDefault = io.Fonts->AddFontDefault();
     g_MenuBodyFont = g_MenuHeadingFont = io.FontDefault;
-    const Path body = FindFilePath("Data/Fonts/OpenSans-Regular.ttf", kAnyPath, false);
+    const Path body = FindFilePath("Data/Fonts/Cella.ttf", kAnyPath, false);
     const Path heading = FindFilePath("Data/Fonts/edosz.ttf", kAnyPath, false);
     if (body.isValid()) {
-        if (ImFont* font = io.Fonts->AddFontFromFileTTF(body.GetFullPath(), 16.0f)) g_MenuBodyFont = font;
+        if (ImFont* font = io.Fonts->AddFontFromFileTTF(body.GetFullPath(), 22.0f)) g_MenuBodyFont = font;
     }
     if (heading.isValid()) {
-        if (ImFont* font = io.Fonts->AddFontFromFileTTF(heading.GetFullPath(), 22.0f)) g_MenuHeadingFont = font;
+        if (ImFont* font = io.Fonts->AddFontFromFileTTF(heading.GetFullPath(), 28.0f)) g_MenuHeadingFont = font;
     }
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     io.KeyMap[ImGuiKey_Tab] = KeyRemap(SDLK_TAB);  // Keyboard mapping. ImGui will use those indices to peek into the io.KeyDown[] array.

@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.10** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.11** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -44,9 +44,11 @@ and the remaining Steam friends/relay checks.
   with NPC faction affiliations and independent hostile wildcard teams. Friendly
   bots count toward scaling and spread their escorts across teammates.
 - Mode-specific challenge settings for active time, level/match progression, encounter wins,
-  player-defeat pressure and adaptive win rewards. See [Mode challenge settings](Docs/Markdown/Mode%20Challenge.md).
+  complete-party losses and Forced-50 retry relief. See [Mode challenge settings](Docs/Markdown/Mode%20Challenge.md).
+- A readable host-view difficulty readout shows encounter modifiers, reinforcements,
+  progression conditions and an estimated threat relative to the unscaled encounter.
 - Optional campaign party scaling with logarithmic same-species reinforcements, stronger bosses,
-  and a fourth **Nightmare** difficulty with rare, modest AI variations. See
+  physical armor, staged weapons for extra enemies, and optional gentle AI variations. See
   [Campaign difficulty](Docs/Markdown/Campaign%20Difficulty.md) for rules and limits.
 - Font rasterization, controller focus, GUI texture loading and Linux
   compatibility fixes. The lobby uses the game's menu artwork and fonts.

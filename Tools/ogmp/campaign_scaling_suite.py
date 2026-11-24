@@ -26,7 +26,7 @@ RENDER_KEYS = {"texture_reduce": "3", "multisample": "1", "detail_objects": "0",
 def campaign_scaling(ctx):
     host = ctx.instance("scaling_host", width=640, height=360, keys={**RENDER_KEYS, "mp_port": "27974", "difficulty_preset_value": "3",
                         "game_difficulty": "1", "global_time_scale_mult": "1", "tutorials": "false",
-                        "auto_ledge_grab": "false", "campaign_mp_scaling": "true", "campaign_mp_nightmare": "false",
+                        "auto_ledge_grab": "false", "campaign_mp_scaling": "true", "difficulty_scaling": "true", "campaign_ai_scaling": "false", "campaign_armor_scaling": "false", "campaign_weapon_scaling": "false",
                         "player_invincible": "true"})
     metrics = {}
     ctx.campaign_scaling_metrics = metrics
@@ -64,7 +64,7 @@ def campaign_scaling(ctx):
     def settings(inst):
         return probe(inst, 'GetConfigValueString("difficulty_preset") + "|" + '
                      'GetConfigValueBool("campaign_mp_scaling") + "|" + '
-                     'GetConfigValueBool("campaign_mp_nightmare") + "|" + '
+                     'GetConfigValueBool("campaign_ai_scaling") + "|" + '
                      'GetConfigValueFloat("game_difficulty")').split("|")
 
     def no_ai_change(common, baseline):
@@ -108,7 +108,7 @@ def campaign_scaling(ctx):
     hero = host.bridge.me()
     base = next(c["pos"] for c in world(host) if c["id"] == hero["id"])
     regulars = []
-    # Keep at least four ordinary fixtures and one deterministic Nightmare
+    # Keep at least four ordinary fixtures and one deterministic AI scaling
     # candidate. Selection uses stable shared IDs, never a probabilistic roll.
     def ai_trait(shared_id):
         identity = (shared_id * 1664525 + 1013904223) & 0xffffffff
@@ -180,7 +180,7 @@ def campaign_scaling(ctx):
     two_boss, two_regular = factors(host, boss), factors(host, regular)
     assert math.isclose(two_regular[0], 1.25585, abs_tol=1e-5), two_regular
     assert math.isclose(two_boss[0], 2.1543, abs_tol=1e-5), two_boss
-    assert two_boss[0] > two_regular[0] and two_boss[1] > 1 and two_boss[2] > 1, (two_boss, two_regular)
+    assert two_boss[0] > two_regular[0] and two_boss[1] > 1 and two_boss[2] == 1, (two_boss, two_regular)
     no_ai_change(boss, baseline_boss)
     no_ai_change(regular, baseline_regular)
     time.sleep(0.8)  # allow multiple normal difficulty update intervals
@@ -192,7 +192,7 @@ def campaign_scaling(ctx):
     # A late guest begins with different personal match preferences. The host's
     # current settings, scaling factors, and roster must replace those views.
     guest = ctx.instance("scaling_guest", width=640, height=360, keys={**RENDER_KEYS, "mp_port": "27975", "game_difficulty": "0", "global_time_scale_mult": "0.8",
-                         "tutorials": "true", "auto_ledge_grab": "true", "campaign_mp_scaling": "false", "campaign_mp_nightmare": "false",
+                         "tutorials": "true", "auto_ledge_grab": "true", "campaign_mp_scaling": "false", "difficulty_scaling": "true", "campaign_ai_scaling": "false", "campaign_armor_scaling": "false", "campaign_weapon_scaling": "false",
                          "player_invincible": "true"})
     guest.bridge.call("connect", ip="127.0.0.1:27974")
     _ready(guest)
@@ -237,9 +237,9 @@ def campaign_scaling(ctx):
     assert actor(host, boss)["permanent_health"] <= 0.4001 and stats(host, boss)["ko_shield"] == 1
 
     ai_baselines = {n: stats(host, n).copy() for n in [boss] + regulars}
-    code(host, 'SetConfigValueString("difficulty_preset","Nightmare");')
+    code(host, 'SetConfigValueBool("campaign_ai_scaling",true);')
     wait(lambda: all(math.isclose(factors(host, n)[3], 0.01 if ai_trait(n) else 0.0, abs_tol=1e-5)
-                     for n in [boss] + regulars), "Nightmare applies sparse one-percent offensive variation")
+                     for n in [boss] + regulars), "AI scaling applies sparse one-percent offensive variation")
     assert factors(host, boss)[:3] == (1.0, 1.0, 1.0), factors(host, boss)
     tweaked = []
     for common, baseline in ai_baselines.items():
@@ -250,15 +250,15 @@ def campaign_scaling(ctx):
         expected_trait = trait if field and 0 < baseline[field] < 1 else 0
         assert current["campaign_ai_tweak"] == expected_trait, (common, current)
         changed = [key for key in AI_FIELDS if not math.isclose(current[key], baseline[key], abs_tol=1e-5)]
-        assert changed == ([field] if expected_trait else []), ("Nightmare changed unrelated AI", common, changed)
+        assert changed == ([field] if expected_trait else []), ("AI scaling changed unrelated AI", common, changed)
         if expected_trait:
             expected = baseline[field] + (1.0 - baseline[field]) * 0.01
             assert math.isclose(current[field], expected, abs_tol=1e-5), (common, field, current[field], expected)
             tweaked.append(common)
     assert tweaked, "selected ordinary AI fixture should have one small offensive change"
-    wait(lambda: settings(guest)[:3] == ["Nightmare", "false", "true"], "fourth difficulty is shared")
-    metrics["nightmare"] = {"boss": stats(host, boss), "regular": stats(host, regular), "tweaked_ids": tweaked}
-    code(host, 'SetConfigValueString("difficulty_preset","Expert");SetConfigValueBool("campaign_mp_scaling",true);')
+    wait(lambda: settings(guest)[:3] == ["Expert", "false", "true"], "AI scaling preference is shared independently of base difficulty")
+    metrics["ai_scaling"] = {"boss": stats(host, boss), "regular": stats(host, regular), "tweaked_ids": tweaked}
+    code(host, 'SetConfigValueString("difficulty_preset","Expert");SetConfigValueBool("campaign_ai_scaling",false);SetConfigValueBool("campaign_mp_scaling",true);')
     wait(lambda: factors(host, boss) == four_boss and factors(host, regular) == four_regular, "restoring Expert does not compound stat multipliers")
     no_ai_change(boss, baseline_boss)
     no_ai_change(regular, baseline_regular)
@@ -442,10 +442,10 @@ def campaign_first_level_reinforcements(ctx):
     from .newcampaign_local_suite import FIRST
 
     host = ctx.instance("first_level_reinforcements", width=640, height=360,
-                        keys={**RENDER_KEYS, "mp_port": "28064", "difficulty_preset": "Nightmare",
-                              "difficulty_preset_value": "4", "game_difficulty": "1",
+                        keys={**RENDER_KEYS, "mp_port": "28064", "difficulty_preset": "Expert",
+                              "difficulty_preset_value": "3", "game_difficulty": "1",
                               "global_time_scale_mult": "1", "tutorials": "false", "auto_ledge_grab": "false",
-                              "campaign_mp_scaling": "true", "campaign_mp_nightmare": "true",
+                              "campaign_mp_scaling": "true", "difficulty_scaling": "true", "campaign_ai_scaling": "true",
                               "player_invincible": "true"})
     metrics = {}
 
@@ -503,7 +503,7 @@ def campaign_first_level_reinforcements(ctx):
             assert actor["char_path"] == original["char_path"], (phase, actor, original)
             assert actor["combat_stats"]["species"] == original["combat_stats"]["species"], (phase, actor)
             assert math.isclose(actor["combat_stats"]["campaign_vitality_mult"], 1.4477375, abs_tol=1e-5), (phase, actor)
-            assert actor["combat_stats"]["campaign_ai_bonus"] == 0, "bots must not enable human-count Nightmare AI tiers"
+            assert actor["combat_stats"]["campaign_ai_bonus"] == 0, "bots must not enable human-count AI scaling AI tiers"
         assert all(math.isclose(current[source]["combat_stats"]["campaign_vitality_mult"], 1.4477375, abs_tol=1e-5)
                    for source in sources), "ordinary tutorial rabbits were mistaken for bosses"
         metrics[phase] = [{k: c[k] for k in ("common_id", "campaign_scaling_source", "char_path", "pos")}

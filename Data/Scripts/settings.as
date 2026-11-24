@@ -258,7 +258,7 @@ void SetActiveCategory(string name){
 
 void SwitchSettingsScreen(string screen_name){
     CaptureNumericTextDrafts();
-    if(PersonalSettingsOnly() && !(screen_name == "Game" && CanEditCampaignSettings())) screen_name = MenuOwnsKeyboard() ? "Controls" : "Gamepad";
+    if(PersonalSettingsOnly() && !((screen_name == "Game" || screen_name == "Difficulty") && CanEditCampaignSettings())) screen_name = MenuOwnsKeyboard() ? "Controls" : "Gamepad";
     if(IsPlayerMenuContext() && screen_name == "Controls" && !MenuOwnsKeyboard()) screen_name = "Gamepad";
     if(IsPlayerMenuContext() && screen_name == "Gamepad" && MenuOwnsKeyboard() && !IsControllerConnected()) screen_name = "Controls";
     if(screen_name == "Advanced"){
@@ -274,7 +274,7 @@ void SwitchSettingsScreen(string screen_name){
     }
 
     RestoreCategoryButtons();
-    SetActiveCategory(screen_name);
+    SetActiveCategory(screen_name == "Difficulty" ? "Game" : screen_name);
 
     if(screen_name == "Screen"){
         AddScreenSettingsScreen();
@@ -290,6 +290,9 @@ void SwitchSettingsScreen(string screen_name){
     }
     else if(screen_name == "Game"){
         AddGameScreen();
+    }
+    else if(screen_name == "Difficulty"){
+        AddDifficultyScreen();
     }
     else if(screen_name == "Controls"){
         AddInputScreen();
@@ -584,18 +587,13 @@ void AddGameScreen(){
         AddDropDown("Language", settings_content, DropdownConfiguration( locale_values, locale_names, "language", " (English)" ));
     }
     if(CanEditCampaignSettings()) {
-        array<string> difficulty_options = GetConfigValueOptions("difficulty_preset");
-        AddDropDown("Difficulty Preset", settings_content, DropdownConfiguration( difficulty_options, difficulty_options, "difficulty_preset" ));
-        AddCheckBox("Scale campaign encounters for party size", settings_content, "campaign_mp_scaling");
-        AddSlider("Game Speed", settings_content, "global_time_scale_mult", 1.0f, 100.0f, 0.5f, 50.0f);
-        AddSlider("Game Difficulty", settings_content, "game_difficulty", 1.0f);
-        AddCheckBox("Tutorials", settings_content, "tutorials");
-        AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab");
+        AddDropDown("Difficulty mode", settings_content, DropdownConfiguration(DifficultyModeConfiguration()));
+        AddBasicButton("Difficulty", "open_difficulty_settings", 500, settings_content);
+        AddCheckBox("Show difficulty readout", settings_content, "show_difficulty_readout");
+        AddNote("Host view; visible only during scaled play.", settings_content);
     } else {
         settings_content.append(IMText("The host controls match difficulty.", button_font_small));
-        settings_content.appendSpacer(12.0f);
         settings_content.append(IMText("Difficulty: " + GetConfigValueString("difficulty_preset"), button_font_small));
-        settings_content.append(IMText("Party encounter scaling: " + (GetConfigValueBool("campaign_mp_scaling") ? "On" : "Off"), button_font_small));
         settings_content.appendSpacer(20.0f);
     }
     if(PersonalSettingsOnly()) return;
@@ -607,6 +605,58 @@ void AddGameScreen(){
     array<string> blood_color_options = {"Red", "Green", "Cyan", "Black"};
     AddDropDown("Blood Color", settings_content, DropdownConfiguration( blood_color_values, blood_color_options, "blood_color" ));
     AddCheckBox("Splitscreen", settings_content, "split_screen");
+}
+
+class DifficultyProgressionConfiguration : DropdownConfigurationBaseClass {
+    string setting;
+    DifficultyProgressionConfiguration(const string &in key, array<string> labels) {
+        setting = key;
+        @display_values = @labels;
+    }
+    void SetCurrentValue(IMText@ label) {
+        current_option_index = max(0, min(int(display_values.length()) - 1, LobbyGetModeSetting(setting)));
+        label.setText(display_values[current_option_index]);
+    }
+    void SetConfigValue(string value) {
+        int option = display_values.find(value);
+        if(option >= 0) LobbySetModeSetting(setting, option);
+    }
+}
+
+void AddDifficultyScreen() {
+    current_screen = "Difficulty";
+    if(!CanEditCampaignSettings()) {
+        settings_content.append(IMText("The host controls match difficulty.", button_font_small));
+        return;
+    }
+    array<string> presets = GetConfigValueOptions("difficulty_preset");
+    AddDropDown("Starting preset", settings_content, DropdownConfiguration(presets, presets, "difficulty_preset"));
+    AddSlider("Game Speed", settings_content, "global_time_scale_mult", 1.0f, 100.0f, 0.5f, 50.0f);
+    AddSlider("Game Difficulty", settings_content, "game_difficulty", 1.0f);
+    AddCheckBox("Tutorials", settings_content, "tutorials");
+    AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab");
+    AddCheckBox("Localized armor protection", settings_content, "armor_localized");
+    if(GetConfigValueBool("difficulty_scaling")) {
+        AddSection("Scaling factors", settings_content);
+        AddCheckBox("Party stats and reinforcements", settings_content, "campaign_mp_scaling");
+        AddCheckBox("Physical armor", settings_content, "campaign_armor_scaling");
+        AddCheckBox("Weapons for extra enemies", settings_content, "campaign_weapon_scaling");
+        AddCheckBox("AI scaling", settings_content, "campaign_ai_scaling");
+        if(Online_IsActive()) {
+            AddSection("Progression", settings_content);
+            array<string> rates = {"Off", "Gentle", "Standard", "Brisk"};
+            AddDropDown("Active time", settings_content, DropdownConfiguration(DifficultyProgressionConfiguration("challenge_time", rates)));
+            string campaign = LobbyGetCampaign();
+            if(campaign != "" && campaign != "com-wolfire-sandbox-levels")
+                AddDropDown("Level / match completion", settings_content, DropdownConfiguration(DifficultyProgressionConfiguration("challenge_round", rates)));
+            array<string> performance = {"Off", "On win", "On loss", "Forced-50"};
+            AddDropDown("Performance scaling", settings_content, DropdownConfiguration(DifficultyProgressionConfiguration("challenge_performance", performance)));
+            if(LobbyGetModeSetting("challenge_performance") != 0)
+                AddDropDown("Performance strength", settings_content, DropdownConfiguration(DifficultyProgressionConfiguration("challenge_performance_rate", rates)));
+            AddNote("Loss = all human teammates down.", settings_content);
+        } else AddNote("Progression options unlock once play starts.", settings_content);
+    }
+    AddBasicButton("Back to Game settings", "close_difficulty_settings", 600, settings_content);
 }
 
 void AddInputScreen(){
@@ -790,6 +840,8 @@ void ProcessSettingsMessage(IMMessage@ message){
         if( message.name == "ui_element_clicked" ){
             ToggleUIElement(message.getString(0));
         }
+        else if(message.name == "open_difficulty_settings") { SwitchSettingsScreen("Difficulty"); }
+        else if(message.name == "close_difficulty_settings") { SwitchSettingsScreen("Game"); }
         else if( message.name == "option_changed" ){
             for(uint i = 0; i < gui_elements.size(); i++){
                 if(gui_elements[i].name == message.getString(0)){
@@ -798,7 +850,7 @@ void ProcessSettingsMessage(IMMessage@ message){
             }
             // Only these pages have sections whose presence depends on other
             // options. RefreshAllOptions already updates the remaining widgets.
-            if(current_screen == "Screen" || current_screen == "Ray Tracing") SwitchSettingsScreen(current_screen);
+            if(current_screen == "Screen" || current_screen == "Ray Tracing" || current_screen == "Game" || current_screen == "Difficulty") SwitchSettingsScreen(current_screen);
         }
         else if( message.name == "close_all_open_menus" ){
             CloseAllOptionMenus();
@@ -864,6 +916,8 @@ void ProcessSettingsMessage(IMMessage@ message){
                 DiscardUnsavedChanges();
             } else if(OptionMenuOpen()){
                 CloseAllOptionMenus();
+            }else if(current_screen == "Difficulty") {
+                SwitchSettingsScreen("Game");
             }else{
                 DiscardUnsavedChanges();
                 imGUI.receiveMessage(IMMessage("Back"));
@@ -969,7 +1023,7 @@ void UpdateSettings(bool auto_exit_rebind = false){
         bool editing = false;
         for(uint i = 0; i < gui_elements.size(); ++i) editing = editing || gui_elements[i].unsaved_values;
         if(!editing) {
-            if(current_screen == "Screen" || current_screen == "Ray Tracing" || current_screen == "Game") SwitchSettingsScreen(current_screen);
+            if(current_screen == "Screen" || current_screen == "Ray Tracing" || current_screen == "Game" || current_screen == "Difficulty") SwitchSettingsScreen(current_screen);
             else RefreshAllOptions();
             settings_revision = GetSettingsRevision();
         }

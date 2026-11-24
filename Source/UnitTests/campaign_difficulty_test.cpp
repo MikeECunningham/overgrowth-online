@@ -32,9 +32,9 @@ template<> template<> void campaign_test::test<2>() {
         ensure("boss damage remains a gentler increase than effective health", boss.vitality > boss.damage);
         ensure_equals("the normal difficulties never alter authored AI", regular.ai, 0.0f);
     }
-    const auto nightmare = CampaignDifficulty::ForPlayers(4, true, CampaignDifficulty::CatOrDog, false, true, 5);
-    ensure_equals("AI scaling is independent from the stat checkbox", nightmare.vitality, 1.0f);
-    ensure("Nightmare permits a small selected-unit variation", nightmare.ai > 0.0f && nightmare.ai <= 0.01f);
+    const auto ai_scaled = CampaignDifficulty::ForPlayers(4, true, CampaignDifficulty::CatOrDog, false, true, 5);
+    ensure_equals("AI scaling is independent from the stat checkbox", ai_scaled.vitality, 1.0f);
+    ensure("The AI checkbox permits a small selected-unit variation", ai_scaled.ai > 0.0f && ai_scaled.ai <= 0.01f);
 }
 
 template<> template<> void campaign_test::test<3>() {
@@ -45,7 +45,7 @@ template<> template<> void campaign_test::test<3>() {
             const auto current = CampaignDifficulty::ForPlayers(humans, true, rank, true, true);
             ensure("durability never falls with another human", current.vitality >= previous.vitality);
             ensure("damage never falls with another human", current.damage >= previous.damage);
-            ensure("armor never falls with another human", current.armor >= previous.armor);
+            ensure("armor is physical, not a multiplier", current.armor == 1.0f);
             ensure("AI never falls with another human", current.ai >= previous.ai);
             ensure("boss durability and damage have hard caps", current.vitality <= 6.0f && current.damage <= 1.9f);
             ensure("armor and AI have hard caps", current.armor <= 1.9f && current.ai <= 0.03f);
@@ -92,9 +92,9 @@ template<> template<> void campaign_test::test<5>() {
 template<> template<> void campaign_test::test<6>() {
     ensure_equals("unspecified units never receive AI boosts", CampaignDifficulty::ForPlayers(32, true, CampaignDifficulty::Wolf, true, true).ai, 0.0f);
     ensure_equals("small parties have no extra AI pressure", CampaignDifficulty::ForPlayers(3, true, CampaignDifficulty::Wolf, true, true, 5).ai, 0.0f);
-    ensure_equals(CampaignDifficulty::NightmareAIAmount(4), 0.01f);
-    ensure_equals(CampaignDifficulty::NightmareAIAmount(8), 0.02f);
-    ensure_equals(CampaignDifficulty::NightmareAIAmount(16), 0.03f);
+    ensure_equals(CampaignDifficulty::HumanAIAmount(4), 0.01f);
+    ensure_equals(CampaignDifficulty::HumanAIAmount(8), 0.02f);
+    ensure_equals(CampaignDifficulty::HumanAIAmount(16), 0.03f);
     int selected = 0;
     int traits[4] = {0, 0, 0, 0};
     for (uint32_t id = 0; id < 256; ++id) {
@@ -117,7 +117,7 @@ template<> template<> void campaign_test::test<7>() {
     const auto bots = CampaignDifficulty::ForParty(1, 3, false, CampaignDifficulty::Rabbit, true, false);
     ensure("four humans receive more scaling than the previous unweighted curve", std::fabs(humans.vitality - 1.7484426f) < 0.00001f);
     ensure("three friendly bots provide only modest additional scaling", std::fabs(bots.vitality - 1.1918875f) < 0.00001f);
-    ensure("equal headcounts distinguish humans from bots", humans.vitality > bots.vitality && humans.damage > bots.damage && humans.armor > bots.armor);
+    ensure("equal headcounts distinguish humans from bots", humans.vitality > bots.vitality && humans.damage > bots.damage);
     ensure("one human ally weighs four friendly bots",
            std::fabs(CampaignDifficulty::ForParty(2, 0, true, CampaignDifficulty::Wolf, true, false).vitality -
                      CampaignDifficulty::ForParty(1, 4, true, CampaignDifficulty::Wolf, true, false).vitality) < 0.00001f);
@@ -172,7 +172,7 @@ template<> template<> void campaign_test::test<8>() {
 }
 
 template<> template<> void campaign_test::test<9>() {
-    ensure_equals("a large bot party does not unlock Nightmare AI", CampaignDifficulty::ForParty(1, 63, true, CampaignDifficulty::Wolf, true, true, 5).ai, 0.0f);
+    ensure_equals("bot count alone does not unlock the human AI tier", CampaignDifficulty::ForParty(1, 63, true, CampaignDifficulty::Wolf, true, true, 5).ai, 0.0f);
     ensure_equals("bots cannot cross the first human-only AI tier", CampaignDifficulty::ForParty(3, 63, true, CampaignDifficulty::Wolf, true, true, 5).ai, 0.0f);
     ensure_equals("four humans unlock the rare one-percent tier", CampaignDifficulty::ForParty(4, 32, true, CampaignDifficulty::Wolf, false, true, 5).ai, 0.01f);
     ensure_equals("eight humans unlock the rare two-percent tier", CampaignDifficulty::ForParty(8, 0, true, CampaignDifficulty::Wolf, false, true, 5).ai, 0.02f);
@@ -183,7 +183,7 @@ template<> template<> void campaign_test::test<9>() {
             const auto current = CampaignDifficulty::ForParty(humans, humans, true, rank, true, true, 5);
             ensure("mixed party durability is monotonic and capped", current.vitality >= previous.vitality && current.vitality <= 6.0f);
             ensure("mixed party damage is monotonic and capped", current.damage >= previous.damage && current.damage <= 1.9f);
-            ensure("mixed party armor is monotonic and capped", current.armor >= previous.armor && current.armor <= 1.9f);
+            ensure("mixed parties do not gain an artificial armor multiplier", current.armor == 1.0f);
             ensure("AI retains its human-only cap", current.ai <= 0.03f);
             previous = current;
         }

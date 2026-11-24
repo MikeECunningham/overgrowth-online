@@ -1,70 +1,92 @@
-# Campaign party difficulty
+# Campaign difficulty scaling
 
-The difficulty screen and Game settings have a **Scale campaign encounters for
-party size** checkbox, enabled by default. It controls enemy durability, damage,
-passive-block armor, and limited reinforcements. **Casual**, **Hardcore**, and
-**Expert** retain their chosen AI behavior. **Nightmare** uses Expert's base
-settings and adds rare, small AI variations as the MC party grows, independently
-of the stat/number checkbox. One participant keeps the original encounter values.
+The lobby's **Difficulty mode** selects Traditional or Scaling. Open
+**Difficulty** to choose the original Casual, Hardcore or Expert base and all
+optional scaling factors together. These controls also appear under
+**Settings → Game → Difficulty**. Traditional gates every scaling factor Off
+while retaining its preferences for later use.
 
-The lobby host controls these shared match settings. Connected clients receive
-the same settings, including late joiners and after a lobby host handoff.
-Selecting a different preset clears Nightmare; custom changes to the Expert
-base settings no longer qualify as the exact Nightmare preset.
+## Party stats and reinforcements
 
-## Scaling philosophy
+The host can enable **Party stats and reinforcements** in Scaling mode.
+Authored species, appearances and base combat parameters are preserved. Regular
+foes receive moderate durability/damage changes; bosses gain more durability
+and fewer bodyguards. Human players and friendly bots keep their base stats.
+A knockout does not remove a party member from the scaling count.
 
-- Preserve authored enemy species, appearance, equipment, and base combat
-  attributes. Extra enemies are matching copies of actors already in the fight;
-  rabbits never turn into wolves to increase difficulty.
-- Weak-species groups gain numbers earlier. Strong enemies and bosses primarily
-  gain durability, with gentler damage and passive-block increases. Scaling
-  respects the strength order rat, rabbit, cat/dog, large dog, wolf.
-- Treat one to two strong/elite authored opponents, and a lone large outlier
-  among weaker opponents, as bosses. The active campaign objective supplies the
-  encounter membership. Friendlies, human characters, and lobby bots are excluded.
-  Knockout shields alone do not make an encounter a boss fight: tutorial rabbits
-  use large shields to support their scripted combat lessons.
-- Count MC-team humans and friendly lobby bots with an admitted character,
-  including knocked-out members and temporarily disconnected controllers. A defeated player does not
-  make the remaining enemies weaker. Removing a party seat changes the count.
-  Opposing lobby teams do not increase the scaling count. Party modifiers never
-  boost lobby bots, and Nightmare uses Expert as their base. Optional mode
-  progression can separately strengthen opposing bots while allies stay unchanged.
-- For enemy stats, weight each additional human at 1.4 and each friendly bot at 0.35. A bot
-  contributes one quarter as much as an additional human. Rare Nightmare AI
-  tiers count humans only. Four humans give ordinary rabbits about 1.75x
-  durability; one human plus three bots gives about 1.19x.
-- Enemy stats scale smoothly through four effective participants, then use
-  diminishing growth. Enemy numbers use a separate logarithmic curve, with
-  extra humans counting twice as much as friendly bots. Both have hard limits.
+Each additional main-team human weighs 1.4 and each friendly bot 0.35 for stats.
+Growth is linear through three weighted allies, then uses a square-root taper.
+Enemy counts use a separate logarithmic curve in which an additional human
+counts twice as much as a bot. Opposing lobby teams do not increase the main
+party's count. Explicit authored boss/exemption parameters remain available.
 
-Normalized health is left intact. Durability changes incoming damage, so story
-health thresholds, regeneration, and network health bars remain valid. Armor
-strengthens passive blocking; it does not enable the game's metal-armor weapon
-immunities or refill knockout shields. Changes never heal existing injuries.
+Examples at four main-team humans, before progression:
 
-Examples at four MC-team humans, relative to each actor's authored base:
+| Opponent | Durability | Damage |
+| --- | --- | --- |
+| Ordinary rat | 1.627× | 1.261× |
+| Ordinary rabbit | 1.748× | 1.261× |
+| Ordinary cat/dog | 1.870× | 1.261× |
+| Cat/dog boss | 3.820× | 1.418× |
+| Wolf boss | 4.377× | 1.418× |
 
-| Opponent | Effective durability | Damage | Passive-block armor |
-| --- | --- | --- | --- |
-| Ordinary rat | 1.627× | 1.261× | 1.244× |
-| Ordinary rabbit | 1.748× | 1.261× | 1.244× |
-| Ordinary cat/dog | 1.870× | 1.261× | 1.244× |
-| Cat/dog boss | 3.820× | 1.418× | 1.522× |
-| Wolf boss | 4.377× | 1.418× | 1.522× |
+Durability changes incoming damage while preserving normalized health,
+injuries, knockout shields and story health thresholds. Regular party
+scaling caps at 3× durability and 1.6× damage; bosses at 6× and 1.9×.
+Combined progression caps are 6× durability and 2× damage. Forced-50 can
+reduce modifiers on subsequent attempts of a lost encounter.
 
-Regular durability caps at 3× and boss durability at 6×. Damage caps at 1.6×
-and 1.9× respectively; passive-block armor caps at 1.5× and 1.9×.
+## Physical armor and weapons
 
-Nightmare leaves AI unchanged below four humans. At four or more, one in
-eight enemies is eligible for one small offensive trait variation: aggression,
-ground aggression, or block follow-up. The adjustment uses 1% of that trait's
-remaining range at four humans, 2% at eight, and at most 3% at sixteen or
-more. It changes only that trait, keeps
-explicit authored zero/maximum values, and never boosts blocking, throw counters,
-weapon catching, or attack speed. Selection is stable across peers and retries.
-The global difficulty slider, movement speed, and game speed stay at Expert.
+**Physical armor** equips real bone-attached helmets, torso plates, shoulder,
+forearm and thigh pieces. Protection follows covered body regions using the
+attack contact point and current-pose body capsules. Added coverage does not
+turn an entire partially armored actor invulnerable. The host's **Localized
+armor protection** checkbox chooses this model or the old whole-body protection.
+The pieces are visible attachments; protection uses these regional hit tests,
+not triangle-exact collision against each armor mesh. Thrown-weapon contacts are
+checked before cutting or sticking the weapon into a covered body region.
+Recognized authored pieces also provide regional coverage; metal-armor flags
+without recognized pieces retain their original protection as a compatibility
+fallback.
+
+Equipment intensity combines encounter pressure with a small party-size
+contribution when party scaling is enabled. Armor has a delay, a cubic onset,
+and a logarithmically slowing tail. Armored enemies and partial sets become
+more common gradually; full sets take considerably longer. Deterministic
+percentiles keep attempts consistent instead of rerolling better loot on retry.
+
+For the armor curve, let `I` be effective encounter pressure plus `0.10` times
+the softened weighted ally count, and `x = max(0, I - 0.30)`. The maturity is
+`m = log(1 + x³) / (0.65 + log(1 + x³))`. An enemy receives armor with probability
+`m`; once selected it gets one piece, and each remaining region has probability
+`m` of receiving another. Full coverage therefore approaches gradually rather
+than jumping to complete sets. At `I = 0.8`, about 15% are armored, averaging
+two pieces; at `I = 1.5`, about 61% average six pieces and only about 1% have a
+full set. At `I = 2.5`, about 79% are armored and 12% have full coverage.
+
+**Weapons for extra enemies** affects generated reinforcements only. They start
+unarmed; an early-middle wave can gain one dagger wielder, middle waves can
+gain multiple dagger wielders, and swords/spears appear late. Each generated
+fighter receives at most one scaling weapon. Wolves never receive weapons.
+Authored NPC weapons are preserved.
+
+Gear creation is spread across updates. The host replicates exact armor bone
+attachments, scale and protection masks, and uses the existing item ownership
+and attachment systems for weapons. Disabling armor removes only added pieces.
+Retries rebuild generated gear; player-taken or dropped weapons are not refilled
+or silently deleted. Friendly bots and human players receive no scaling gear.
+
+## Optional AI scaling
+
+**AI scaling** replaces Nightmare as an independent checkbox. One in eight
+stable enemy identities is eligible for one small offensive variation:
+aggression, ground aggression or block follow-up. Four, eight and sixteen humans
+allow 1%, 2% and 3% adjustments; later encounter pressure can unlock those same
+small tiers for solo play. Defensive blocking, counters, weapon catching and
+attack speed remain authored, and explicit zero/maximum values stay exact.
+Friendly bots do not gain these changes. AI and physical equipment are separate
+from the party-stat checkbox.
 
 ## Reinforcement and story safeguards
 
@@ -194,6 +216,7 @@ After building, close the normal game and run isolated regressions:
 
 ```sh
 python3 -I Tools/ogmp.py run difficulty_ui
+python3 -I Tools/ogmp.py run difficulty_hud campaign_equipment
 python3 -I Tools/ogmp.py run campaign_scaling
 python3 -I Tools/ogmp.py run campaign_teams
 python3 -I Tools/ogmp.py run bot_escort_stealth
@@ -201,9 +224,10 @@ python3 -I Tools/ogmp.py run bot_escort_stealth
 
 The native unit suite also checks solo neutrality, exact preset identity,
 boss emphasis, species-aware addition counts, diminishing growth, hard caps,
-and the independence of Nightmare AI from stat/number scaling. It also covers
-overlapping faction friendships, ordered team mapping and wildcards, MC anchor
+and independent AI/equipment factors, deterministic coverage and weapon tiers.
+It also covers overlapping faction friendships, ordered team mapping and wildcards, MC anchor
 replacement, and stable balanced bot escorts.
 
-Mode-specific time, level/match, win, player-defeat and adaptive win rules are described
-in [Mode challenge settings](Mode%20Challenge.md). They are optional and do not add AI bonuses.
+Mode-specific time, level/match and performance rules are described in
+[Mode challenge settings](Mode%20Challenge.md). Losses count complete human-party
+wipes; Forced-50 provides encounter-local retry relief.

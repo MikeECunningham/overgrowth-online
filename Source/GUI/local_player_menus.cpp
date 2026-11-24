@@ -10,6 +10,8 @@
 #include <Main/engine.h>
 #include <Objects/movementobject.h>
 #include <Online/online.h>
+#include <Online/online_utility.h>
+#include <Logging/logdata.h>
 #include <UserInput/input.h>
 
 #include <algorithm>
@@ -133,6 +135,8 @@ void LocalPlayerMenus::Close(unsigned local_index) {
         found->second->ui.reset();
     }
     menus_.erase(found);
+    resume_checks_[local_index] = 0.0;
+    next_resume_check_ms_ = 0.0;
     RefreshPause();
     ResolveCursor();
 }
@@ -142,6 +146,8 @@ void LocalPlayerMenus::Clear() {
     pending_.clear();
     while (!menus_.empty()) Close(menus_.begin()->first);
     pending_.clear();
+    for (auto& check : resume_checks_) check.second = 0.0;
+    next_resume_check_ms_ = 0.0;
 }
 
 void LocalPlayerMenus::ApplyCommands() {
@@ -174,6 +180,11 @@ void LocalPlayerMenus::ApplyCommands() {
             Close(local);
         } else if (host && action == "retry" && !online->IsClient()) {
             Clear();
+            // Retry is the host starting a new attempt. Continue deliberately
+            // preserves an explicit world pause; Retry resumes the new one.
+            if (online->IsHosting()) online->SetTimeFrozen(false);
+            engine_.user_paused = engine_.menu_paused = false;
+            engine_.CommitPause();
             Level* level = engine_.GetSceneGraph()->level;
             if (online->IsHosting() && level->HasFunction("void OnlineRetry()")) {
                 level->Execute("OnlineRetry();");
@@ -201,6 +212,82 @@ void LocalPlayerMenus::Update() {
     ApplyCommands();
     RefreshPause();
     ResolveCursor();
+    UpdateResumeChecks();
+}
+
+void LocalPlayerMenus::UpdateResumeChecks() {
+    if (resume_checks_.empty()) return;
+    Online* online = Online::Instance();
+    SceneGraph* scene = engine_.GetSceneGraph();
+    if (!engine_.IsLevelLoaded() || engine_.waiting_for_input_ || engine_.paused ||
+        !scene || !scene->level || !scene->map_editor || scene->map_editor->state_ != MapEditor::kInGame ||
+        (online->IsActive() && (online->LobbyWaiting() || online->LobbyBuild() || online->BuildSession() || online->TimeFrozen())) ||
+        online->CoopCutscene() || online->RemoteCutsceneActive() || scene->level->DialogueCameraControl() || scene->level->HasScriptFocus()) {
+        for (auto& check : resume_checks_) check.second = 0.0;
+        return;
+    }
+    const double now = OnlineClockMs();
+    if (now < next_resume_check_ms_) return;
+    next_resume_check_ms_ = now + 100.0;
+    Input* input = Input::Instance();
+    for (auto it = resume_checks_.begin(); it != resume_checks_.end();) {
+        const unsigned local = it->first;
+        if (local >= input->GetNumLocalPlayers()) { it = resume_checks_.erase(it); continue; }
+        if (menus_.count(local)) { it->second = 0.0; ++it; continue; }
+        if (it->second == 0.0) it->second = now + 3000.0;
+        if (now > it->second) { it = resume_checks_.erase(it); continue; }
+        const int actual = input->GetLocalPlayerInputID(local);
+        const PlayerInput* controller = input->GetController(actual);
+        if (!controller || !controller->enabled || controller->remote_controlled) { ++it; continue; }
+        MovementObject* actor = nullptr;
+        for (auto* object : scene->movement_objects_) {
+            auto* candidate = static_cast<MovementObject*>(object);
+            if (candidate->controlled && candidate->controller_id == actual &&
+                (!online->IsActive() || online->OwnPlayerCharacter(candidate->GetID()))) {
+                actor = candidate;
+                break;
+            }
+        }
+        // Temporary ragdoll ownership, staged opponents and authored static or
+        // dialogue poses are intentionally untouched, as are healthy animations.
+        if (!actor || !actor->enabled_ || !actor->visible || actor->static_char || !actor->as_context || !actor->rigged_object() ||
+            !actor->rigged_object()->animated || !online->IsLocalAvatar(actor->GetID()) ||
+            !actor->ASHasVar("knocked_out") || actor->ASGetIntVar("knocked_out") != MovementObject::_awake ||
+            !actor->ASHasVar("state") || actor->ASGetIntVar("state") != 0 ||
+            (actor->ASHasVar("dialogue_control") && actor->ASGetBoolVar("dialogue_control")) ||
+            (actor->ASHasVar("coop_cutscene_hold") && actor->ASGetBoolVar("coop_cutscene_hold")) ||
+            !actor->rigged_object()->anim_client.GetCurrAnim().empty()) { ++it; continue; }
+        const bool update = actor->HasFunction("void Update(int)");
+        const bool idle = actor->HasFunction("void ApplyIdle(float, bool)") && actor->HasFunction("void FixDiscontinuity()");
+        const int as_state = actor->as_context->ctx ? actor->as_context->ctx->GetState() : -1;
+        LOGW << "Overgrowth Online: empty local player pose after menu/retry: actor " << actor->GetID()
+             << ", local " << local << ", input " << actual << ", camera " << actor->camera_id
+             << ", owner " << static_cast<int>(online->GetAvatarOwner(actor->GetID()))
+             << ", local peer " << static_cast<int>(online->LocalPeerID())
+             << ", proxy " << actor->network_proxy << ", controlled " << actor->controlled
+             << ", remote " << actor->remote << ", enabled " << actor->enabled_ << ", visible " << actor->visible
+             << ", static " << actor->static_char << ", knocked out " << actor->ASGetIntVar("knocked_out")
+             << ", state " << actor->ASGetIntVar("state")
+             << ", updated " << (actor->ASHasVar("updated") ? actor->ASGetIntVar("updated") : -1)
+             << ", script period/counter " << actor->update_script_period << "/" << actor->update_script_counter
+             << ", AS state " << as_state
+             << ", Update/idle functions " << update << "/" << idle
+             << ", control script " << actor->GetCurrentControlScript()
+             << ", paused/ready " << engine_.paused << "/" << engine_.waiting_for_input_
+             << ", dialogue/hold " << (actor->ASHasVar("dialogue_control") && actor->ASGetBoolVar("dialogue_control"))
+             << "/" << (actor->ASHasVar("coop_cutscene_hold") && actor->ASGetBoolVar("coop_cutscene_hold"))
+             << ", cutscene/focus " << online->CoopCutscene() << "/" << scene->level->HasScriptFocus()
+             << ", menu owner " << engine_.current_menu_player << ", open menus " << menus_.size() << std::endl;
+        if (update && idle && as_state != asEXECUTION_SUSPENDED && as_state != asEXECUTION_ACTIVE) {
+            // The same non-simulating pose seed used for newly created bots.
+            // Ownership is checked above; a peer's carried body cannot be taken.
+            if (actor->network_proxy) actor->SetNetworkProxy(false);
+            actor->Execute("ApplyIdle(5.0f, true); FixDiscontinuity();");
+            LOGI << "Overgrowth Online: local player " << actor->GetID() << " resume pose "
+                 << (actor->rigged_object()->anim_client.GetCurrAnim().empty() ? "still uninitialized" : "initialized") << std::endl;
+        }
+        it = resume_checks_.erase(it);  // one diagnostic/recovery attempt per menu close
+    }
 }
 
 void LocalPlayerMenus::Draw() {

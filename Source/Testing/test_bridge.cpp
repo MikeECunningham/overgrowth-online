@@ -36,6 +36,7 @@
 #include <Graphics/shaders.h>
 #include <Graphics/camera.h>
 #include <Graphics/frame_timers.h>
+#include <GUI/difficulty_hud.h>
 #include <Testing/sampler.h>
 #include <Threading/job_system.h>
 #include <Threading/sdl_wrapper.h>
@@ -366,6 +367,9 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         out["coop_cutscene"] = online->CoopCutscene();
         out["campaign_main_avatar"] = loaded ? online->CampaignMainAvatarID() : -1;
         out["render_views"] = engine->RenderedViewCount();
+        Json::Reader difficulty_reader;
+        difficulty_reader.parse(online->DifficultyHUDSnapshot(), out["difficulty_hud"], false);
+        out["difficulty_hud_layout"] = DifficultyHUD::Inspect();
         if (UseVulkan()) {
             out["vk_problems"] = VkBackend::ValidationProblems();  // validation layer warnings and errors ("vk_validation")
             out["vk_frames"] = (Json::UInt64)VkBackend::FramesPresented();
@@ -508,6 +512,56 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                     entry["bone_id"] = attached.bone_id;
                     c["attachments"].append(entry);
                 }
+                c["armor_attachments"] = Json::Value(Json::arrayValue);
+                const RiggedObject* rig = mo->rigged_object();
+                for (const AttachedEnvObject& attached : rig->children) {
+                    Object* child = attached.direct_ptr;
+                    if (!child || child->GetType() != _env_object) continue;
+                    Json::Value entry;
+                    entry["id"] = child->GetID();
+                    entry["common_id"] = static_cast<int>(online->GetOriginalID(child->GetID()));
+                    entry["path"] = child->obj_file;
+                    entry["region"] = child->GetScriptParams()->HasParam("Campaign Armor Region") ?
+                        child->GetScriptParams()->ASGetInt("Campaign Armor Region") : 0;
+                    entry["pos"] = Vec(child->GetTranslation());
+                    entry["scale"] = Vec(child->GetScale());
+                    entry["parent"] = child->parent ? static_cast<int>(online->GetOriginalID(child->parent->GetID())) : -1;
+                    entry["bones"] = Json::Value(Json::arrayValue);
+                    int total = 0;
+                    bool valid = true;
+                    for (const BoneConnect& bone : attached.bone_connects) {
+                        if (!bone.num_connections) continue;
+                        Json::Value connection;
+                        connection["id"] = bone.bone_id;
+                        connection["count"] = bone.num_connections;
+                        connection["rel"] = Json::Value(Json::arrayValue);
+                        for (int i = 0; i < 16; ++i) {
+                            connection["rel"].append(std::isfinite(bone.rel_mat[i]) ? Json::Value(bone.rel_mat[i]) : Json::Value());
+                            valid = valid && std::isfinite(bone.rel_mat[i]);
+                        }
+                        entry["bones"].append(connection);
+                        valid = valid && bone.num_connections > 0 && bone.bone_id >= 0 &&
+                            static_cast<size_t>(bone.bone_id) < rig->display_bone_transforms.size();
+                        total += bone.num_connections;
+                    }
+                    valid = valid && total > 0;
+                    mat4 expected(0.0f);
+                    if (valid) {
+                        for (const BoneConnect& bone : attached.bone_connects) {
+                            if (bone.num_connections) expected +=
+                                (rig->display_bone_transforms[bone.bone_id].GetMat4() * bone.rel_mat) *
+                                (static_cast<float>(bone.num_connections) / total);
+                        }
+                        for (int i = 0; i < 16; ++i) valid = valid && std::isfinite(expected[i]);
+                    }
+                    const float fit = valid ? distance(child->GetTranslation(), expected.GetTranslationPart()) : 0.0f;
+                    valid = valid && std::isfinite(fit);
+                    entry["fit_valid"] = valid;
+                    entry["fit_error"] = valid ? Json::Value(fit) : Json::Value();
+                    if (valid) entry["expected_pos"] = Vec(expected.GetTranslationPart());
+                    c["armor_attachments"].append(entry);
+                }
+                c["authored_armor_regions"] = online->AuthoredArmorRegions(mo->GetID());
                 c["item_connections"] = Json::Value(Json::arrayValue);
                 for (const ItemObjectScriptReader& connection : mo->item_connections) {
                     if (!connection.GetAttached()) continue;
@@ -521,6 +575,11 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 c["char_path"] = mo->character_path;
                 c["campaign_scaling_source"] = mo->GetScriptParams()->HasParam("Campaign Scaling Source") ?
                     mo->GetScriptParams()->ASGetInt("Campaign Scaling Source") : -1;
+                for (const auto& field : {std::make_pair("campaign_scaling_slot", "Campaign Scaling Slot"),
+                                         std::make_pair("campaign_scaling_epoch", "Campaign Scaling Epoch"),
+                                         std::make_pair("campaign_scaling_goal", "Campaign Scaling Goal")}) {
+                    c[field.first] = mo->GetScriptParams()->HasParam(field.second) ? mo->GetScriptParams()->ASGetInt(field.second) : -1;
+                }
                 c["campaign_boss_override"] = mo->GetScriptParams()->HasParam("Campaign Boss") ?
                     mo->GetScriptParams()->ASGetInt("Campaign Boss") : -1;
                 c["palette"] = Json::Value(Json::arrayValue);
@@ -590,7 +649,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                                          "campaign_authored_attack_speed", "campaign_authored_throw_counter", "campaign_authored_weapon_catch"}) {
                     if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetFloatVar(name);
                 }
-                for (const char* name : {"species", "ko_shield", "max_ko_shield", "campaign_ai_tweak"}) {
+                for (const char* name : {"species", "ko_shield", "max_ko_shield", "campaign_ai_tweak", "campaign_armor_regions"}) {
                     if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetIntVar(name);
                 }
                 if (mo->ASHasVar("g_wearing_metal_armor"))
@@ -617,6 +676,10 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 it["stuck_in"] = io->StuckInWhom();
                 it["pos"] = Vec(io->GetPhysicsTransform().GetTranslationPart());
                 it["draw_pos"] = Vec(io->GetTransform().GetTranslationPart());  // where it is drawn
+                for (const auto& field : {std::make_pair("campaign_weapon_owner", "Campaign Weapon Owner"),
+                                         std::make_pair("campaign_weapon_epoch", "Campaign Weapon Epoch")}) {
+                    it[field.first] = io->GetScriptParams()->HasParam(field.second) ? io->GetScriptParams()->ASGetInt(field.second) : -1;
+                }
                 out["items"].append(it);
             }
         }
@@ -1259,6 +1322,51 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             online->Send<OnlineMessages::CreateEntity>(path, pos, id);
         }
         out["object_id"] = id;  // ("id" is the request's)
+    } else if (cmd == "player_pose_fault") {
+        // Opt-in integration fault injection; never touches a remote actor or
+        // ordinary NPC. Keep the source tick delayed so menu recovery, rather
+        // than the next normal character update, must initialize the pose.
+        MovementObject* actor = loaded ? FindCharacter(sg, req.get("char", -1).asInt()) : nullptr;
+        Input* input = Input::Instance();
+        if (!actor || !actor->controlled || !actor->as_context || !actor->rigged_object() ||
+            input->LocalPlayerIndexForInputID(actor->controller_id) < 0 ||
+            (online->IsActive() && !online->OwnPlayerCharacter(actor->GetID())))
+            throw std::runtime_error("pose fault requires an owned local human");
+        const auto common = online->GetOriginalID(actor->GetID());
+        auto describe = [&]() {
+            Json::Value state(Json::objectValue);
+            state["script_counter"] = actor->update_script_counter;
+            state["proxy"] = actor->network_proxy;
+            state["static"] = actor->static_char;
+            state["hold"] = actor->ASHasVar("coop_cutscene_hold") && actor->ASGetBoolVar("coop_cutscene_hold");
+            state["dialogue"] = actor->ASHasVar("dialogue_control") && actor->ASGetBoolVar("dialogue_control");
+            state["animation"] = actor->rigged_object()->anim_client.GetCurrAnim();
+            const auto owner = online->owner_overrides.find(common);
+            state["owner"] = owner == online->owner_overrides.end() ? -1 : static_cast<int>(owner->second.owner);
+            return state;
+        };
+        out["before"] = describe();
+        const bool restoring = req["restore"].isObject();
+        const auto& fault = restoring ? req["restore"] : req;
+        const int owner = fault.get("owner", out["before"]["owner"]).asInt();
+        if (owner < -1 || owner > 255 || (owner >= 0 && !online->IsActive()))
+            throw std::runtime_error("invalid pose fault owner");
+        if (owner >= 0) {
+            Online::OwnerOverrideEntry replacement;
+            replacement.owner = static_cast<PlayerID>(owner);
+            replacement.since_ms = OnlineClockMs();
+            replacement.max_ms = 10000.0;
+            online->owner_overrides[common] = replacement;
+        } else online->owner_overrides.erase(common);
+        actor->static_char = fault.get("static", actor->static_char).asBool();
+        if (actor->ASHasVar("coop_cutscene_hold")) actor->ASSetBoolVar("coop_cutscene_hold", fault.get("hold", out["before"]["hold"]).asBool());
+        if (actor->ASHasVar("dialogue_control")) actor->ASSetBoolVar("dialogue_control", fault.get("dialogue", out["before"]["dialogue"]).asBool());
+        actor->network_proxy = fault.get("proxy", actor->network_proxy).asBool();
+        actor->rigged_object()->network_proxy = actor->network_proxy;
+        actor->update_script_counter = std::max(-1200, std::min(1200, fault.get("script_counter", restoring ? actor->update_script_counter : 240).asInt()));
+        if (!restoring && fault.get("clear_animation", true).asBool()) actor->rigged_object()->anim_client.Reset();
+        out["actor"] = actor->GetID();
+        out["after"] = describe();
     } else if (cmd == "rig_check") {
         // How well each bone's joint with its parent predicts it right now
         // (the snapshot rig, Online/char_snapshot.h), in mm

@@ -16,7 +16,7 @@ def campaign_teams(ctx):
     host = ctx.instance("teams_host", width=640, height=360, keys={**RENDER_KEYS, "mp_port": "27984",
                         "player_invincible": "true", "game_difficulty": "1", "global_time_scale_mult": "1",
                         "tutorials": "false", "auto_ledge_grab": "false", "campaign_mp_scaling": "true",
-                        "campaign_mp_nightmare": "false"})
+                        "difficulty_scaling": "true", "campaign_ai_scaling": "false", "campaign_armor_scaling": "false", "campaign_weapon_scaling": "false"})
     guest = ctx.instance("teams_guest", width=640, height=360, keys={**RENDER_KEYS, "mp_port": "27985",
                          "player_invincible": "true", "texture_reduce": "3"})
     metrics = {}
@@ -149,7 +149,7 @@ def campaign_teams(ctx):
     teams = {**{p: 2 for p in host_humans + friendly_bots}, guest_human: 1, **{p: 1 for p in enemy_bots},
              wildcards[0]: 3, wildcards[1]: 4}
     for ident, team in teams.items(): code(host, f"LobbySetPlayerTeam({ident},{team});", "menu")
-    code(host, 'LobbySetForceTeams(true);SetConfigValueString("difficulty_preset","Nightmare");LobbyStart();', "menu")
+    code(host, 'LobbySetForceTeams(true);SetConfigValueString("difficulty_preset","Expert");SetConfigValueBool("campaign_ai_scaling",true);LobbyStart();', "menu")
     _ready(host); _ready(guest); _skip(host)
     wait(lambda: all(avatar(p) and avatar(p, guest) for p in teams), "all campaign characters admitted")
     freeze_humans(host); freeze_humans(guest); quiet_npcs()

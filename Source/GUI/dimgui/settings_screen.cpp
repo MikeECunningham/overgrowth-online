@@ -703,55 +703,66 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
         const bool can_edit_match = !Online::Instance()->IsActive() || Online::Instance()->IsLobbyHost(MatchSettingsActor());
         if (!can_edit_match) ImGui::TextDisabled("The host controls match difficulty.");
         ImGui::BeginDisabled(!can_edit_match);
-        bool tutorials = config["tutorials"].toBool();
-        if (ImGui::Checkbox("Tutorials", &tutorials)) {
-            SetMatchSetting("tutorials", tutorials ? "true" : "false");
-        }
-
-        checkbox_val = config["auto_ledge_grab"].toNumber<bool>();
-        if (ImGui::Checkbox("Automatic ledge grab", &checkbox_val)) {
-            SetMatchSetting("auto_ledge_grab", checkbox_val ? "true" : "false");
-        }
-
-        std::vector<std::string> diff_presets = config.GetDifficultyPresets();
-        const char* custom_fallback = "Custom";
-        std::vector<const char*> diff_presets_c;
-
-        std::string diff_current = config.GetClosestDifficulty();
-
-        int dropdown_item = -1;
-
-        for (size_t i = 0; i < diff_presets.size(); i++) {
-            if (diff_presets[i] == diff_current) {
-                dropdown_item = i;
+        int difficulty_mode = config["difficulty_scaling"].toBool() ? 1 : 0;
+        const char* difficulty_modes[] = {"Traditional", "Scaling"};
+        if (ImGui::Combo("Difficulty mode", &difficulty_mode, difficulty_modes, 2))
+            SetMatchSetting("difficulty_scaling", difficulty_mode ? "true" : "false");
+        if (ImGui::BeginMenu("Difficulty")) {
+            const auto presets = config.GetDifficultyPresets();
+            std::vector<const char*> choices;
+            int selected = -1;
+            const std::string current = config.GetDifficultyPreset();
+            for (size_t i = 0; i < presets.size(); ++i) {
+                choices.push_back(presets[i].c_str());
+                if (current == presets[i]) selected = static_cast<int>(i);
             }
-            diff_presets_c.push_back(diff_presets[i].c_str());
+            if (selected < 0) { selected = static_cast<int>(choices.size()); choices.push_back("Custom"); }
+            if (ImGui::Combo("Starting preset", &selected, choices.data(), static_cast<int>(choices.size())) && selected < static_cast<int>(presets.size()))
+                SetMatchSetting("difficulty_preset", presets[selected]);
+            bool localized_armor = config["armor_localized"].toBool();
+            if (ImGui::Checkbox("Localized armor protection", &localized_armor))
+                SetMatchSetting("armor_localized", localized_armor ? "true" : "false");
+            if (config["difficulty_scaling"].toBool()) {
+                auto factor = [](const char* label, const char* key) {
+                    bool enabled = config[key].toBool();
+                    if (ImGui::Checkbox(label, &enabled)) SetMatchSetting(key, enabled ? "true" : "false");
+                };
+                ImGui::Separator();
+                factor("Party stats and reinforcements", "campaign_mp_scaling");
+                factor("Physical armor", "campaign_armor_scaling");
+                factor("Weapons for extra enemies", "campaign_weapon_scaling");
+                factor("AI scaling", "campaign_ai_scaling");
+                if (Online::Instance()->IsActive()) {
+                    const char* rates[] = {"Off", "Gentle", "Standard", "Brisk"};
+                    auto progression = [&](const char* label, const char* key) {
+                        int rate = Online::Instance()->ModeSetting(key);
+                        if (ImGui::Combo(label, &rate, rates, 4)) Online::Instance()->SetModeSetting(key, rate, MatchSettingsActor());
+                    };
+                    ImGui::Separator();
+                    progression("Active time", "challenge_time");
+                    if (!Online::Instance()->LobbyCampaign().empty() && Online::Instance()->LobbyCampaign() != "com-wolfire-sandbox-levels")
+                        progression("Level / match completion", "challenge_round");
+                    const char* performance_modes[] = {"Off", "On win", "On loss", "Forced-50"};
+                    int performance = Online::Instance()->ModeSetting("challenge_performance");
+                    if (ImGui::Combo("Performance scaling", &performance, performance_modes, 4))
+                        Online::Instance()->SetModeSetting("challenge_performance", performance, MatchSettingsActor());
+                    if (performance) progression("Performance strength", "challenge_performance_rate");
+                    ImGui::TextDisabled("Loss = all human teammates down.");
+                }
+            }
+            float speed = config["global_time_scale_mult"].toNumber<float>();
+            if (ImGui::SliderFloat("Game speed", &speed, 0.5f, 1.0f)) SetMatchSetting("global_time_scale_mult", std::to_string(speed));
+            float difficulty = config["game_difficulty"].toNumber<float>();
+            if (ImGui::SliderFloat("Game difficulty", &difficulty, 0.0f, 1.0f)) SetMatchSetting("game_difficulty", std::to_string(difficulty));
+            bool tutorials = config["tutorials"].toBool();
+            if (ImGui::Checkbox("Tutorials", &tutorials)) SetMatchSetting("tutorials", tutorials ? "true" : "false");
+            bool ledges = config["auto_ledge_grab"].toBool();
+            if (ImGui::Checkbox("Automatic ledge grab", &ledges)) SetMatchSetting("auto_ledge_grab", ledges ? "true" : "false");
+            ImGui::EndMenu();
         }
-
-        if (dropdown_item == -1) {
-            diff_presets_c.push_back(custom_fallback);
-            dropdown_item = diff_presets_c.size() - 1;
-        }
-
-        if (ImGui::Combo("Difficulty Preset", &dropdown_item, &diff_presets_c[0], diff_presets.size())) {
-            SetMatchSetting("difficulty_preset", diff_presets[dropdown_item]);
-        }
-
-        checkbox_val = config["campaign_mp_scaling"].toBool();
-        if (ImGui::Checkbox("Scale campaign encounters for party size", &checkbox_val)) {
-            SetMatchSetting("campaign_mp_scaling", checkbox_val ? "true" : "false");
-        }
-        ImGui::TextWrapped("Enemy difficulty scales with your main-team humans and friendly bots. An extra human counts as four bots for enemy stats, or two for enemy numbers. Extra enemy numbers grow logarithmically: early allies add enemies quickly, then growth tapers off, with at most six extras per regular fight and fewer bodyguards for bosses. Solo stays unchanged. Nightmare adds rare, small AI variations from four humans; blocking, counters and attack speed stay authored. Existing reinforcements stay in the fight and enemies keep damage already taken.");
-
-        float global_time_scale_mult = config["global_time_scale_mult"].toNumber<float>();
-        if (ImGui::SliderFloat("Game Speed", &global_time_scale_mult, 0.5f, 1.0f)) {
-            SetMatchSetting("global_time_scale_mult", std::to_string(global_time_scale_mult));
-        }
-
-        float game_difficulty = config["game_difficulty"].toNumber<float>();
-        if (ImGui::SliderFloat("Game Difficulty", &game_difficulty, 0.0f, 1.0f)) {
-            SetMatchSetting("game_difficulty", std::to_string(game_difficulty));
-        }
+        checkbox_val = config["show_difficulty_readout"].toBool();
+        if (ImGui::Checkbox("Show difficulty readout", &checkbox_val)) config.GetRef("show_difficulty_readout") = checkbox_val;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Host screen only; hidden when difficulty is not scaled.");
         ImGui::EndDisabled();
 
         ImGui::EndMenu();

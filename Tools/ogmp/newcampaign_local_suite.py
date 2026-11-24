@@ -425,7 +425,7 @@ def newcampaign_cinematic_retry(ctx):
             p for p in _rows(inst) if p['avatar_id'] == c['id'])['local_index'] == 1)
         _code(inst, f'ReadCharacterID({own_extra["id"]}).visible=false;'
               f'ReadCharacterID({own_extra["id"]}).Execute("blood_health=0.6f;temp_health=0.6f;permanent_health=0.6f;");'
-              'debug_local_player_notice="old-cinematic-before-retry";')
+              'display_text="old-cinematic-before-retry";')
     _code(host, 'for(int k=0;k<GetNumCharacters();++k) { MovementObject@ c=ReadCharacter(k);'
           'if(!c.controlled)c.ReceiveScriptMessage("set_combat_allowed false"); }'
           'level.SendMessage("start_dialogue \\"Civ1\\"");')
@@ -447,7 +447,7 @@ def newcampaign_cinematic_retry(ctx):
             if status['waiting_for_input'] and status['online']['hosting']:
                 i.bridge.call('start_session')
                 return False
-            return not status['waiting_for_input'] and _probe(i, 'debug_local_player_notice') != 'old-cinematic-before-retry'
+            return not status['waiting_for_input'] and _probe(i, 'display_text') != 'old-cinematic-before-retry'
         _wait(inst, reloaded, 'fresh campaign script context after Retry', 240)
         _wait(inst, lambda i=inst: len(_human_chars(i)) == 4 and _status(i)['coop_cutscene'], 'fresh four-human opening cinematic')
         _assert_cutscene(inst)

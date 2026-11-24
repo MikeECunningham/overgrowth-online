@@ -4,6 +4,7 @@
 #include "multiplayer_menu_style.as"
 #include "music_load.as"
 #include "multiplayer_lobby_modes.as"
+#include "lobby_difficulty.as"
 
 MusicLoad ml("Data/Music/menu.xml");
 IMGUI@ imGUI;
@@ -32,6 +33,11 @@ string lobby_visible_hint;
 bool HasFocus() { return false; }
 
 bool CanGoBack() {
+    if(lobby_difficulty_open) {
+        lobby_difficulty_open = false;
+        focus_lobby_form = true;
+        return false;
+    }
     if(HasPopup()) {
         RemovePopup();
         return false;
@@ -100,6 +106,7 @@ void Update() {
     imGUI.update();
     if(GetInputPressed(controller_player, "menu_cancel")) {
         if(editing_name >= 0) editing_name = -1;
+        else if(lobby_difficulty_open && !ImGui_IsAnyPopupOpen()) { lobby_difficulty_open = false; focus_lobby_form = true; }
         else if(!ImGui_IsAnyPopupOpen()) this_ui.SendCallback("back");
     }
     uint revision = LobbySnapshotRevision();
@@ -113,7 +120,7 @@ void Update() {
             lobby_displayed_mode = mode;
         }
     }
-    LobbySetJoinInputEnabled(!LobbyMigrationBusy() && editing_name < 0 && !ImGui_IsAnyItemActive() && !ImGui_IsAnyPopupOpen());
+    LobbySetJoinInputEnabled(!lobby_difficulty_open && !LobbyMigrationBusy() && editing_name < 0 && !ImGui_IsAnyItemActive() && !ImGui_IsAnyPopupOpen());
 }
 
 void Resize() { imGUI.doScreenResize(); setBackGround(); }
@@ -187,7 +194,7 @@ void DrawLobbyHint() {
     if(lobby_visible_hint == "") return;
     ImGui_PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
     ImGui_BeginTooltip();
-    ImGui_PushTextWrapPos(min(380.0f, float(GetScreenWidth()) - 48.0f));
+    ImGui_PushTextWrapPos(min(480.0f, float(GetScreenWidth()) - 48.0f));
     ImGui_TextWrapped(lobby_visible_hint);
     ImGui_PopTextWrapPos();
     ImGui_EndTooltip();
@@ -275,8 +282,7 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
             if(query != "" && ToLowerCase(mode.maps[i].title).findFirst(query) < 0) {
                 continue;
             }
-            if(ImGui_Selectable(mode.maps[i].title + "##map" + i, mode.maps[i].path == current,
-                                0, vec2(0.0f, 28.0f * scale))) {
+            if(MPComboOption(mode.maps[i].title + "##map" + i, mode.maps[i].path == current)) {
                 if(LobbyChooseMap(selected, int(i))) {
                     notice = "";
                 }
@@ -306,12 +312,14 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
 }
 
 void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) {
-    LobbyForm("Players", position, size, scale);
-    ImGui_TextColored(kLobbyDim, "Unassigned controllers: press any button. Keyboard: press Enter to join.");
+    bool compact_players = size.y < 400.0f;
+    LobbyForm("Players", position, size, scale, !compact_players);
+    ImGui_TextColored(kLobbyDim, compact_players ? "Controllers: press any button. Keyboard: Enter." :
+        "Unassigned controllers: press any button. Keyboard: press Enter to join.");
     LobbyHint("Press any button on an unassigned controller to join. Keyboard users press Enter.");
     ImGui_Spacing();
     int locals = LocalPlayers();
-    float footer_height = (LobbyIsHost() ? 136.0f : 92.0f) * scale;
+    float footer_height = (compact_players ? 88.0f : 156.0f) * scale;
     float list_height = max(100.0f, ImGui_GetContentRegionAvail().y - footer_height);
     ImGui_BeginChild("player_list", vec2(0.0f, list_height), true);
     MPWindowScale(1.0f);
@@ -341,19 +349,19 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     for(uint i = 0; i < lobby_players.length(); ++i) {
         LobbyPlayer player = lobby_players[i];
         ImGui_PushID(int(player.id));
-        ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), player.name);
+        ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), LobbyShortName(player.name));
         LobbyHint(player.bot ? "AI player with a name and team. No controller or screen required." :
             player.local ? "Local player. This computer's leader manages their name and screen." :
                            "Remote player. Their local leader manages their name and screens.");
-        string association = player.bot ? "Bot" : (player.local ? "This couch P" : "Remote P") + (player.local_index + 1);
-        if(player.host) {
-            association += " / lobby host";
-        }
-        if(player.leader) {
-            association += " / local leader";
+        int info_lines = 2;
+        string association = player.bot ? "Bot" : (player.local ? "Couch P" : "Remote P") + (player.local_index + 1);
+        if(player.host || player.leader) {
+            association += "\n" + (player.host && player.leader ? "Host / Leader" : player.host ? "Host" : "Local leader");
+            ++info_lines;
         }
         if(!player.bot && !player.connected) {
-            association += " / disconnected";
+            association += "\nDisconnected";
+            ++info_lines;
         }
         ImGui_TextColored(kLobbyDim, association);
         LobbyHint("Host: match decisions. Local leader: this computer's screens, names, and players.");
@@ -400,7 +408,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         ImGui_NextColumn();
         // Align the interactive controls with Edit name, so right/left on a
         // controller stays on this player's row rather than jumping a row.
-        ImGui_Dummy(vec2(0.0f, 2.0f * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
+        ImGui_Dummy(vec2(0.0f, float(info_lines) * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
         int team = min(int(teams.length()) - 1, max(0, player.team - 1));
         ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanSetPlayerTeam(player.id));
         ImGui_PushItemWidth(-1.0f);
@@ -411,7 +419,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         ImGui_PopItemWidth();
         ImGui_EndDisabled();
         ImGui_NextColumn();
-        ImGui_Dummy(vec2(0.0f, 2.0f * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
+        ImGui_Dummy(vec2(0.0f, float(info_lines) * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
         if(player.bot) {
             ImGui_TextColored(kLobbyDim, "None");
             LobbyHint("Bots do not need screens.");
@@ -419,7 +427,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             int screen = min(locals - 1, max(0, player.screen - 1));
             ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
             ImGui_PushItemWidth(-1.0f);
-            if(ImGui_Combo("##screen", screen, screens)) {
+            if(MPCombo("##screen", screen, screens)) {
                 LobbySetPlayerScreen(player.id, screen + 1);
             }
             LobbyHint("Choose a screen; occupied positions swap players. Local leader only.");
@@ -430,7 +438,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             int none = 0;
             ImGui_BeginDisabled(true);
             ImGui_PushItemWidth(-1.0f);
-            ImGui_Combo("##screen", none, remote_screen);
+            MPCombo("##screen", none, remote_screen);
             LobbyHint("This player's local leader assigns screens on their computer.");
             ImGui_PopItemWidth();
             ImGui_EndDisabled();
@@ -444,16 +452,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     ImGui_EndChild();
     MPWindowScale(scale);
     ImGui_Spacing();
-    if(LobbyIsHost()) {
-        ImGui_BeginDisabled(LobbyMigrationBusy());
-        if(MPButton("Add bot", vec2(-1.0f, 36.0f * scale))) {
-            if(!LobbyAddBot()) notice = "Couldn't add a bot.";
-            else notice = "";
-        }
-        LobbyHint("Add an AI teammate. No controller or screen required. Host only.");
-        ImGui_EndDisabled();
-    }
-    ImGui_TextColored(kLobbyDim, "The local leader assigns this couch's screens and names. Team permissions are set by the host.");
+    DrawLobbySessionActions(scale, LobbyIsHost() && !LobbyMigrationBusy(), compact_players);
     LobbyEndForm();
 }
 
@@ -472,7 +471,7 @@ void DrawModeRate(const string &in key, const string &in label, const string &in
     array<string> rates = {"Off", "Gentle", "Standard", "Brisk"};
     ImGui_BeginDisabled(!enabled);
     ImGui_PushItemWidth(-1.0f);
-    if(ImGui_Combo("##" + key, rate, rates) && !LobbySetModeSetting(key, rate)) {
+    if(MPCombo("##" + key, rate, rates) && !LobbySetModeSetting(key, rate)) {
         notice = "That mode setting could not be changed.";
     }
     ImGui_PopItemWidth();
@@ -482,99 +481,53 @@ void DrawModeRate(const string &in key, const string &in label, const string &in
 
 void DrawModeSettingsForm(const vec2 &in position, const vec2 &in size, float scale) {
     LobbyForm("Mode settings", position, size, scale);
-    if(focus_lobby_form && LobbyInitialForm() == "Mode settings") {
-        ImGui_SetWindowFocus();
-        focus_lobby_form = false;
-    }
-    int selected = LobbySelectedMode();
-    if(selected < 0 && LobbyGetMode() == "" && LobbyGetCampaign() == "") {
-        ImGui_TextColored(kLobbyDim, "Choose a mode to see its settings.");
-        LobbyEndForm();
-        return;
-    }
-    string title = selected >= 0 ? lobby_modes[selected].title :
-                   LobbyGetMode() == "sandbox" ? "Sandbox" : LobbyGetMode();
-    ImGui_TextColored(kLobbyTitle, title);
+    if(focus_lobby_form && LobbyInitialForm() == "Mode settings") { ImGui_SetWindowFocus(); focus_lobby_form = false; }
     if(LobbyGetBuildMode()) {
-        ImGui_TextWrapped("Build mode uses the level editor. Match difficulty rules apply to play modes.");
+        ImGui_TextWrapped("Build mode uses the level editor. Difficulty rules apply to play modes.");
         LobbyEndForm();
         return;
     }
-    bool can_edit = LobbyIsHost() && !LobbyMigrationBusy();
-    ImGui_BeginDisabled(!can_edit);
-    ImGui_TextColored(kLobbyTitle, "Enemy difficulty increases");
-    ImGui_TextColored(kLobbyDim, "These options make enemies tougher as you play.");
-    DrawModeRate("challenge_time", "Harder over time", "Standard: +5% enemy durability every five active minutes. Pauses and cutscenes do not count.");
-    if(LobbyModeIsArena() || LobbyModeIsCampaign()) {
-        DrawModeRate("challenge_round", LobbyModeIsArena() ? "Harder after each match" : "Harder after each level",
-                     LobbyModeIsArena() ? "Standard: +8% enemy durability after each match, regardless of winner." :
-                                          "Standard: +8% enemy durability per completed level. Retrying a level does not count again.");
+    ImGui_TextColored(kLobbyTitle, LobbyScalingDifficulty() ? "Scaling difficulty" : "Traditional difficulty");
+    ImGui_TextColored(kLobbyDim, "Base: " + GetConfigValueString("difficulty_preset"));
+    if(MPButton("Difficulty", vec2(-1.0f, 44.0f * scale))) {
+        lobby_difficulty_open = true;
+        lobby_difficulty_focus = true;
     }
-    DrawModeRate("challenge_win", "Harder after winning fights", "Standard: +4% enemy durability when your team wins a fight.");
-    bool adaptive = LobbyGetModeSetting("challenge_adaptive") != 0;
-    DrawModeRate("challenge_death", "Harder after player defeats", "Standard: +5% enemy difficulty pressure per human defeat. Knockout then death counts once; bots do not count.", !adaptive);
-    bool wins_enabled = LobbyGetModeSetting("challenge_win") != 0;
-    ImGui_BeginDisabled(!wins_enabled);
-    if(MPCheckbox("Adaptive win difficulty", adaptive)) {
-        if(!LobbySetModeSetting("challenge_adaptive", adaptive ? 1 : 0)) notice = "That mode setting could not be changed.";
-    }
-    LobbyHint("Each human defeat cuts that fight's victory increase by 25%, down to zero. Replaces the separate defeat increase.");
-    ImGui_EndDisabled();
-    ImGui_TextColored(kLobbyDim, wins_enabled ? "Each player defeat reduces that fight's difficulty increase on victory by 25%." :
-                                               "Enable harder after winning fights to use adaptive difficulty.");
-    if(adaptive) ImGui_TextColored(kLobbyDim, "Adaptive win difficulty replaces the increase after player defeats.");
-    ImGui_Spacing();
-    ImGui_TextColored(kLobbyDim, "Up to +150% enemy durability, with total durability capped at 6x. Damage and armor rise more gently; AI is unchanged.");
-    ImGui_Separator();
-    ImGui_TextColored(kLobbyTitle, "Starting difficulty and mode rules");
+    LobbyHint("Choose the starting preset and configure all optional difficulty scaling in one place. The host edits these settings.");
     if(LobbyModeIsArena()) {
+        ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy());
         bool random = ConfigHasKey("oo_arena_random") && GetConfigValueBool("oo_arena_random");
-        if(MPCheckbox("Arena randomizer", random)) {
-            SetConfigValueBool("oo_arena_random", random);
-            SaveConfig();
-        }
-        LobbyHint("Randomize Arena fighters' species, appearance, and equipment. Host only.");
+        if(MPCheckbox("Arena randomizer", random)) { SetConfigValueBool("oo_arena_random", random); SaveConfig(); }
+        LobbyHint("Randomize Arena fighters' species, appearance and equipment independently of difficulty progression.");
+        ImGui_EndDisabled();
     }
-    if(LobbyModeIsCampaign()) {
-        bool party_scaling = ConfigHasKey("campaign_mp_scaling") && GetConfigValueBool("campaign_mp_scaling");
-        if(MPCheckbox("Party-size difficulty", party_scaling)) {
-            SetConfigValueBool("campaign_mp_scaling", party_scaling);
-            SaveConfig();
-        }
-        LobbyHint("Add enemies and strengthen them as your party grows. Bots count less; enemy numbers taper off. Friendly bots keep base stats.");
-        ImGui_TextColored(kLobbyDim, "Humans count as 4 bots for stats, 2 for extra enemies. Enemy numbers grow quickly at first, then taper off.");
-    }
-    if(MPButton("Base difficulty", vec2(-1.0f, 36.0f * scale))) {
-        this_ui.SendCallback("difficulty_menu.as");
-    }
-    LobbyHint("Choose the starting combat difficulty. Party scaling and progression apply on top.");
-    ImGui_EndDisabled();
-    if(!LobbyIsHost()) ImGui_TextColored(kLobbyDim, "The lobby host chooses mode settings.");
     LobbyEndForm();
 }
 
-void DrawLobbySessionActions(float scale, bool can_edit) {
+void DrawLobbySessionActions(float scale, bool can_edit, bool compact = false) {
     bool ready = can_edit && LobbyCanStart();
+    float half = (ImGui_GetContentRegionAvailWidth() - 10.0f) * 0.5f;
     ImGui_BeginDisabled(!ready);
-    if(MPButton("Start game", vec2(-1.0f, 48.0f * scale))) {
+    if(MPButton("Start game", vec2(compact ? half : -1.0f, (compact ? 40.0f : 48.0f) * scale))) {
         if(!LobbyStart()) notice = "The game could not start. Check the selection and connected players.";
     }
     LobbyHint("Start the selected mode and map with this roster. Resets difficulty progression.");
+    ImGui_EndDisabled();
+    if(compact) ImGui_SameLine(0.0f, 10.0f);
+    bool can_leave = LobbyCanLeave();
+    ImGui_BeginDisabled(!can_leave);
+    if(MPButton(Online_IsHosting() ? "Close lobby" : "Leave lobby", vec2(compact ? half : -1.0f, (compact ? 40.0f : 36.0f) * scale))) {
+        if(LobbyTryLeave()) this_ui.SendCallback("back");
+        else notice = "The lobby could not close. Use the host or local leader.";
+    }
+    LobbyHint(Online_IsHosting() ? "Close the session for everyone. Transfer host first to let others keep playing." :
+                                   "Disconnect this computer and its local players.");
     ImGui_EndDisabled();
     if(!LobbyIsHost()) ImGui_TextWrapped("Waiting for the host to start.");
     else if(!LobbyCanStart()) ImGui_TextWrapped("Choose a mode and map before starting.");
     if(notice != "") ImGui_TextColored(kLobbyWarn, notice);
     if(LobbyGetMigrationStatus() != "") ImGui_TextColored(kLobbyTitle, LobbyGetMigrationStatus());
-    bool can_leave = LobbyCanLeave();
-    ImGui_BeginDisabled(!can_leave);
-    if(MPButton(Online_IsHosting() ? "Close lobby" : "Leave lobby", vec2(-1.0f, 36.0f * scale))) {
-        if(LobbyTryLeave()) this_ui.SendCallback("back");
-        else notice = "The lobby could not close. Try again with the host or local leader.";
-    }
-    LobbyHint(Online_IsHosting() ? "Close the session for everyone. Transfer host first to let others keep playing." :
-                                   "Disconnect this computer and its local players.");
-    ImGui_EndDisabled();
-    if(!can_leave && !leave_denied) ImGui_TextColored(kLobbyDim, "To leave, use the host's or local leader's controller.");
+    if(!can_leave && !leave_denied) ImGui_TextColored(kLobbyDim, "Use the host's or local leader's controller to leave.");
 }
 
 void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) {
@@ -584,12 +537,22 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
         focus_lobby_form = false;
     }
     bool can_edit = LobbyIsHost() && !LobbyMigrationBusy();
-    DrawLobbySessionActions(scale, can_edit);
+    ImGui_BeginDisabled(!can_edit);
+    if(MPButton("Add bot", vec2(-1.0f, 40.0f * scale))) { if(!LobbyAddBot()) notice = "Could not add a bot."; }
+    LobbyHint("Add an AI teammate. Bots have teams but do not need a controller or screen.");
+    ImGui_EndDisabled();
     ImGui_Separator();
     // The form itself scrolls. A nested child would be a separate controller
     // navigation scope, trapping focus between its options and Start/Close.
     ImGui_PushTextWrapPos(0.0f);
     ImGui_BeginDisabled(!can_edit);
+    bool localized_armor = GetConfigValueBool("armor_localized");
+    if(MPCheckbox("Localized armor protection", localized_armor)) {
+        SetConfigValueBool("armor_localized", localized_armor);
+        SaveConfig();
+    }
+    LobbyHint("On: armor protects the body regions its pieces cover. Off: use the old whole-body metal-armor protection. Host only.");
+    ImGui_Spacing();
     bool all_pause = LobbyGetAllowAllPause();
     if(MPCheckbox("Everyone may pause", all_pause)) {
         LobbySetAllowAllPause(all_pause);
@@ -736,18 +699,26 @@ void DrawGUI() {
     float width = min(1720.0f, sw - margin * 2.0f);
     float x = (sw - width) * 0.5f;
     float top = max(24.0f, sh * 0.06f);
-    float header_h = 94.0f * scale;
+    float header_h = 120.0f * scale;
     float body_y = top + header_h + gap;
     float body_h = sh - body_y - margin;
     ImGui_PushStyleVar(ImGuiStyleVar_WindowPadding, vec2(16.0f, 16.0f));
     ImGui_PushStyleVar(ImGuiStyleVar_ItemSpacing, vec2(10.0f, 10.0f));
+    ImGui_BeginDisabled(lobby_difficulty_open);
     LobbyForm("Lobby", vec2(x, top), vec2(width, header_h), scale, false);
+    ImGui_Columns(2, false);
+    ImGui_SetColumnWidth(0, max(250.0f, width - 340.0f * scale));
     ImGui_PushMenuFont(true);
     ImGui_TextColored(kLobbyTitle, Online_IsHosting() ? "Host lobby" : "Joined lobby");
     ImGui_PopFont();
-    ImGui_SameLine();
-    ImGui_TextColored(kLobbyDim, " / " + lobby_players.length() + " players / " + LocalPlayers() + " on this couch");
-    ImGui_TextColored(kLobbyDim, LobbyRoleSummary());
+    if(sw >= 1000.0f) {
+        ImGui_SameLine();
+        ImGui_TextColored(kLobbyDim, " / " + lobby_players.length() + " players / " + LocalPlayers() + " on this couch");
+        ImGui_TextColored(kLobbyDim, LobbyRoleSummary());
+    } else ImGui_TextColored(kLobbyDim, "" + lobby_players.length() + " players / " + LocalPlayers() + " local");
+    ImGui_NextColumn();
+    DrawLobbyDifficultyMode();
+    ImGui_Columns(1);
     LobbyEndForm();
 
     if(sw >= 1100.0f) {
@@ -764,20 +735,20 @@ void DrawGUI() {
         // Keep every form comfortably wide on smaller windows; the tab row
         // switches complete forms instead of squeezing their controls together.
         bool compact_tabs = sw < 800.0f;
-        float tab_h = compact_tabs ? 82.0f : 66.0f;
-        float tab_button_h = compact_tabs ? 44.0f : 28.0f;
+        float tab_h = compact_tabs ? 68.0f : 66.0f;
+        float tab_button_h = compact_tabs ? 36.0f : 28.0f;
         LobbyForm("##lobby_sections", vec2(x, body_y), vec2(width, tab_h), scale, false);
         float tab_w = (ImGui_GetContentRegionAvailWidth() - 30.0f) / 4.0f;
-        if(MPButton(compact_tabs ? "Mode\nand map" : "Mode and map", vec2(tab_w, tab_button_h))) { small_panel = 0; focus_lobby_form = true; }
+        if(MPButton(compact_tabs ? "Modes" : "Mode and map", vec2(tab_w, tab_button_h))) { small_panel = 0; focus_lobby_form = true; }
         LobbyHint("Choose the game mode and map. Host only.");
         ImGui_SameLine();
         if(MPButton("Players", vec2(tab_w, tab_button_h))) { small_panel = 1; focus_lobby_form = true; }
         LobbyHint("Manage players, names, teams, and this computer's screens.");
         ImGui_SameLine();
-        if(MPButton(compact_tabs ? "Mode\nsettings" : "Mode settings", vec2(tab_w, tab_button_h))) { small_panel = 2; focus_lobby_form = true; }
+        if(MPButton(compact_tabs ? "Rules" : "Mode settings", vec2(tab_w, tab_button_h))) { small_panel = 2; focus_lobby_form = true; }
         LobbyHint("Set the starting difficulty and optional enemy difficulty increases. Host only.");
         ImGui_SameLine();
-        if(MPButton(compact_tabs ? "Hosting\noptions" : "Hosting options", vec2(tab_w, tab_button_h))) { small_panel = 3; focus_lobby_form = true; }
+        if(MPButton(compact_tabs ? "Host" : "Hosting options", vec2(tab_w, tab_button_h))) { small_panel = 3; focus_lobby_form = true; }
         LobbyHint("Manage session permissions, invitations, starting, and leaving.");
         LobbyEndForm();
         vec2 panel_position(x, body_y + tab_h + gap);
@@ -788,6 +759,8 @@ void DrawGUI() {
         else { DrawHostingForm(panel_position, panel_size, scale); }
     }
     DrawNameForm(scale);
+    ImGui_EndDisabled();
+    DrawLobbyDifficultyForm(scale);
     DrawLobbyHint();
     ImGui_PopStyleVar(2);
     MPStyleEnd();

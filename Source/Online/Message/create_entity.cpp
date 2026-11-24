@@ -33,10 +33,11 @@
 #include <Editors/map_editor.h>
 
 namespace OnlineMessages {
-CreateEntity::CreateEntity(const string& path, const vec3& pos, ObjectID entity_object_id) : OnlineMessageBase(OnlineMessageCategory::LEVEL_PERSISTENT),
+CreateEntity::CreateEntity(const string& path, const vec3& pos, ObjectID entity_object_id, bool stripped_npc) : OnlineMessageBase(OnlineMessageCategory::LEVEL_PERSISTENT),
                                                                                              path(path),
                                                                                              pos(pos),
-                                                                                             entity_object_id(entity_object_id) {
+                                                                                             entity_object_id(entity_object_id),
+                                                                                             stripped_npc(stripped_npc) {
 }
 
 binn* CreateEntity::Serialize(void* object) {
@@ -46,6 +47,7 @@ binn* CreateEntity::Serialize(void* object) {
     binn_object_set_std_string(l, "path", ce->path);
     binn_object_set_vec3(l, "pos", ce->pos);
     binn_object_set_int32(l, "id", ce->entity_object_id);
+    if (ce->stripped_npc) binn_object_set_bool(l, "stripped_npc", true);
 
     return l;
 }
@@ -56,18 +58,22 @@ void CreateEntity::Deserialize(void* object, binn* l) {
     binn_object_get_std_string(l, "path", &ce->path);
     binn_object_get_vec3(l, "pos", &ce->pos);
     binn_object_get_int32(l, "id", &ce->entity_object_id);
+    BOOL stripped = false;
+    binn_object_get_bool(l, "stripped_npc", &stripped);
+    ce->stripped_npc = stripped;
 }
 
 void CreateEntity::Execute(const OnlineMessageRef& ref, void* object, PeerID peer) {
     CreateEntity* ce = static_cast<CreateEntity*>(object);
     SceneGraph* sg = Engine::Instance()->GetSceneGraph();
     Online* online = Online::Instance();
+    if (ce->stripped_npc && online->IsHosting()) return;  // host-only reinforcement templates
     if (!OnlineUtility::IsSafeAssetPath(ce->path) || !std::isfinite(ce->pos[0]) || !std::isfinite(ce->pos[1]) || !std::isfinite(ce->pos[2])) {
         return;  // (an object file under Data/, somewhere real)
     }
 
     if (sg != nullptr) {
-        sg->map_editor->CreateObjectFromHost(ce->path, ce->pos, ce->entity_object_id);
+        sg->map_editor->CreateObjectFromHost(ce->path, ce->pos, ce->entity_object_id, ce->stripped_npc);
     }
 }
 

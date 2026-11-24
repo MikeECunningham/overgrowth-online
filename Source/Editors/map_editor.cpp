@@ -3745,8 +3745,26 @@ const TerrainInfo* MapEditor::GetPreviewTerrainInfo() const {
     return (terrain_preview ? &terrain_preview->terrain_info() : NULL);
 }
 
-bool MapEditor::CreateObjectFromHost(const std::string& path, const vec3& pos, CommonObjectID host_id) {
+bool MapEditor::CreateObjectFromHost(const std::string& path, const vec3& pos, CommonObjectID host_id, bool stripped_npc) {
     int retVal = LoadEntitiesFromFile(path);
+    if (stripped_npc) {
+        // Match the host's generated character template. Loading the full
+        // authored prefab would add phantom armor, weapons and story links
+        // that the host deliberately omitted from this reinforcement.
+        auto actor = std::find_if(add_desc_list_.begin(), add_desc_list_.end(), [](const EntityDescription& desc) {
+            return GetTypeFromDesc(desc) == _movement_object;
+        });
+        if (actor == add_desc_list_.end()) return false;
+        EntityDescription clean = *actor;
+        clean.children.clear();
+        clean.fields.erase(std::remove_if(clean.fields.begin(), clean.fields.end(), [](const EntityDescriptionField& field) {
+            return field.type == EDF_IS_PLAYER || field.type == EDF_CONNECTIONS || field.type == EDF_CONNECTIONS_FROM ||
+                   field.type == EDF_ITEM_CONNECTIONS || field.type == EDF_ENV_OBJECT_ATTACH;
+        }), clean.fields.end());
+        clean.AddBool(EDF_IS_PLAYER, false);
+        add_desc_list_.assign(1, clean);
+        create_as_prefab_ = false;
+    }
     ActorsEditor_AddEntitiesAtPosition(add_desc_list_source_, scenegraph_, add_desc_list_, pos, create_as_prefab_, host_id);
 
     return retVal == 0;

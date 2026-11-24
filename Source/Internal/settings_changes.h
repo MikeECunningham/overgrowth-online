@@ -9,7 +9,9 @@ namespace SettingsChanges {
 inline bool CampaignMatchSetting(const std::string& key) {
     return key == "difficulty_preset" || key == "game_difficulty" ||
            key == "global_time_scale_mult" || key == "tutorials" || key == "auto_ledge_grab" ||
-           key == "campaign_mp_scaling" || key == "campaign_mp_nightmare" || key == "oo_arena_random";
+           key == "campaign_mp_scaling" || key == "campaign_mp_nightmare" || key == "difficulty_scaling" ||
+           key == "campaign_ai_scaling" || key == "campaign_armor_scaling" || key == "campaign_weapon_scaling" ||
+           key == "armor_localized" || key == "oo_arena_random";
 }
 
 inline bool StartsWith(const std::string& value, const char* prefix) {
@@ -25,8 +27,8 @@ inline bool NeedsGraphicsReload(const std::string& key) {
         "music_volume", "master_volume", "motion_blur_amount", "brightness",
         "temporal_aa_sharpness", "dlss_sharpness", "fsr_sharpness",
         "difficulty_preset", "difficulty_preset_value", "game_difficulty", "global_time_scale_mult", "tutorials",
-        "campaign_mp_scaling", "campaign_mp_nightmare",
-        "auto_ledge_grab", "auto_camera", "fps_label", "language", "custom_resolution", "last_ip"
+        "campaign_mp_scaling", "campaign_mp_nightmare", "difficulty_scaling", "campaign_ai_scaling", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized",
+        "auto_ledge_grab", "auto_camera", "fps_label", "show_difficulty_readout", "language", "custom_resolution", "last_ip"
     };
     for (const char* value : runtime) if (key == value) return false;
     // Preserve the full reload for unknown/custom settings.
@@ -45,7 +47,7 @@ inline bool SharedClientSetting(const std::string& key) {
         "simple_water", "custom_level_shaders", "particle_field", "particle_field_simple",
         "depth_of_field", "depth_of_field_reduced", "music_volume", "master_volume",
         "difficulty_preset", "game_difficulty", "global_time_scale_mult", "tutorials",
-        "campaign_mp_scaling", "campaign_mp_nightmare",
+        "campaign_mp_scaling", "campaign_mp_nightmare", "difficulty_scaling", "campaign_ai_scaling", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized",
         "auto_ledge_grab", "fps_label", "language", "blood", "blood_color", "split_screen",
         "auto_camera", "custom_resolution"
     };
