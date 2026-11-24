@@ -180,6 +180,8 @@ key[drop]:                  q
 key[skip_dialogue]:         return
 key[rclick]:                rshift
 key[attack]:                mouse0
+key[spectate_previous]:     q
+key[spectate_next]:         e
 key[grab]:                  mouse2
 key[walk]:                  lctrl
 key[menu_up]:               up
@@ -216,6 +218,8 @@ gamepad[look_right]:     rightx+
 gamepad[jump]:           rightshoulder
 gamepad[crouch]:         leftshoulder
 gamepad[attack]:         righttrigger
+gamepad[spectate_previous]: leftshoulder
+gamepad[spectate_next]:     rightshoulder
 gamepad[grab]:           lefttrigger
 gamepad[item]:           a
 gamepad[drop]:           x

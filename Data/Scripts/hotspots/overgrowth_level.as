@@ -51,6 +51,10 @@ string success_sting = "Data/Music/slaver_loop/the_slavers_success.wav";
 string defeat_sting = "Data/Music/slaver_loop/the_slavers_defeat.wav";
 string death_message = "Press $attack$ to try again";
 
+bool CampaignPartyActive() {
+    return Online_IsActive() && Online_CoopRosterSize() > 1;
+}
+
 // Audience info
 float audience_excitement;
 float total_excitement;
@@ -492,13 +496,18 @@ void CheckReset() {
 
     // Trigger whatever happens at the start of this goal
     TriggerGoalPre();
+    // Bots reset at their creation points. Regroup the co-op roster only
+    // after authored checkpoint placement and any starting dialogue is set up.
+    if(Online_IsHosting() && Online_CampaignPartySize() > 1) {
+        level.SendMessage("coop_checkpoint_regroup " + Online_ChallengeReferenceAvatar());
+    }
     LeaveTelemetryZone();
 }
 
 
 void PossibleWinEvent(const string &in event, int val, int goal_check, int recursion = 0){
     // Online the host decides goals (clients follow its progress), and they
-    // stop only when every player is down
+    // stop only when every human on the main character team is down
     if(Online_IsActive() ? (Online_IsClient() || AllPlayersDown()) : ko_time != -1.0){
         return;
     }
@@ -617,6 +626,15 @@ void ReceiveMessage(string msg) {
     }
 
     string msg_start = token_iter.GetToken(msg);
+    if(msg_start == "coop_recheck_encounter") {
+        // Native reinforcement allocation can release a held defeat goal
+        // without another character being knocked out (for example when no
+        // safe spawn remains). Recheck only the goal that requested it.
+        if(token_iter.FindNextToken(msg) && atoi(token_iter.GetToken(msg)) == progress && win_time == -1.0) {
+            PossibleWinEvent("character_defeated", -1, progress);
+        }
+        return;
+    }
     if(msg_start == "reset"){
         CoopCourseReset();
         progress_sync_next = 0.0f;
@@ -893,10 +911,11 @@ void Update() {
         bool use_keyboard = (max(last_mouse_event_time, last_keyboard_event_time) > last_controller_event_time);
         if(char.GetIntVar("knocked_out") != _awake) {
             string respawn = params.GetString("death_message");
-            if(Online_IsActive()){
-                respawn = "\nYou are down. You get up at the next checkpoint; if everyone is down, the level starts over.";
+            if(CampaignPartyActive()){
+                respawn = AllPlayersDown() ? "\nAll human teammates are down. Press $attack$ to restart the checkpoint now, or wait for the automatic restart." :
+                                            "\nYou are down. You will rejoin at the next checkpoint.";
                 if(Online_Spectating() != ""){
-                    respawn += "\nWatching " + Online_Spectating() + "  ($attack$: the next player)";
+                    respawn += "\nWatching " + Online_Spectating() + (use_keyboard ? "  (Q/E: previous/next)" : "  (L1/R1: previous/next)");
                 }
             }
             int index = respawn.findFirst("$attack$");
@@ -994,7 +1013,11 @@ void PreDraw(float curr_game_time) {
                 PlayDeathSting();
                 can_press_attack = false;
             }
-            if(ko_time < the_time - 1.0){
+            // Party retries are authorized by the host through level.as.
+            // Only a true solo uses this original restart handler.
+            bool manual_restart = !CampaignPartyActive() && Online_Spectating() == "";
+            if(!manual_restart) can_press_attack = false;
+            if(manual_restart && ko_time < the_time - 1.0){
                 if(!GetInputDown(0, "attack")){
                     can_press_attack = true;
                 }

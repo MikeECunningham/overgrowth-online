@@ -732,14 +732,25 @@ class Online {
     void ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai);
     bool CoopCampaign();                            // the level belongs to a linear (story) campaign
     vector<ObjectID> PlayerAvatarIDs();             // every player's character here
-    void CoopUpdate(SceneGraph* sg);                // host: everyone down for 5 s -> reset
+    void CoopUpdate(SceneGraph* sg);                // host: all main-team humans down for 5s -> checkpoint restart
+    int CoopRosterSize() const;                     // admitted humans/bots with actors, on any team
+    bool RequestCoopCheckpointRestart(ObjectID avatar = -1);  // a down local human requests an all-human-wipe retry
+    bool CanCoopCheckpointRestart(PeerID peer, ObjectID avatar);
+    ObjectID coop_restart_avatar = -1;
+    PeerID coop_restart_peer = 0;
+    void CoopResetRegroup(SceneGraph* sg);           // after authored checkpoint restoration, including living bots
+    bool coop_regroup_pending = false;
+    bool coop_regroup_ready = false;
+    ObjectID coop_regroup_anchor = -1;
+    std::set<ObjectID> coop_regroup_waiting;
+    double coop_regroup_next_ms = 0.0;
     // host: a checkpoint was reached (by that character, if one did). The
-    // downed get up beside them at once, before the next goal's steps run
+    // downed humans/bots get up beside an awake human before the next goal's steps run
     // (a dialogue there would stand them up where they lie)
     void CoopCheckpoint(ObjectID by = -1);
     // Every machine, its own player's character: killed where no teammate can
     // reach the body (a fall, lava, spikes, deep water, out of the world), it
-    // gets up beside one who is up after a moment
+    // gets up beside another human who is up after a moment
     void CoopZoneRespawn(SceneGraph* sg);
     double coop_lost_since_ms = -1.0;
     ObjectID HostAvatarID() const;                  // the host's player's character here, or -1
@@ -762,13 +773,15 @@ class Online {
     };
     std::map<ObjectID, CutscenePlayerState> coop_cutscene_players;
     // Spectating: our own character is down and another player's isn't, so the
-    // camera follows theirs (the nearest; attack picks the next, level.as)
+    // camera follows theirs (the nearest; previous/next controls cycle them)
     void CoopSpectateUpdate(SceneGraph* sg);
-    void SpectateNext() { spectate_next = true; }
+    void SpectateNext() { spectate_next = true; spectate_previous = false; }
+    void SpectatePrevious() { spectate_previous = true; spectate_next = false; }
     string SpectateName() const { return spectate_name; }  // whose we watch, "" none
     ObjectID spectate_target = -1;
     string spectate_name;
     bool spectate_next = false;
+    bool spectate_previous = false;
     vec3 spectate_center;
     float spectate_distance = 3.0f;
     // Where each player's character last stood safely (the fallback of the spot search)

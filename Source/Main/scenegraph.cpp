@@ -23,6 +23,7 @@
 #include "scenegraph.h"
 
 #include <Graphics/decaltextures.h>
+#include <Graphics/decal_cluster_bounds.h>
 #include <Graphics/flares.h>
 #include <Graphics/graphics.h>
 #include <Graphics/raytrace.h>
@@ -89,6 +90,9 @@ extern Timer game_timer;
 #include <cassert>
 #include <algorithm>
 #include <cstring>
+#include <chrono>
+#include <array>
+#include <limits>
 #include <unordered_set>
 
 extern const bool kUseShadowCache;
@@ -2178,6 +2182,28 @@ float ZCLUSTERFUNC(float val, float z_near, float z_mult) {
     return log(-1.0f * (val)-z_near + 1.0f) * z_mult;
 }
 
+namespace {
+void LogInvalidClusterBounds(DecalClusterBounds::Result result, const Object* source, const char* context) {
+    using Result = DecalClusterBounds::Result;
+    const int category = result == Result::InvalidWorld ? 0 : result == Result::InvalidView ? 1 :
+                         result == Result::InvalidProjection ? 2 : 3;
+    struct Limit { std::chrono::steady_clock::time_point next; unsigned suppressed = 0; };
+    static std::array<Limit, 4> limits;
+    Limit& limit = limits[category];
+    const auto now = std::chrono::steady_clock::now();
+    if (now < limit.next) { ++limit.suppressed; return; }
+    limit.next = now + std::chrono::seconds(1);
+    const char* stage = category == 0 ? "world transform" : category == 1 ? "view bounds" :
+                        category == 2 ? "projection/w" : "cluster grid";
+    LOGW << "Skipping invalid clustered " << context << " at " << stage
+         << "; source=" << (source ? source->GetID() : -1)
+         << "; path=" << (source ? source->obj_file : "<camera>")
+         << "; camera=" << ActiveCameras::GetID()
+         << "; suppressed=" << limit.suppressed << std::endl;
+    limit.suppressed = 0;
+}
+}
+
 void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_screen_end, vec2 screen_dims) {
     if (g_debug_runtime_disable_scene_graph_prepare_lights_and_decals) {
         return;
@@ -2205,17 +2231,46 @@ void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_sc
     // contain some things but not the things we need
 
     Graphics* graphics = Graphics::Instance();
-    const unsigned int width = (unsigned int)screen_dims[0];
-    const unsigned int height = (unsigned int)screen_dims[1];
-
+    using ClusterResult = DecalClusterBounds::Result;
+    // Validate camera/viewport inputs before inverse, division, allocation or
+    // float-to-integer conversion. These can be transiently unready in a load
+    // or a reflection view; retaining the source diagnostic matters more than
+    // replacing one assertion with another later in the light loop.
+    const double max_dimension = double(std::numeric_limits<unsigned>::max()) - cluster_size;
+    if (!DecalClusterBounds::Finite(vec3(screen_dims, 0.0f)) || screen_dims[0] <= 0 || screen_dims[1] <= 0 ||
+        screen_dims[0] > max_dimension || screen_dims[1] > max_dimension || !cluster_size || !num_z_clusters ||
+        !DecalClusterBounds::Finite(vec3(active_screen_start, 0.0f)) ||
+        !DecalClusterBounds::Finite(vec3(active_screen_end, 0.0f)) ||
+        active_screen_start[0] < 0 || active_screen_start[1] < 0 || active_screen_end[0] > 1 || active_screen_end[1] > 1 ||
+        active_screen_start[0] >= active_screen_end[0] || active_screen_start[1] >= active_screen_end[1]) {
+        LogInvalidClusterBounds(ClusterResult::InvalidGrid, nullptr, "camera viewport");
+        return;
+    }
+    const unsigned int width = static_cast<unsigned>(screen_dims[0]);
+    const unsigned int height = static_cast<unsigned>(screen_dims[1]);
     Camera* camera = ActiveCameras::Get();
-    LOG_ASSERT(camera);
+    if (!camera) {
+        LogInvalidClusterBounds(ClusterResult::InvalidView, nullptr, "camera");
+        return;
+    }
     mat4 proj_mat = camera->GetProjMatrix();
-    mat4 inv_proj_mat = invert(proj_mat);
     mat4 view_mat = camera->GetViewMatrix();
-    mat4 proj_view_mat = proj_mat * view_mat;
-    float z_near = camera->GetNearPlane();
-    float z_far = camera->GetFarPlane();
+    const float z_near = camera->GetNearPlane();
+    const float z_far = camera->GetFarPlane();
+    if (!DecalClusterBounds::Invertible(proj_mat) || !std::isfinite(z_near) || !std::isfinite(z_far) ||
+        z_near <= DecalClusterBounds::kMinimumW || z_far <= z_near) {
+        LogInvalidClusterBounds(ClusterResult::InvalidProjection, nullptr, "camera");
+        return;
+    }
+    if (!DecalClusterBounds::Invertible(view_mat)) {
+        LogInvalidClusterBounds(ClusterResult::InvalidView, nullptr, "camera");
+        return;
+    }
+    mat4 inv_proj_mat = invert(proj_mat);
+    if (!DecalClusterBounds::Finite(inv_proj_mat)) {
+        LogInvalidClusterBounds(ClusterResult::InvalidProjection, nullptr, "camera inverse");
+        return;
+    }
     mat4 cluster_mat;
 
     {
@@ -2247,7 +2302,13 @@ void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_sc
     const unsigned int grid_width = (width + cluster_size - 1) / cluster_size;
     const unsigned int grid_height = (height + cluster_size - 1) / cluster_size;
 
-    const unsigned int numclusters = grid_width * grid_height * num_z_clusters;
+    const uint64_t grid_count = uint64_t(grid_width) * grid_height * num_z_clusters;
+    if (!grid_width || !grid_height || grid_count > std::numeric_limits<unsigned>::max() ||
+        !DecalClusterBounds::Finite(cluster_mat)) {
+        LogInvalidClusterBounds(ClusterResult::InvalidGrid, nullptr, "camera");
+        return;
+    }
+    const unsigned int numclusters = static_cast<unsigned>(grid_count);
 
     const vec2 grid_size = vec2(float(grid_width), float(grid_height));
     const vec3 cluster_min_bound(active_screen_start * grid_size, -z_far);
@@ -2260,6 +2321,10 @@ void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_sc
     // multiplied by it so we get [0,num_z_clusters]
     float z_div = log(z_far - z_near + 1.0f) / num_z_clusters;
     float z_mult = 1.0f / z_div;
+    if (!std::isfinite(z_div) || z_div <= 0.0f || !std::isfinite(z_mult)) {
+        LogInvalidClusterBounds(ClusterResult::InvalidProjection, nullptr, "camera depth range");
+        return;
+    }
 
     ShaderClusterInfo clusterInfo;
     clusterInfo.num_decals = 0;
@@ -2331,80 +2396,22 @@ void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_sc
 
             decal.decal_tint[3] = dec->decal_file_ref->special_type + 0.5f;
 
-            mat4 mv_mat = view_mat * dec->GetTransform();
-
-            // calculate decal bounding box in view space
-            vec3 decal_view_min(FLT_MAX, FLT_MAX, FLT_MAX);
-            vec3 decal_view_max(-FLT_MAX, -FLT_MAX, -FLT_MAX);
-
-            Box decal_box = dec->box_;
-            for (int point = 0; point < Box::NUM_POINTS; point++) {
-                // strange thing: view space z decreases farther away
-                vec3 view_point = (mv_mat * vec4(decal_box.GetPoint(point), 1.0f)).xyz();
-                decal_view_min = components_min(decal_view_min, view_point);
-                decal_view_max = components_max(decal_view_max, view_point);
-            }
-
-            // LOGI << "decal " << i << std::endl;
-
-            // drop it if it's entirely behind the camera
-            if (decal_view_min.z() > -z_near) {
+            DecalClusterBounds::Bounds bounds;
+            ClusterResult result = DecalClusterBounds::Project(dec->box_, dec->GetTransform(), view_mat,
+                                                              cluster_mat, z_near, bounds);
+            if (result == ClusterResult::Culled || result == ClusterResult::Degenerate) continue;
+            if (result != ClusterResult::Visible) {
+                LogInvalidClusterBounds(result, dec, "decal");
                 continue;
             }
-            /*
-            LOGI << "decal_view_min: " << decal_view_min << std::endl;
-            LOGI << "decal_view_max: " << decal_view_max << std::endl;
-            */
-
-            // cap at near plane
-            decal_view_max.z() = min(-z_near, decal_view_max.z());
-
-            Box view_box;
-            view_box.center = (decal_view_min + decal_view_max) * 0.5f;
-            view_box.dims = decal_view_max - decal_view_min;
-
-            // calculate projection space bounding box
-            vec2 decal_proj_min(FLT_MAX, FLT_MAX);
-            vec2 decal_proj_max(-FLT_MAX, -FLT_MAX);
-
-            // TODO: we probably don't need to do the whole box, just the
-            // four points on the near face
-            for (int point = 0; point < Box::NUM_POINTS; point++) {
-                vec4 proj_point = cluster_mat * vec4(view_box.GetPoint(point), 1.0f);
-                // we know it's in front of the screen since we capped it at near plane
-                LOG_ASSERT_GTEQ(proj_point.w(), 0.0f);
-                vec2 proj_point2 = proj_point.xy() * (1.0f / proj_point.w());
-
-                decal_proj_min = components_min2(decal_proj_min, proj_point2);
-                decal_proj_max = components_max2(decal_proj_max, proj_point2);
-            }
-
-            /*
-            LOGI << "decal_proj_min: " << decal_proj_min << std::endl;
-            LOGI << "decal_proj_max: " << decal_proj_max << std::endl;
-            */
-
-            // we use projection-space .xy and view-space .z for clustering
-            vec3 decal_cluster_min(decal_proj_min, decal_view_min.z());
-            vec3 decal_cluster_max(decal_proj_max, decal_view_max.z());
-
-            // drop the decal if it's entirely off-screen
-            if (decal_cluster_min.x() > cluster_max_bound.x() || decal_cluster_max.x() < cluster_min_bound.x() || decal_cluster_min.y() > cluster_max_bound.y() || decal_cluster_max.y() < cluster_min_bound.y()) {
+            DecalClusterBounds::Grid grid;
+            result = DecalClusterBounds::ClipToGrid(bounds, cluster_min_bound, cluster_max_bound,
+                                                    grid_width, grid_height, num_z_clusters, z_near, z_mult, grid);
+            if (result == ClusterResult::Culled) continue;
+            if (result != ClusterResult::Visible) {
+                LogInvalidClusterBounds(result, dec, "decal");
                 continue;
             }
-
-            decal_cluster_min = components_max(decal_cluster_min, cluster_min_bound);
-            decal_cluster_max = components_max(decal_cluster_max, cluster_min_bound);
-            decal_cluster_min = components_min(decal_cluster_min, cluster_max_bound);
-            decal_cluster_max = components_min(decal_cluster_max, cluster_max_bound);
-
-            /*
-            LOGI << "decal_cluster_min: " << decal_cluster_min << std::endl;
-            LOGI << "decal_cluster_max: " << decal_cluster_max << std::endl << std::endl;
-            LOGI << "view_point " << point << ": " << view_point << std::endl;
-            LOGI << "proj_point " << point << ": " << proj_point << std::endl;
-            LOGI << "screen_point " << point << ": " << screen_point << std::endl;
-            */
 
             if (g_no_decal_elements) {
                 continue;
@@ -2443,36 +2450,9 @@ void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_sc
 
             memcpy(&decal_tbo[sizeof(ShaderDecal) / sizeof(float) * decal_index], &decal, sizeof(ShaderDecal));
 
-            unsigned int x_min = (unsigned int)decal_cluster_min.x();
-            unsigned int x_max = (unsigned int)ceil(decal_cluster_max.x());
-
-            unsigned int y_min = (unsigned int)decal_cluster_min.y();
-            unsigned int y_max = (unsigned int)ceil(decal_cluster_max.y());
-
-            // since z is "reversed" and min is actually the farthest value
-            // we swap min and max
-            unsigned int z_min = (unsigned int)(ZCLUSTERFUNC(decal_cluster_max.z(), z_near, z_mult));
-            unsigned int z_max = (unsigned int)ceil(ZCLUSTERFUNC(decal_cluster_min.z(), z_near, z_mult));
-
-            z_min = max(0u, z_min);
-            z_max = min(z_max, num_z_clusters - 1);
-
-            LOG_ASSERT_LTEQ(x_min, x_max);
-            LOG_ASSERT_LTEQ(y_min, y_max);
-            LOG_ASSERT_LTEQ(z_min, z_max);
-
-            // these can be equal to the max since they're used in a C-style loop
-            LOG_ASSERT_LTEQ(x_max, grid_width);
-            LOG_ASSERT_LTEQ(y_max, grid_height);
-            LOG_ASSERT_LTEQ(z_max, num_z_clusters);
-
-            /*
-            LOGI << "decal " << i << std::endl;
-            LOGI << " min:  " << decal_cluster_min << std::endl;
-            LOGI << " max:  " << decal_cluster_max << std::endl;
-            LOGI << "  z:" << z_min << " - " << z_max << std::endl;
-            LOGI << std::endl;
-            */
+            const unsigned x_min = grid.x_min, x_max = grid.x_max;
+            const unsigned y_min = grid.y_min, y_max = grid.y_max;
+            const unsigned z_min = grid.z_min, z_max = grid.z_max;
 
             for (unsigned int x = x_min; x < x_max; x++) {
                 for (unsigned int y = y_min; y < y_max; y++) {
@@ -2524,8 +2504,6 @@ void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_sc
     unsigned int num_lights = dynamic_lights.size();
     LOG_ASSERT_LT(num_lights, 65536);
 
-    mat4 cluster_view_mat = cluster_mat * view_mat;
-
     LOG_ASSERT_EQ((sizeof(ShaderLight) % sizeof(float)), 0);
     const unsigned int light_params = sizeof(ShaderLight) / sizeof(float);
     light_data_buffer.resize(num_lights * light_params);
@@ -2556,59 +2534,25 @@ void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_sc
             continue;
         }
 
-        // cap at near plane
-        view_max.z() = min(-z_near, view_max.z());
-
-        Box view_box;
-        view_box.center = (view_min + view_max) * 0.5f;
-        view_box.dims = view_max - view_min;
-
-        // calculate projection space bounding box
-        vec2 proj_min(FLT_MAX, FLT_MAX);
-        vec2 proj_max(-FLT_MAX, -FLT_MAX);
-
-        // TODO: we probably don't need to do the whole box, just the
-        // four points on the near face
-        for (int point = 0; point < Box::NUM_POINTS; point++) {
-            vec4 proj_point = cluster_mat * vec4(view_box.GetPoint(point), 1.0f);
-            // we know it's in front of the screen since we capped it at near plane
-            LOG_ASSERT_GTEQ(proj_point.w(), 0.0f);
-            vec2 proj_point2 = proj_point.xy() * (1.0f / proj_point.w());
-
-            proj_min = components_min2(proj_min, proj_point2);
-            proj_max = components_max2(proj_max, proj_point2);
-        }
-
-        /*
-        LOGI << "proj_min: " << proj_min << std::endl;
-        LOGI << "proj_max: " << proj_max << std::endl;
-        */
-
-        // we use projection-space .xy and view-space .z for clustering
-        vec3 cluster_min(proj_min, view_min.z());
-        vec3 cluster_max(proj_max, view_max.z());
-
-        // drop the light if it's entirely off-screen
-        if (cluster_min.x() > cluster_max_bound.x() || cluster_max.x() < cluster_min_bound.x() || cluster_min.y() > cluster_max_bound.y() || cluster_max.y() < cluster_min_bound.y()) {
+        DecalClusterBounds::Bounds bounds;
+        ClusterResult result = DecalClusterBounds::ProjectViewBounds(view_min, view_max, cluster_mat, z_near, bounds);
+        if (result == ClusterResult::Culled) continue;
+        if (result != ClusterResult::Visible) {
+            LogInvalidClusterBounds(result, nullptr, "light");
             continue;
         }
-
-        cluster_min = components_max(cluster_min, cluster_min_bound);
-        cluster_max = components_max(cluster_max, cluster_min_bound);
-        cluster_min = components_min(cluster_min, cluster_max_bound);
-        cluster_max = components_min(cluster_max, cluster_max_bound);
+        DecalClusterBounds::Grid grid;
+        result = DecalClusterBounds::ClipToGrid(bounds, cluster_min_bound, cluster_max_bound,
+                                                grid_width, grid_height, num_z_clusters, z_near, z_mult, grid);
+        if (result == ClusterResult::Culled) continue;
+        if (result != ClusterResult::Visible) {
+            LogInvalidClusterBounds(result, nullptr, "light");
+            continue;
+        }
 
         if (g_no_decal_elements) {
             continue;
         }
-        /*
-        LOGI << "cluster_min: " << cluster_min << std::endl;
-        LOGI << "cluster_max: " << cluster_max << std::endl << std::endl;
-        LOGI << "view_point " << point << ": " << view_point << std::endl;
-        LOGI << "proj_point " << point << ": " << proj_point << std::endl;
-        LOGI << "screen_point " << point << ": " << screen_point << std::endl;
-        */
-
         unsigned int light_buf_index = num_alive_lights;
         num_alive_lights++;
 
@@ -2619,36 +2563,9 @@ void SceneGraph::PrepareLightsAndDecals(vec2 active_screen_start, vec2 active_sc
         memcpy(l.color, dl.color.entries, 3 * sizeof(float));
         memcpy(&light_data_buffer[light_buf_index * light_params], &l, sizeof(ShaderLight));
 
-        unsigned int x_min = (unsigned int)cluster_min.x();
-        unsigned int x_max = (unsigned int)ceil(cluster_max.x());
-
-        unsigned int y_min = (unsigned int)cluster_min.y();
-        unsigned int y_max = (unsigned int)ceil(cluster_max.y());
-
-        // since z is "reversed" and min is actually the farthest value
-        // we swap min and max
-        unsigned int z_min = (unsigned int)(ZCLUSTERFUNC(cluster_max.z(), z_near, z_mult));
-        unsigned int z_max = (unsigned int)ceil(ZCLUSTERFUNC(cluster_min.z(), z_near, z_mult));
-
-        z_min = max(0u, z_min);
-        z_max = min(z_max, num_z_clusters - 1);
-
-        LOG_ASSERT_LTEQ(x_min, x_max);
-        LOG_ASSERT_LTEQ(y_min, y_max);
-        LOG_ASSERT_LTEQ(z_min, z_max);
-
-        // these can be equal to the max since they're used in a C-style loop
-        LOG_ASSERT_LTEQ(x_max, grid_width);
-        LOG_ASSERT_LTEQ(y_max, grid_height);
-        LOG_ASSERT_LTEQ(z_max, num_z_clusters);
-
-        /*
-        LOGI << "decal " << i << std::endl;
-        LOGI << " min:  " << cluster_min << std::endl;
-        LOGI << " max:  " << cluster_max << std::endl;
-        LOGI << "  z:" << z_min << " - " << z_max << std::endl;
-        LOGI << std::endl;
-        */
+        const unsigned x_min = grid.x_min, x_max = grid.x_max;
+        const unsigned y_min = grid.y_min, y_max = grid.y_max;
+        const unsigned z_min = grid.z_min, z_max = grid.z_max;
 
         for (unsigned int x = x_min; x < x_max; x++) {
             for (unsigned int y = y_min; y < y_max; y++) {

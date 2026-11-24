@@ -1,6 +1,7 @@
 # Mode challenge settings
 
-Select a mode in the lobby to populate **Mode settings**. The host chooses these
+Select a mode in the lobby to populate **Mode settings**. The **Enemy difficulty
+increases** section makes opponents tougher over time or after the listed events. The host chooses these
 rules; other clients see the same values. Each mode remembers its choices during
 the application's session. Arena options and campaign party scaling live here;
 Hosting options contains session permissions and Start/Leave. Hover a lobby
@@ -20,7 +21,7 @@ The original story player anchors the reference side. In Arena and other modes,
 its current effective team determines which NPCs are opponents and which round
 wins count. Promoting a decision host does not change this reference.
 
-**Adaptive encounter wins** disables the separate player-defeat pressure driver. Each human defeat
+**Adaptive win difficulty** disables the separate player-defeat pressure driver. Each human defeat
 in that encounter reduces its eventual win award by 25%, floored at zero. At the
 Standard win rate, zero, one, two, three, and four deaths give +4%, +3%, +2%, +1%,
 and +0%. Failed attempts at the same encounter retain their deaths. A knockout

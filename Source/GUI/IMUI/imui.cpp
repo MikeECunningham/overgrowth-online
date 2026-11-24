@@ -457,6 +457,8 @@ void IMUIContext::render() {
     const float winHeight = static_cast<float>(PlayerMenuUI::Height());
     const PlayerMenuUI::Context* menu = PlayerMenuUI::Current();
     const bool previous_scissor = graphics->ScissorTestEnabled();
+    const int previous_scissor_rect[4] = {graphics->gl_scissor_[0], graphics->gl_scissor_[1],
+                                         graphics->gl_scissor_[2], graphics->gl_scissor_[3]};
 
     const float max_aspect_ratio = 16.0f / 9.0f;
     float aspect_ratio = winWidth / winHeight;
@@ -490,6 +492,11 @@ void IMUIContext::render() {
             graphics->SetScissorRect(x + (menu ? menu->x : 0), y + (menu ? menu->y : 0),
                 std::max(0, right - x), std::max(0, top - y));
             graphics->setScissorTest(true);
+        } else {
+            // Unclipped artwork must not inherit the preceding text's clip or
+            // a scissor left enabled by the scene/lobby. Personal menus still
+            // clip all artwork to their own viewport through the branch above.
+            graphics->setScissorTest(false);
         }
 
         switch (renderable->type) {
@@ -761,17 +768,15 @@ void IMUIContext::render() {
                 LOGE << "Unknown renderable type: " << renderable->type << std::endl;
         }
 
-        if (renderable->enableClip || menu) {
-            graphics->setScissorTest(previous_scissor);
-        }
-
         // Clean up the copy
         delete renderable;
     }
     graphics->ResetVertexAttribArrays();
 
     renderQueue.clear();
-    if (menu) graphics->SetScissorRect(menu->x, menu->y, menu->width, menu->height);
+    graphics->SetScissorRect(previous_scissor_rect[0], previous_scissor_rect[1],
+                             previous_scissor_rect[2], previous_scissor_rect[3]);
+    graphics->setScissorTest(previous_scissor);
 }
 
 TextAtlas* IMUIContext::getTextAtlas(std::string fontName, int size, int flags) {

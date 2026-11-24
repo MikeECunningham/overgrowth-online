@@ -3,6 +3,7 @@
 #include <Online/challenge_scaling.h>
 #include <Online/online.h>
 #include <Online/online_utility.h>
+#include <AI/navmesh.h>
 #include <Main/engine.h>
 #include <Main/scenegraph.h>
 #include <Game/level.h>
@@ -14,6 +15,7 @@
 #include <Objects/itemobject.h>
 #include <Objects/movementobject.h>
 #include <Objects/riggedobject.h>
+#include <Physics/bulletworld.h>
 #include <Logging/logdata.h>
 #include <Scripting/angelscript/ascontext.h>
 #include <Math/vec3math.h>
@@ -38,6 +40,9 @@ struct Encounter {
     std::vector<Reinforcement> extras;
     std::set<PlayerID> opposing_seats;
     int spawned = 0;  // dead reinforcements are never replaced
+    int reinforcement_target = 0;
+    bool reinforcements_deferred = false;
+    bool reinforcements_recheck = false;
 };
 MovementObject* Actor(SceneGraph* graph, ObjectID id) {
     Object* object = graph ? graph->GetObjectFromID(id) : nullptr;
@@ -90,17 +95,87 @@ bool ExplicitBoss(MovementObject* actor, bool inferred) {
 }
 bool Elite(MovementObject* actor) {
     ScriptParams* params = actor->GetScriptParams();
-    return (params->HasParam("Knockout Shield") && params->ASGetInt("Knockout Shield") >= 2) ||
-           (params->HasParam("Damage Resistance") && params->ASGetFloat("Damage Resistance") >= 1.5f);
+    // Ordinary story guards also have large scripted knockout shields. That
+    // protection alone does not make an encounter a boss fight.
+    return params->HasParam("Damage Resistance") && params->ASGetFloat("Damage Resistance") >= 1.5f;
 }
-float NearestHuman(Online* online, SceneGraph* graph, const vec3& position) {
+float NearestMainParty(Online* online, SceneGraph* graph, const vec3& position, bool humans_only = false) {
     float nearest = 1e30f;
     for (const auto& player : online->GetPlayerStates()) {
-        if (!online->CampaignPlayerOnMainTeam(player.player_id)) continue;
+        if (!online->CampaignPlayerOnMainTeam(player.player_id) || (humans_only && player.is_bot)) continue;
         if (MovementObject* actor = Actor(graph, player.object_id))
-            if (Awake(actor)) nearest = std::min(nearest, distance(actor->position, position));
+            if (actor->enabled_ && Awake(actor)) nearest = std::min(nearest, distance(actor->position, position));
     }
     return nearest;
+}
+int MainPartyBots(const Online* online, SceneGraph* graph) {
+    int bots = 0;
+    if (online->online_session) for (const auto& player : online->online_session->player_states)
+        if (player.second.is_bot && online->CampaignPlayerOnMainTeam(player.first) && Actor(graph, player.second.object_id)) ++bots;
+    return bots;
+}
+int EncounterReinforcements(SceneGraph* graph, const Encounter& encounter, int humans, int bots) {
+    int rank = 0;
+    for (ObjectID id : encounter.originals) if (MovementObject* actor = Actor(graph, id)) rank = std::max(rank, Strength(actor));
+    return CampaignDifficulty::ExtraEnemiesForParty(humans, bots, static_cast<int>(encounter.originals.size()), !encounter.bosses.empty(), rank);
+}
+bool ReadyForReinforcements(MovementObject* actor) {
+    return actor && actor->enabled_ && !actor->static_char &&
+        !(actor->ASHasVar("dialogue_control") && actor->ASGetBoolVar("dialogue_control"));
+}
+void RemoveReinforcement(SceneGraph* graph, const Reinforcement& extra) {
+    for (ObjectID id : extra.equipment) {
+        Object* object = graph->GetObjectFromID(id);
+        if (object && object->GetType() == _item_object) {
+            const int holder = static_cast<ItemObject*>(object)->HeldByWhom();
+            // Loot taken by another character belongs to that character now.
+            if (holder == -1 || holder == extra.actor) graph->map_editor->DeleteID(id);
+        }
+    }
+    if (Actor(graph, extra.actor)) graph->map_editor->DeleteID(extra.actor);
+}
+bool ReinforcementPosition(Online* online, SceneGraph* graph, MovementObject* source, int index, vec3* position) {
+    if (!graph->bullet_world_) return false;
+    const vec3 up(0, 1, 0);
+    NavMesh* navmesh = graph->GetNavMesh();
+    NavPoint source_nav;
+    if (navmesh) source_nav = navmesh->GetNavPoint(source->position);
+    const bool on_navmesh = source_nav.IsSuccess() && distance_squared(source_nav.GetPoint(), source->position) < 4.0f;
+    // FindSafeSpot returns the first world-safe candidate, even if another
+    // character occupies it. Rotating its index alone keeps returning the same
+    // eight inner-ring positions. Alternate bases also reach the outer space.
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        vec3 base = source->position;
+        if (attempt >= 8) {
+            const float radius = 1.8f + 1.4f * ((attempt - 8) / 8);
+            const float angle = ((attempt + index) % 8) * 0.7853981634f;
+            base += vec3(std::cos(angle) * radius, 0, std::sin(angle) * radius);
+        }
+        vec3 candidate;
+        if (!online->FindSafeSpot(base, source->GetFacing(), attempt < 8 ? index + attempt + 1 : 0,
+                                  &candidate, source->GetID())) continue;
+        // Alternate bases must remain on this side of walls and ledges, not
+        // find an unrelated safe floor through a wall or on the storey below.
+        if (std::fabs(candidate.y() - source->position.y()) > 0.6f ||
+            graph->bullet_world_->CheckRayCollision(source->position, candidate) ||
+            graph->bullet_world_->CheckRayCollision(source->position + up * 0.6f, candidate + up * 0.6f)) continue;
+        bool occupied = false;
+        for (Object* object : graph->movement_objects_) {
+            const auto* actor = static_cast<MovementObject*>(object);
+            if (!actor->enabled_) continue;
+            const vec3 offset = actor->position - candidate;
+            if (std::fabs(offset.y()) < 1.8f && offset.x() * offset.x() + offset.z() * offset.z() < 1.4f) { occupied = true; break; }
+        }
+        if (occupied) continue;
+        if (on_navmesh) {
+            NavPoint candidate_nav = navmesh->GetNavPoint(candidate);
+            if (!candidate_nav.IsSuccess() || distance_squared(candidate_nav.GetPoint(), candidate) >= 4.0f ||
+                !navmesh->FindPath(source_nav.GetPoint(), candidate_nav.GetPoint(), 0xffff, 0).success) continue;
+        }
+        *position = candidate;
+        return true;
+    }
+    return false;
 }
 void CopyParameter(Online* online, ScriptParams* dest, const std::string& key, const ScriptParam& param) {
     dest->InsertScriptParam(key, param);
@@ -111,17 +186,7 @@ Reinforcement Spawn(Online* online, SceneGraph* graph, MovementObject* source, i
     Reinforcement result;
     if (!OnlineUtility::IsSafeAssetPath(source->obj_file) || !OnlineUtility::IsSafeCharacterPath(source->character_path)) return result;
     vec3 position;
-    bool found = false;
-    for (int attempt = index + 1; attempt <= index + 12; ++attempt) {
-        if (!online->FindSafeSpot(source->position, source->GetFacing(), attempt, &position, source->GetID())) continue;
-        bool occupied = false;
-        for (Object* object : graph->movement_objects_) {
-            const vec3 offset = static_cast<MovementObject*>(object)->position - position;
-            if (std::fabs(offset.y()) < 1.8f && offset.x() * offset.x() + offset.z() * offset.z() < 1.4f) { occupied = true; break; }
-        }
-        if (!occupied) { found = true; break; }
-    }
-    if (!found) return result;
+    if (!ReinforcementPosition(online, graph, source, index, &position)) return result;
     EntityDescriptionList descriptions;
     std::string type;
     Path path;
@@ -216,7 +281,6 @@ struct CampaignDifficultyState {
     std::map<ObjectID, std::array<float, 4>> applied;
     bool reset = false;
     double next_update = 0;
-    int spawned = 0;
     std::map<PlayerID, Opponent> opponents;
     std::set<std::pair<ObjectID, int>> engaged;
     uint64_t deployment = 0;
@@ -230,6 +294,24 @@ struct CampaignDifficultyState {
 };
 
 namespace {
+void RecheckReinforcementGoals(Online* online, SceneGraph* graph, CampaignDifficultyState& state) {
+    if (online->CoopCutscene() || graph->level->DialogueCameraControl()) return;
+    for (auto& entry : state.encounters) {
+        Encounter& encounter = entry.second;
+        if (!encounter.reinforcements_recheck) continue;
+        Object* object = graph->GetObjectFromID(encounter.hotspot);
+        auto* hotspot = object && object->GetType() == _hotspot_object ? static_cast<Hotspot*>(object) : nullptr;
+        if (!hotspot || hotspot->ASGetIntVar("progress") != encounter.goal) {
+            encounter.reinforcements_recheck = false;
+            continue;
+        }
+        if (!online->CampaignEncounterDefeated(encounter.hotspot, encounter.goal)) continue;
+        encounter.reinforcements_recheck = false;
+        // A cancellation or settings change need not produce another KO
+        // event. Retry just this goal once, without fabricating combat events.
+        hotspot->QueueScriptMessage("coop_recheck_encounter " + std::to_string(encounter.goal));
+    }
+}
 void EnableSeat(Online* online, MovementObject* actor, bool enabled) {
     static_cast<Object*>(actor)->SetEnabled(enabled);  // authoritative native state, including physics and replication
     for (const auto& attachment : actor->rigged_object()->attached_items.items) {
@@ -482,6 +564,14 @@ bool Online::CampaignEncounterDefeated(ObjectID hotspot, int goal) const {
     const auto it = campaign_difficulty_state->encounters.find({hotspot, goal});
     if (it == campaign_difficulty_state->encounters.end()) return true;
     SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    // A wave is allocated over several updates. Killing its authored enemies
+    // must not advance the goal before the remaining reserved extras arrive.
+    if (config["campaign_mp_scaling"].toBool() && !it->second.reinforcements_deferred &&
+        it->second.spawned < std::min(it->second.reinforcement_target,
+            EncounterReinforcements(graph, it->second, CampaignHumanCount(), MainPartyBots(this, graph)))) {
+        it->second.reinforcements_recheck = true;
+        return false;
+    }
     for (const auto& extra : it->second.extras) if (Awake(Actor(graph, extra.actor))) return false;
     if (LobbyForceTeams() && online_session) for (PlayerID seat : it->second.opposing_seats) {
         const auto player = online_session->player_states.find(seat);
@@ -507,32 +597,39 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
     auto& state = *campaign_difficulty_state;
     const double now = OnlineClockMs();
     if (state.reset) {
-        for (const auto& entry : state.encounters) for (const auto& extra : entry.second.extras) {
-            for (ObjectID id : extra.equipment) {
-                Object* object = graph->GetObjectFromID(id);
-                if (object && object->GetType() == _item_object) {
-                    const int holder = static_cast<ItemObject*>(object)->HeldByWhom();
-                    if (holder == -1 || holder == extra.actor) graph->map_editor->DeleteID(id);
-                }
-            }
-            if (Actor(graph, extra.actor)) graph->map_editor->DeleteID(extra.actor);
-        }
+        for (const auto& entry : state.encounters) for (const auto& extra : entry.second.extras) RemoveReinforcement(graph, extra);
         // A reset may also change allegiances. Restore every previous target
         // before rebuilding the roster, including a former enemy now allied.
         for (const auto& previous : state.applied) if (Actor(graph, previous.first)) {
             ReceiveCampaignScale(GetOriginalID(previous.first), 1, 1, 1, 0);
             Send<OnlineMessages::CampaignScale>(GetOriginalID(previous.first), 1, 1, 1, 0);
         }
-        state.encounters.clear(); state.applied.clear(); state.spawned = 0; state.reset = false; state.next_update = 0;
+        state.encounters.clear(); state.applied.clear(); state.reset = false; state.next_update = 0;
         state.opponents.clear(); state.engaged.clear(); state.deployment = 0; state.combat = false; state.last_combat = -100000;
         state.deployment_target = -1; state.deployment_seats.clear();
         state.member_combat.clear(); state.active_encounter = {-1, -1}; state.last_deployment = -100000;
     }
     if (campaign) StageOpponents(this, graph, state);
+    const int humans = CampaignHumanCount();
+    const int bots = MainPartyBots(this, graph);
+    const bool stats = campaign && config["campaign_mp_scaling"].toBool();
+    // Reserve a newly activated fight on the first ordinary update, even if
+    // the heavier scaling/spawning pass is still on its 350ms throttle.
+    if (stats && !coop_cutscene && !graph->level->DialogueCameraControl()) for (auto& entry : state.encounters) {
+        Encounter& encounter = entry.second;
+        Object* object = graph->GetObjectFromID(encounter.hotspot);
+        if (encounter.reinforcements_deferred || !object || object->GetType() != _hotspot_object ||
+            static_cast<Hotspot*>(object)->ASGetIntVar("progress") != encounter.goal) continue;
+        for (ObjectID id : encounter.originals) {
+            MovementObject* actor = Actor(graph, id);
+            if (ReadyForReinforcements(actor) && Awake(actor) && NearestMainParty(this, graph, actor->position) < 55.0f) {
+                encounter.reinforcement_target = EncounterReinforcements(graph, encounter, humans, bots);
+                break;
+            }
+        }
+    }
     if (now < state.next_update) return;
     state.next_update = now + 350.0;
-    const int humans = CampaignPartySize();
-    const bool stats = campaign && config["campaign_mp_scaling"].toBool();
     const bool nightmare = campaign && config.GetDifficultyPreset() == "Nightmare";
     // Publish small steps rather than a reliable packet for every tiny clock
     // change, while keeping the authoritative progression clock continuous.
@@ -570,8 +667,32 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
             }
         }
     }
+    int active_extras = 0;
+    for (auto& entry : state.encounters) {
+        Encounter& encounter = entry.second;
+        Object* object = graph->GetObjectFromID(encounter.hotspot);
+        const bool completed = object && object->GetType() == _hotspot_object &&
+            static_cast<Hotspot*>(object)->ASGetIntVar("progress") > encounter.goal;
+        encounter.extras.erase(std::remove_if(encounter.extras.begin(), encounter.extras.end(), [&](const Reinforcement& extra) {
+            MovementObject* actor = Actor(graph, extra.actor);
+            if (actor && Awake(actor)) {
+                if (actor->enabled_) ++active_extras;
+                return false;
+            }
+            if (!completed || (actor && NearestMainParty(this, graph, actor->position, true) < 65.0f)) return false;
+            // Keep nearby ground loot visible too; never delete a taken item.
+            for (ObjectID id : extra.equipment) {
+                Object* item = graph->GetObjectFromID(id);
+                if (item && item->GetType() == _item_object && static_cast<ItemObject*>(item)->HeldByWhom() == -1 &&
+                    NearestMainParty(this, graph, item->GetTranslation(), true) < 65.0f) return false;
+            }
+            state.applied.erase(extra.actor);
+            RemoveReinforcement(graph, extra);
+            return true;
+        }), encounter.extras.end());
+    }
     auto apply = [&](MovementObject* actor, bool hostile, bool boss) {
-        auto factors = hostile && !LobbyBot(this, actor->GetID()) ? CampaignDifficulty::ForPlayers(humans, boss, Strength(actor), stats, nightmare,
+        auto factors = hostile && !LobbyBot(this, actor->GetID()) ? CampaignDifficulty::ForParty(humans, bots, boss, Strength(actor), stats, nightmare,
                                                                      GetOriginalID(actor->GetID())) : CampaignDifficulty::Factors();
         if (hostile) {
             factors.vitality = std::min(6.0f, factors.vitality * challenge.vitality);
@@ -596,39 +717,76 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
     for (Object* object : graph->movement_objects_) {
         auto* actor = static_cast<MovementObject*>(object);
         const bool hostile = Hostile(this, graph, actor);
-        if (!actor->controlled && OpposesMain(this, graph, actor) && actor->enabled_ && Awake(actor)) ++active_hostiles;
+        // Future scripted enemies elsewhere in a chapter are not part of the
+        // current fight's budget. Generated enemies retain a separate global
+        // concurrency cap, including any still fighting a distant party member.
+        if (hostile && ReadyForReinforcements(actor) && Awake(actor) && NearestMainParty(this, graph, actor->position) < 55.0f) ++active_hostiles;
         if (actor->HasFunction("void SetCampaignScaling(float, float, float, float)"))
             apply(actor, hostile, bosses.count(actor->GetID()) != 0 || ExplicitBoss(actor, false));
     }
     if (!campaign) return;
     DeployOpponents(this, graph, state, now);
-    if (!stats || humans <= 1 || coop_cutscene || graph->level->DialogueCameraControl()) return;
+    if (!stats || humans + bots <= 1 || coop_cutscene || graph->level->DialogueCameraControl()) {
+        RecheckReinforcementGoals(this, graph, state);
+        return;
+    }
+    constexpr int kSpawnsPerUpdate = 2;
+    int spawns = 0;
     for (auto& entry : state.encounters) {
         Encounter& encounter = entry.second;
         Object* object = graph->GetObjectFromID(encounter.hotspot);
         auto* hotspot = object && object->GetType() == _hotspot_object ? static_cast<Hotspot*>(object) : nullptr;
         if (!hotspot || hotspot->ASGetIntVar("progress") != encounter.goal) continue;
         std::vector<MovementObject*> sources;
-        int rank = 0;
         bool nearby = false;
+        bool originals_awake = false;
         for (ObjectID id : encounter.originals) {
             MovementObject* actor = Actor(graph, id);
-            if (!actor || !actor->enabled_ || !Awake(actor) || actor->static_char ||
-                (actor->ASHasVar("dialogue_control") && actor->ASGetBoolVar("dialogue_control"))) continue;
-            sources.push_back(actor); rank = std::max(rank, Strength(actor));
-            nearby = nearby || NearestHuman(this, graph, actor->position) < 55.0f;
+            if (!ReadyForReinforcements(actor)) continue;
+            originals_awake = originals_awake || Awake(actor);
+            if (!Awake(actor) && encounter.reinforcement_target <= encounter.spawned) continue;
+            sources.push_back(actor);
+            nearby = nearby || NearestMainParty(this, graph, actor->position) < 55.0f;
         }
-        if (sources.empty() || !nearby) continue;
+        if (encounter.reinforcements_deferred) continue;
+        if (sources.empty()) {
+            // A removed/disabled story template cannot leave a pending wave
+            // holding the objective forever.
+            if (!originals_awake && encounter.reinforcement_target > encounter.spawned) encounter.reinforcements_deferred = true;
+            continue;
+        }
+        if (!nearby) {
+            if (!originals_awake && encounter.reinforcement_target > encounter.spawned) encounter.reinforcements_deferred = true;
+            continue;
+        }
         const bool boss_fight = !encounter.bosses.empty();
-        const int wanted = CampaignDifficulty::ExtraEnemies(humans, static_cast<int>(encounter.originals.size()), boss_fight, rank);
-        while (encounter.spawned < wanted && state.spawned < CampaignDifficulty::kLevelExtraCap && active_hostiles < CampaignDifficulty::kActorCap) {
-            MovementObject* source = sources[encounter.spawned % sources.size()];
-            if (boss_fight) source = *std::min_element(sources.begin(), sources.end(), [](MovementObject* a, MovementObject* b) { return Strength(a) < Strength(b); });
-            Reinforcement extra = Spawn(this, graph, source, encounter.spawned + 1);
-            if (extra.actor < 0) break;
-            encounter.extras.push_back(extra); ++encounter.spawned; ++state.spawned; ++active_hostiles;
+        encounter.reinforcement_target = EncounterReinforcements(graph, encounter, humans, bots);
+        while (encounter.spawned < encounter.reinforcement_target && spawns < kSpawnsPerUpdate) {
+            if (active_extras >= CampaignDifficulty::kConcurrentExtraCap || active_hostiles >= CampaignDifficulty::kActorCap) {
+                // While the authored fight is ongoing, retry after casualties
+                // free space. Once it is over, don't lock the story waiting
+                // for an unrelated distant encounter to release its budget.
+                if (!originals_awake) encounter.reinforcements_deferred = true;
+                break;
+            }
+            MovementObject* source = nullptr;
+            Reinforcement extra;
+            std::vector<MovementObject*> candidates = sources;
+            if (boss_fight) std::stable_sort(candidates.begin(), candidates.end(), [](MovementObject* a, MovementObject* b) { return Strength(a) < Strength(b); });
+            else std::rotate(candidates.begin(), candidates.begin() + encounter.spawned % candidates.size(), candidates.end());
+            for (MovementObject* candidate : candidates) {
+                extra = Spawn(this, graph, candidate, encounter.spawned + 1);
+                if (extra.actor >= 0) { source = candidate; break; }
+            }
+            if (extra.actor < 0) {
+                encounter.reinforcements_deferred = true;
+                LOGI << "Campaign scaling: no safe reinforcement ground for encounter " << encounter.hotspot << ":" << encounter.goal << ", deferred" << std::endl;
+                break;
+            }
+            encounter.extras.push_back(extra); ++encounter.spawned; ++active_extras; ++active_hostiles; ++spawns;
             if (MovementObject* actor = Actor(graph, extra.actor)) apply(actor, true, false);
             LOGI << "Campaign scaling: reinforcement " << extra.actor << " from " << source->GetID() << ", humans " << humans << std::endl;
         }
     }
+    RecheckReinforcementGoals(this, graph, state);
 }

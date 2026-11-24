@@ -3972,35 +3972,45 @@ static void CUpdateShadowImpl(
     MovementObject* mo,
     int& shadow_id,
     int& lf_shadow_id,
-    int& rf_shadow_id,
-    const CScriptArrayWrapper<BoneTransform>& skeleton_bind_transforms) {
+    int& rf_shadow_id) {
     MovementObject& this_mo = *mo;
     RiggedObject& rigged_object = *this_mo.rigged_object();
     Skeleton& skeleton = rigged_object.skeleton();
 
-    int bone = ASIKBoneStart(&skeleton, "torso");
-    BoneTransform transform = rigged_object.display_bone_matrices[bone];
-    BoneTransform bind_matrix = invert(skeleton_bind_transforms[bone]);
-    transform = transform;
-    vec3 torso = transform * skeleton.points[skeleton.bones[bone].points[0]];
-
-    bone = ASIKBoneStart(&skeleton, "head");
-    transform = rigged_object.display_bone_matrices[bone];
-    bind_matrix = invert(skeleton_bind_transforms[bone]);
-    transform = transform;
-    vec3 head = transform * skeleton.points[skeleton.bones[bone].points[0]];
-
-    bone = ASIKBoneStart(&skeleton, "left_leg");
-    transform = rigged_object.display_bone_matrices[bone];
-    bind_matrix = invert(skeleton_bind_transforms[bone]);
-    transform = transform;
-    vec3 left_foot = transform * skeleton.points[skeleton.bones[bone].points[0]];
-
-    bone = ASIKBoneStart(&skeleton, "right_leg");
-    transform = rigged_object.display_bone_matrices[bone];
-    bind_matrix = invert(skeleton_bind_transforms[bone]);
-    transform = transform;
-    vec3 right_foot = transform * skeleton.points[skeleton.bones[bone].points[0]];
+    auto hide = [&]() {
+        SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+        for (int id : {shadow_id, lf_shadow_id, rf_shadow_id}) {
+            Object* shadow = graph && id >= 0 ? graph->GetObjectFromID(id) : nullptr;
+            if (shadow) shadow->SetEnabled(false);
+        }
+    };
+    if (!this_mo.visible || !this_mo.enabled_) { hide(); return; }
+    auto point = [&](const char* chain, vec3& out) {
+        const auto found = skeleton.simple_ik_bones.find(chain);
+        if (found == skeleton.simple_ik_bones.end()) return false;
+        const int bone = found->second.bone_id;
+        if (bone < 0 || static_cast<size_t>(bone) >= skeleton.bones.size() ||
+            static_cast<size_t>(bone) >= rigged_object.display_bone_matrices.size()) return false;
+        const int index = skeleton.bones[bone].points[0];
+        if (index < 0 || static_cast<size_t>(index) >= skeleton.points.size()) return false;
+        const mat4& matrix = rigged_object.display_bone_matrices[bone];
+        for (int element = 0; element < 16; ++element)
+            if (!std::isfinite(matrix.entries[element])) return false;
+        // An allocated but unsolved pose can contain a zero matrix. Do not
+        // convert it to a rotation or publish a decal at an undefined joint.
+        const vec3 axis(matrix.entries[0], matrix.entries[1], matrix.entries[2]);
+        if (length_squared(axis) < 1e-8f) return false;
+        out = BoneTransform(matrix) * skeleton.points[index];
+        return std::isfinite(out.x()) && std::isfinite(out.y()) && std::isfinite(out.z());
+    };
+    vec3 torso, head, left_foot, right_foot;
+    if (!point("torso", torso) || !point("head", head) ||
+        !point("left_leg", left_foot) || !point("right_leg", right_foot)) {
+        hide();
+        return;
+    }
+    const float height = distance((left_foot + right_foot) * 0.5f, head) * 2.0f;
+    if (!std::isfinite(height)) { hide(); return; }
 
     {
         if (shadow_id == -1) {
@@ -4008,7 +4018,9 @@ static void CUpdateShadowImpl(
         }
 
         Object* shadow_obj = ReadObjectFromID(shadow_id);
-        vec3 scale = vec3(1.5f, max(1.5f, distance((left_foot + right_foot) * 0.5f, head) * 2.0f), 1.5f);
+        if (!shadow_obj) return;
+        shadow_obj->SetEnabled(true);
+        vec3 scale = vec3(1.5f, max(1.5f, height), 1.5f);
         shadow_obj->SetScale(scale);
 
         shadow_obj->SetTranslation(torso + vec3(0.0f, -0.3f, 0.0f));
@@ -4020,6 +4032,8 @@ static void CUpdateShadowImpl(
         }
 
         Object* shadow_obj = ReadObjectFromID(lf_shadow_id);
+        if (!shadow_obj) return;
+        shadow_obj->SetEnabled(true);
 
         shadow_obj->SetTranslation(left_foot + vec3(0.0f));
         shadow_obj->SetScale(vec3(0.4f));
@@ -4031,6 +4045,8 @@ static void CUpdateShadowImpl(
         }
 
         Object* shadow_obj = ReadObjectFromID(rf_shadow_id);
+        if (!shadow_obj) return;
+        shadow_obj->SetEnabled(true);
 
         shadow_obj->SetTranslation(right_foot + vec3(0.0f, 0.0f, 0.0f));
         shadow_obj->SetScale(vec3(0.4f));
@@ -4047,13 +4063,11 @@ static void CUpdateShadow(MovementObject* mo) {
     int& lf_shadow_id = *(int*)as_context->module.GetVarPtrCache("lf_shadow_id");
     int& rf_shadow_id = *(int*)as_context->module.GetVarPtrCache("rf_shadow_id");
 
-    CScriptArrayWrapper<BoneTransform> skeleton_bind_transforms((CScriptArray*)as_context->module.GetVarPtrCache("skeleton_bind_transforms"));
     PROFILER_LEAVE(g_profiler_ctx);
 
     CUpdateShadowImpl(
         mo,
-        shadow_id, lf_shadow_id, rf_shadow_id,
-        skeleton_bind_transforms);
+        shadow_id, lf_shadow_id, rf_shadow_id);
 }
 
 static void CUpdateEyeLookImpl(

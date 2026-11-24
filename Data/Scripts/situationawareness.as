@@ -67,6 +67,7 @@ class Situation {
     }
 
     void Notice(int id) {
+        if(!ObjectExists(id)) return;
         int already_known = -1;
         Object@ obj = ReadObjectFromID(id);
         EntityType type = obj.GetType();

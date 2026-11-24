@@ -23,37 +23,44 @@ base settings no longer qualify as the exact Nightmare preset.
 - Treat one to two strong/elite authored opponents, and a lone large outlier
   among weaker opponents, as bosses. The active campaign objective supplies the
   encounter membership. Friendlies, human characters, and lobby bots are excluded.
+  Knockout shields alone do not make an encounter a boss fight: tutorial rabbits
+  use large shields to support their scripted combat lessons.
 - Count MC-team humans and friendly lobby bots with an admitted character,
   including knocked-out members and temporarily disconnected controllers. A defeated player does not
   make the remaining enemies weaker. Removing a party seat changes the count.
   Opposing lobby teams do not increase the scaling count. Party modifiers never
   boost lobby bots, and Nightmare uses Expert as their base. Optional mode
   progression can separately strengthen opposing bots while allies stay unchanged.
-- Scale smoothly through four participants, then use diminishing growth. All stat
-  increases and reinforcement counts have hard limits.
+- For enemy stats, weight each additional human at 1.4 and each friendly bot at 0.35. A bot
+  contributes one quarter as much as an additional human. Rare Nightmare AI
+  tiers count humans only. Four humans give ordinary rabbits about 1.75x
+  durability; one human plus three bots gives about 1.19x.
+- Enemy stats scale smoothly through four effective participants, then use
+  diminishing growth. Enemy numbers use a separate logarithmic curve, with
+  extra humans counting twice as much as friendly bots. Both have hard limits.
 
 Normalized health is left intact. Durability changes incoming damage, so story
 health thresholds, regeneration, and network health bars remain valid. Armor
 strengthens passive blocking; it does not enable the game's metal-armor weapon
 immunities or refill knockout shields. Changes never heal existing injuries.
 
-Examples at four MC-team participants, relative to each actor's authored base:
+Examples at four MC-team humans, relative to each actor's authored base:
 
 | Opponent | Effective durability | Damage | Passive-block armor |
 | --- | --- | --- | --- |
-| Ordinary rat | 1.459× | 1.19125× | 1.1785× |
-| Ordinary rabbit | 1.54825× | 1.19125× | 1.1785× |
-| Ordinary cat/dog | 1.6375× | 1.19125× | 1.1785× |
-| Cat/dog boss | 3.0655× | 1.306× | 1.3825× |
-| Wolf boss | 3.4735× | 1.306× | 1.3825× |
+| Ordinary rat | 1.627× | 1.261× | 1.244× |
+| Ordinary rabbit | 1.748× | 1.261× | 1.244× |
+| Ordinary cat/dog | 1.870× | 1.261× | 1.244× |
+| Cat/dog boss | 3.820× | 1.418× | 1.522× |
+| Wolf boss | 4.377× | 1.418× | 1.522× |
 
 Regular durability caps at 3× and boss durability at 6×. Damage caps at 1.6×
 and 1.9× respectively; passive-block armor caps at 1.5× and 1.9×.
 
-Nightmare leaves AI unchanged below four participants. At four or more, one in
+Nightmare leaves AI unchanged below four humans. At four or more, one in
 eight enemies is eligible for one small offensive trait variation: aggression,
 ground aggression, or block follow-up. The adjustment uses 1% of that trait's
-remaining range at four participants, 2% at eight, and at most 3% at sixteen or
+remaining range at four humans, 2% at eight, and at most 3% at sixteen or
 more. It changes only that trait, keeps
 explicit authored zero/maximum values, and never boosts blocking, throw counters,
 weapon catching, or attack speed. Selection is stable across peers and retries.
@@ -61,31 +68,56 @@ The global difficulty slider, movement speed, and game speed stay at Expert.
 
 ## Reinforcement and story safeguards
 
-Ordinary fights add at most **four** enemies; boss encounters at most **two**
-bodyguards. Ordinary rats/rabbits gain one extra per three additional allies,
-starting at four participants; stronger species gain one per four allies.
-This budget is independent of the original group size. Ordinary bosses gain a
-guard from six participants, large dogs from eight. Large dogs and wolves receive additions later: a solo wolf boss
-does not gain another wolf until twelve participants. Reinforcements use existing
-encounter species, with the weakest existing member preferred for bodyguards.
+Enemy numbers respond immediately to the first extra human or friendly bot,
+then grow more slowly. Let `x = extra humans + 0.5 × friendly bots` and
+`L = 2 × log2(1 + x / 2)`. Round to the nearest whole enemy after applying the
+following encounter weights:
 
-There are at most **eight additions per chapter attempt**, and additions stop
-when **32 enabled, awake hostile NPCs** are already present. Existing human characters are outside that hostile-NPC cap; hostile lobby bots consume
-the NPC budget. Maps above the cap still
-receive stat scaling. A killed reinforcement is never replaced during the
-encounter, including after another player joins.
+- Ordinary rats/rabbits: `round(L)`, capped at **six** extras per fight.
+- Stronger ordinary enemies: `round(0.85 × L)`, capped at **six**.
+- Ordinary bosses: `round(0.4 × L)`, capped at **two** bodyguards.
+- Large-dog bosses: `round(0.3 × L)`, capped at **one**.
+- Wolf bosses: `round(0.25 × L)`, capped at **one**.
 
-Adds require an active authored defeat objective, a nearby living MC teammate, safe
-ground and space, and an eligible awake actor outside dialogue/static staging.
-Campaign cinematics do not spawn reinforcements. The objective waits for its
-reinforcements and deployed opposing seats to be defeated before proceeding; authored objective strings and
-editor connections remain unchanged.
+| Party | Extra rats/rabbits | Extra stronger regulars | Ordinary boss bodyguards |
+| --- | --- | --- | --- |
+| Two humans | 1 | 1 | 0 |
+| Four humans | 3 | 2 | 1 |
+| Eight humans | 4 | 4 | 2 |
+| One human + one bot | 1 | 1 | 0 |
+| One human + three bots | 2 | 1 | 1 |
+| One human + seven bots | 3 | 2 | 1 |
+| One human + fifteen bots | 4 | 4 | 2 |
+
+This budget is independent of the original group size. Reinforcements use
+existing encounter species, with the weakest existing member preferred for
+bodyguards. Explicit boss markers still take precedence over inference.
+
+There are at most **eight awake generated reinforcements at once**, across
+encounters. This is a concurrent limit, not an allowance exhausted for the
+rest of the chapter. Defeated reinforcements free room for later fights.
+An additional limit of **32 nearby enabled, awake hostile NPCs** prevents
+overcrowding; distant or future encounters do not consume that local budget.
+Human characters are outside that NPC cap; hostile lobby bots consume it.
+Encounters above the cap still receive stat scaling. A killed reinforcement
+still consumes its original encounter allocation and is not replaced.
+
+Waves begin with an active authored defeat objective, a nearby living MC
+teammate, safe ground and space, and an eligible awake actor outside
+dialogue/static staging. Reinforcements arrive in small batches to limit
+creation and network spikes. A reserved wave can finish after its original
+enemy is knocked out; the objective waits for those reinforcements too.
+Unsafe placement or exhausted safety limits can cancel an unfinished wave
+without trapping story progression. Campaign cinematics do not spawn
+reinforcements. Authored objective strings and editor connections remain
+unchanged, and deployed opposing seats must also be defeated before proceeding.
 
 Stats react to party/settings changes during play. Existing reinforcements
 remain in their current fight when the party shrinks or the checkbox is turned
-off. A retry removes generated actors and their unused gear and rebuilds that
-attempt's budget; player-held loot is preserved. Chapter transitions start a
-fresh budget. New actors and scaling factors are reliably replicated, including
+off. Completed encounters can retire distant defeated reinforcements and their
+unused gear, preserving player-held loot. A retry removes generated actors and
+their unused gear and rebuilds that attempt's budget; player-held loot is
+preserved. Chapter transitions start fresh. New actors and scaling factors are reliably replicated, including
 for late joiners and temporary NPC ownership transfers during throws/grabs.
 
 ## Campaign teams and adversaries

@@ -25,7 +25,9 @@ string preview_path;
 TextureAssetRef preview_texture;
 bool focus_lobby_form = true;
 int lobby_leader_input = -1;
-bool lobby_hint_has_hover = false;
+string lobby_hover_hint;
+string lobby_focus_hint;
+string lobby_visible_hint;
 
 bool HasFocus() { return false; }
 
@@ -174,13 +176,19 @@ void LobbyHint(const string &in description) {
     vec2 a = ImGui_GetItemRectMin();
     vec2 b = ImGui_GetItemRectMax();
     bool hovered = ImGui_IsItemHovered() || (ImGui_IsWindowHovered() && ImGui_IsMouseHoveringRect(a, b, true));
-    if(!hovered && !ImGui_IsItemFocused()) return;
-    if(hovered) lobby_hint_has_hover = true;
-    else if(lobby_hint_has_hover) return;
+    if(hovered) lobby_hover_hint = description;
+    else if(ImGui_IsItemFocused()) lobby_focus_hint = description;
+}
+
+void DrawLobbyHint() {
+    // Resolve mouse hover before controller focus, then draw only once. Dear
+    // ImGui appends repeated BeginTooltip calls within the same frame.
+    lobby_visible_hint = lobby_hover_hint != "" ? lobby_hover_hint : lobby_focus_hint;
+    if(lobby_visible_hint == "") return;
     ImGui_PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
     ImGui_BeginTooltip();
     ImGui_PushTextWrapPos(min(380.0f, float(GetScreenWidth()) - 48.0f));
-    ImGui_TextWrapped(description);
+    ImGui_TextWrapped(lobby_visible_hint);
     ImGui_PopTextWrapPos();
     ImGui_EndTooltip();
     ImGui_PopStyleVar();
@@ -205,7 +213,7 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
         if(MPButton("Change mode", vec2(-1.0f, 32.0f * scale))) {
             show_mode_cards = true;
         }
-        LobbyHint("Choose another game mode without starting or loading it. Only the lobby host can change the mode.");
+        LobbyHint("Choose another game mode. Host only.");
         ImGui_EndDisabled();
     } else {
         ImGui_TextColored(kLobbyDim, can_edit ? "Choose a game mode" : "The host chooses the game mode");
@@ -224,8 +232,8 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
                 ImGui_PushStyleColor(ImGuiCol_Button, vec4(0.35f, 0.28f, 0.13f, 1.0f));
             }
             bool picked = ImGui_ImageButton(mode.texture, vec2(card_width, card_width * 0.56f));
-            string mode_hint = mode.build ? "Open a shared level editor. Match difficulty rules apply only to play modes." :
-                "Choose " + mode.title + ". Select a map and configure its Mode settings before starting. Only the lobby host can choose.";
+            string mode_hint = mode.build ? "Create or edit a shared level." :
+                "Choose " + mode.title + ", then pick a map. Host only.";
             LobbyHint(mode_hint);
             picked = MPButton(LobbyCardTitle(mode.title), vec2(card_width + 8.0f, 48.0f * scale)) || picked;
             LobbyHint(mode_hint);
@@ -253,7 +261,7 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
         ImGui_BeginDisabled(!can_edit);
         ImGui_PushItemWidth(-1.0f);
         ImGui_InputText("##map_search", map_filter, 128);
-        LobbyHint("Filter the map list by name without changing the selected map. The lobby host chooses the map.");
+        LobbyHint("Filter maps by name.");
         ImGui_PopItemWidth();
         if(map_filter == "") {
             ImGui_TextColored(kLobbyDim, "Filter maps by name");
@@ -273,7 +281,7 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
                     notice = "";
                 }
             }
-            LobbyHint("Choose " + mode.maps[i].title + " for the next game. This does not load the map until the host selects Start game.");
+            LobbyHint("Choose " + mode.maps[i].title + " for the next game. Loads when the host starts.");
         }
         ImGui_EndChild();
         MPWindowScale(scale);
@@ -289,7 +297,7 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
             }
             float image_width = ImGui_GetContentRegionAvailWidth();
             ImGui_Image(preview_texture, vec2(image_width, image_width * 0.56f));
-            LobbyHint("Preview of the selected map: " + map.title + ".");
+            LobbyHint("Map preview: " + map.title + ".");
         }
     } else if(selected < 0 && !LobbyIsHost()) {
         ImGui_TextWrapped("Waiting for the host to choose a mode and map.");
@@ -300,7 +308,7 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
 void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) {
     LobbyForm("Players", position, size, scale);
     ImGui_TextColored(kLobbyDim, "Unassigned controllers: press any button. Keyboard: press Enter to join.");
-    LobbyHint("An unassigned controller can join this computer's party by pressing a button. Press Enter to add the keyboard if it is not already assigned.");
+    LobbyHint("Press any button on an unassigned controller to join. Keyboard users press Enter.");
     ImGui_Spacing();
     int locals = LocalPlayers();
     float footer_height = (LobbyIsHost() ? 136.0f : 92.0f) * scale;
@@ -334,9 +342,9 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         LobbyPlayer player = lobby_players[i];
         ImGui_PushID(int(player.id));
         ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), player.name);
-        LobbyHint(player.bot ? "An AI roster player. The host chooses its name and team; it does not need a controller or screen." :
-            player.local ? "A player on this computer. The local leader manages their name and screen; the host sets team permissions." :
-                           "A player on another computer. Their local leader manages their name, controls and screens.");
+        LobbyHint(player.bot ? "AI player with a name and team. No controller or screen required." :
+            player.local ? "Local player. This computer's leader manages their name and screen." :
+                           "Remote player. Their local leader manages their name and screens.");
         string association = player.bot ? "Bot" : (player.local ? "This couch P" : "Remote P") + (player.local_index + 1);
         if(player.host) {
             association += " / lobby host";
@@ -348,7 +356,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             association += " / disconnected";
         }
         ImGui_TextColored(kLobbyDim, association);
-        LobbyHint("The lobby host controls match decisions. Each computer's local leader manages that computer's names, screens and local player removal.");
+        LobbyHint("Host: match decisions. Local leader: this computer's screens, names, and players.");
         if(player.local || player.bot) {
             ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanRenamePlayer(player.id));
             float action_width = ImGui_GetContentRegionAvailWidth();
@@ -358,7 +366,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
                 name_buffer = player.name;
                 name_keyboard_open = LobbyCurrentLocalPlayerIndex() != GetLocalKeyboardPlayerIndex();
             }
-            LobbyHint("Change the displayed name. The local leader names humans on this computer; the host names bots.");
+            LobbyHint("Rename this player. Local leaders name humans; the host names bots.");
             if(focus_lobby_form && LobbyInitialForm() == "Players") {
                 ImGui_SetItemDefaultFocus();
                 ImGui_SetKeyboardFocusHere(-1);
@@ -370,24 +378,24 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
                 if(MPButton("Remove", vec2(-1.0f, 30.0f * scale))) {
                     LobbyRemovePlayer(player.id);
                 }
-                LobbyHint(player.bot ? "Remove this AI player from the roster. Only the lobby host can remove bots." :
-                    "Remove this local player and free their controller. The local leader may remove local seats; promote another player before removing a protected host or leader.");
+                LobbyHint(player.bot ? "Remove this bot. Host only." :
+                    "Remove this player and free their controller. Local leader only.");
             }
         } else if(!LobbyMigrationBusy() && LobbyCanRemovePlayer(player.id)) {
             string removal_label = player.leader ? "Kick client" : "Remove";
             if(MPButton(removal_label, vec2(-1.0f, 30.0f * scale))) {
                 LobbyRemovePlayer(player.id);
             }
-            LobbyHint(player.leader ? "Disconnect this remote computer and all of its local players. Only the lobby host may kick a remote client." :
-                                     "Remove this remote local seat from the roster. Only the lobby host may remove remote players.");
+            LobbyHint(player.leader ? "Disconnect this computer and all its players. Host only." :
+                                     "Remove this remote player. Host only.");
         }
         if(!player.bot && !LobbyMigrationBusy() && LobbyCanPromoteHost(player.id)) {
             if(MPButton("Make host", vec2(-1.0f, 30.0f * scale))) LobbyPromoteHost(player.id);
-            LobbyHint("Give this player control over lobby and match decisions. A remote promotion also transfers network hosting so the original hosting computer may leave.");
+            LobbyHint("Transfer match control to this player. Choosing a remote player also transfers network hosting.");
         }
         if(!player.bot && !LobbyMigrationBusy() && LobbyCanPromoteLeader(player.id)) {
             if(MPButton("Make local leader", vec2(-1.0f, 30.0f * scale))) LobbyPromoteLeader(player.id);
-            LobbyHint("Give this local player authority over this computer's screen positions, player names and local player removal. This does not transfer lobby-host authority.");
+            LobbyHint("Let this player manage this computer's screens, names, and local players.");
         }
         ImGui_NextColumn();
         // Align the interactive controls with Edit name, so right/left on a
@@ -399,14 +407,14 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         if(MPTeamCombo(team, int(teams.length()))) {
             LobbySetPlayerTeam(player.id, team + 1);
         }
-        LobbyHint("Choose this player's alliance and team color. The host may edit every team; humans may edit their own team when permitted and when the mode uses lobby teams. Bots remain host-controlled.");
+        LobbyHint("Choose a team and its color. Host permissions determine who can edit.");
         ImGui_PopItemWidth();
         ImGui_EndDisabled();
         ImGui_NextColumn();
         ImGui_Dummy(vec2(0.0f, 2.0f * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
         if(player.bot) {
             ImGui_TextColored(kLobbyDim, "None");
-            LobbyHint("Bots do not need screens or local input slots.");
+            LobbyHint("Bots do not need screens.");
         } else if(player.local) {
             int screen = min(locals - 1, max(0, player.screen - 1));
             ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanManageLocal());
@@ -414,7 +422,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             if(ImGui_Combo("##screen", screen, screens)) {
                 LobbySetPlayerScreen(player.id, screen + 1);
             }
-            LobbyHint("Choose this local player's split-screen position. Occupied positions swap players. Only this computer's local leader can rearrange screens.");
+            LobbyHint("Choose a screen; occupied positions swap players. Local leader only.");
             ImGui_PopItemWidth();
             ImGui_EndDisabled();
         } else {
@@ -423,7 +431,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             ImGui_BeginDisabled(true);
             ImGui_PushItemWidth(-1.0f);
             ImGui_Combo("##screen", none, remote_screen);
-            LobbyHint("This remote player uses a screen on their own computer. Their local leader assigns it there.");
+            LobbyHint("This player's local leader assigns screens on their computer.");
             ImGui_PopItemWidth();
             ImGui_EndDisabled();
         }
@@ -442,7 +450,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             if(!LobbyAddBot()) notice = "Couldn't add a bot.";
             else notice = "";
         }
-        LobbyHint("Add an AI roster player with its own name and team, without a controller or screen. Only the lobby host can add bots.");
+        LobbyHint("Add an AI teammate. No controller or screen required. Host only.");
         ImGui_EndDisabled();
     }
     ImGui_TextColored(kLobbyDim, "The local leader assigns this couch's screens and names. Team permissions are set by the host.");
@@ -469,7 +477,7 @@ void DrawModeRate(const string &in key, const string &in label, const string &in
     }
     ImGui_PopItemWidth();
     ImGui_EndDisabled();
-    LobbyHint(hint + "\n\nOff disables this driver. Gentle uses half the Standard rate; Brisk uses 1.5 times the rate. Enemy NPCs and hostile roster bots scale; humans and friendly bots keep their stats. AI is unchanged.");
+    LobbyHint(hint + "\n\nOff disables it. Gentle: half the Standard rate. Brisk: 1.5x.");
 }
 
 void DrawModeSettingsForm(const vec2 &in position, const vec2 &in size, float scale) {
@@ -494,51 +502,52 @@ void DrawModeSettingsForm(const vec2 &in position, const vec2 &in size, float sc
     }
     bool can_edit = LobbyIsHost() && !LobbyMigrationBusy();
     ImGui_BeginDisabled(!can_edit);
-    ImGui_TextColored(kLobbyDim, "Optional NPC challenge rules");
-    DrawModeRate("challenge_time", "Time pressure", "Gradually strengthen opposing NPCs during active play. Standard adds 5% challenge health per five minutes. Pauses, loading, ready screens and cutscenes do not count.");
+    ImGui_TextColored(kLobbyTitle, "Enemy difficulty increases");
+    ImGui_TextColored(kLobbyDim, "These options make enemies tougher as you play.");
+    DrawModeRate("challenge_time", "Harder over time", "Standard: +5% enemy durability every five active minutes. Pauses and cutscenes do not count.");
     if(LobbyModeIsArena() || LobbyModeIsCampaign()) {
-        DrawModeRate("challenge_round", LobbyModeIsArena() ? "Completed matches" : "Completed levels",
-                     LobbyModeIsArena() ? "Standard adds 8% challenge health after each resolved Arena match, regardless of winner." :
-                                          "Standard adds 8% challenge health after each completed campaign level. Retrying an already credited level does not award it again in this run.");
+        DrawModeRate("challenge_round", LobbyModeIsArena() ? "Harder after each match" : "Harder after each level",
+                     LobbyModeIsArena() ? "Standard: +8% enemy durability after each match, regardless of winner." :
+                                          "Standard: +8% enemy durability per completed level. Retrying a level does not count again.");
     }
-    DrawModeRate("challenge_win", "Encounter wins", "Standard adds 4% challenge health when the main character's team wins an encounter. Arena rounds, campaign defeat objectives and completed combat groups count.");
+    DrawModeRate("challenge_win", "Harder after winning fights", "Standard: +4% enemy durability when your team wins a fight.");
     bool adaptive = LobbyGetModeSetting("challenge_adaptive") != 0;
-    DrawModeRate("challenge_death", "Player defeats", "Standard adds 5% challenge pressure when a human on the main character's team is knocked out or killed. A knockout followed by death counts once; bot defeats do not count. Adaptive wins replaces this separate increase.", !adaptive);
+    DrawModeRate("challenge_death", "Harder after player defeats", "Standard: +5% enemy difficulty pressure per human defeat. Knockout then death counts once; bots do not count.", !adaptive);
     bool wins_enabled = LobbyGetModeSetting("challenge_win") != 0;
     ImGui_BeginDisabled(!wins_enabled);
-    if(MPCheckbox("Adaptive encounter wins", adaptive)) {
+    if(MPCheckbox("Adaptive win difficulty", adaptive)) {
         if(!LobbySetModeSetting("challenge_adaptive", adaptive ? 1 : 0)) notice = "That mode setting could not be changed.";
     }
-    LobbyHint("Reduce each encounter-win increase by 25% per human teammate defeat in that encounter, to zero after four. Failed retries retain these defeats. This discounts the future win award without reducing existing pressure. Requires Encounter wins and replaces Player defeats.");
+    LobbyHint("Each human defeat cuts that fight's victory increase by 25%, down to zero. Replaces the separate defeat increase.");
     ImGui_EndDisabled();
-    ImGui_TextColored(kLobbyDim, wins_enabled ? "Each human teammate defeat in an encounter reduces that win's increase by 25%." :
-                                               "Enable encounter wins to use adaptive scaling.");
-    if(adaptive) ImGui_TextColored(kLobbyDim, "Adaptive wins replaces the separate defeat pressure.");
+    ImGui_TextColored(kLobbyDim, wins_enabled ? "Each player defeat reduces that fight's difficulty increase on victory by 25%." :
+                                               "Enable harder after winning fights to use adaptive difficulty.");
+    if(adaptive) ImGui_TextColored(kLobbyDim, "Adaptive win difficulty replaces the increase after player defeats.");
     ImGui_Spacing();
-    ImGui_TextColored(kLobbyDim, "Up to +150% challenge health, with total enemy durability capped at 6x. Damage and armor rise more gently; AI is unchanged.");
+    ImGui_TextColored(kLobbyDim, "Up to +150% enemy durability, with total durability capped at 6x. Damage and armor rise more gently; AI is unchanged.");
     ImGui_Separator();
-    ImGui_TextColored(kLobbyTitle, "Base rules");
+    ImGui_TextColored(kLobbyTitle, "Starting difficulty and mode rules");
     if(LobbyModeIsArena()) {
         bool random = ConfigHasKey("oo_arena_random") && GetConfigValueBool("oo_arena_random");
         if(MPCheckbox("Arena randomizer", random)) {
             SetConfigValueBool("oo_arena_random", random);
             SaveConfig();
         }
-        LobbyHint("Randomize Arena fighters' species, appearance and equipment when creating a match. This option is chosen by the lobby host.");
+        LobbyHint("Randomize Arena fighters' species, appearance, and equipment. Host only.");
     }
     if(LobbyModeIsCampaign()) {
         bool party_scaling = ConfigHasKey("campaign_mp_scaling") && GetConfigValueBool("campaign_mp_scaling");
-        if(MPCheckbox("Scale for party size", party_scaling)) {
+        if(MPCheckbox("Party-size difficulty", party_scaling)) {
             SetConfigValueBool("campaign_mp_scaling", party_scaling);
             SaveConfig();
         }
-        LobbyHint("Make campaign enemies tougher and add capped same-species reinforcements as allied humans and lobby bots join. Allied bots retain the base difficulty. This is independent of progression rules.");
-        ImGui_TextColored(kLobbyDim, "Counts allied humans and lobby bots.");
+        LobbyHint("Add enemies and strengthen them as your party grows. Bots count less; enemy numbers taper off. Friendly bots keep base stats.");
+        ImGui_TextColored(kLobbyDim, "Humans count as 4 bots for stats, 2 for extra enemies. Enemy numbers grow quickly at first, then taper off.");
     }
     if(MPButton("Base difficulty", vec2(-1.0f, 36.0f * scale))) {
         this_ui.SendCallback("difficulty_menu.as");
     }
-    LobbyHint("Choose the underlying combat difficulty. Optional party-size scaling and progression rules apply on top of it.");
+    LobbyHint("Choose the starting combat difficulty. Party scaling and progression apply on top.");
     ImGui_EndDisabled();
     if(!LobbyIsHost()) ImGui_TextColored(kLobbyDim, "The lobby host chooses mode settings.");
     LobbyEndForm();
@@ -550,7 +559,7 @@ void DrawLobbySessionActions(float scale, bool can_edit) {
     if(MPButton("Start game", vec2(-1.0f, 48.0f * scale))) {
         if(!LobbyStart()) notice = "The game could not start. Check the selection and connected players.";
     }
-    LobbyHint("Load the selected mode and map with this roster. The lobby host starts the game; starting creates a fresh progression challenge run.");
+    LobbyHint("Start the selected mode and map with this roster. Resets difficulty progression.");
     ImGui_EndDisabled();
     if(!LobbyIsHost()) ImGui_TextWrapped("Waiting for the host to start.");
     else if(!LobbyCanStart()) ImGui_TextWrapped("Choose a mode and map before starting.");
@@ -562,8 +571,8 @@ void DrawLobbySessionActions(float scale, bool can_edit) {
         if(LobbyTryLeave()) this_ui.SendCallback("back");
         else notice = "The lobby could not close. Try again with the host or local leader.";
     }
-    LobbyHint(Online_IsHosting() ? "Close this hosted session for everyone. Transfer hosting first if other computers should keep playing." :
-                                   "Disconnect this computer and its local players from the lobby. Use the lobby host's or local leader's controller.");
+    LobbyHint(Online_IsHosting() ? "Close the session for everyone. Transfer host first to let others keep playing." :
+                                   "Disconnect this computer and its local players.");
     ImGui_EndDisabled();
     if(!can_leave && !leave_denied) ImGui_TextColored(kLobbyDim, "To leave, use the host's or local leader's controller.");
 }
@@ -585,19 +594,19 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     if(MPCheckbox("Everyone may pause", all_pause)) {
         LobbySetAllowAllPause(all_pause);
     }
-    LobbyHint("Allow any player to pause the shared world from their personal menu. Otherwise only the lobby host may pause. With multiple humans, opening personal menus keeps the world running.");
+    LobbyHint("Allow every player to pause. Off: only the host can pause.");
     ImGui_TextColored(kLobbyDim, "Otherwise only the lobby host may pause.");
     ImGui_Spacing();
     bool host_controls_teams = LobbyGetHostControlsTeams();
     if(MPCheckbox("Host controls teams", host_controls_teams)) LobbySetHostControlsTeams(host_controls_teams);
-    LobbyHint("Only the lobby host may change teams. When off, each human may change their own team when the mode uses lobby teams. Bots remain host-controlled.");
+    LobbyHint("On: only the host changes teams. Off: players can change their own team in modes that use lobby teams.");
     ImGui_TextColored(kLobbyDim, "When off, players may change their own team in modes using lobby teams.");
     ImGui_Spacing();
     bool force_teams = LobbyGetForceTeams();
     if(MPCheckbox("Force lobby teams", force_teams)) {
         LobbySetForceTeams(force_teams);
     }
-    LobbyHint("Override the mode's team rules with these assignments. Off: campaign players and bots cooperate, Arena chooses team or free-for-all lineups, and sandbox still uses lobby teams. In forced campaigns, other teams join authored enemy factions in numeric order; surplus teams are hostile to every other team.");
+    LobbyHint("Use lobby teams instead of mode teams. Off: campaign allies cooperate and Arena picks teams. Sandbox always uses lobby teams.");
     string team_hint = "Choose a mode to see its team rules.";
     if(force_teams) {
         if(LobbyGetCampaign() != "com-wolfire-arena" && !LobbyGetBuildMode() && LobbyGetMode() != "sandbox" &&
@@ -620,28 +629,28 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
             if(MPButton("Open to online players", vec2(-1.0f, 36.0f * scale))) {
                 if(!LobbyOpenToNetwork()) notice = "Could not enable online hosting.";
             }
-            LobbyHint("Enable remote connections for this local party, keeping its current players and settings.");
+            LobbyHint("Allow online players to join this party.");
         } else {
             bool is_public = !ConfigHasKey("oo_public_game") || GetConfigValueBool("oo_public_game");
             if(MPCheckbox("Public game", is_public)) {
                 SetConfigValueBool("oo_public_game", is_public);
                 SaveConfig();
             }
-            LobbyHint("Advertise this Steam lobby in the public browser. Off uses Steam friends visibility. Direct-IP joins remain available.");
+            LobbyHint("Show this lobby in the Steam browser. Off: friends only. IP connections still work.");
         }
         ImGui_Separator();
         ImGui_TextWrapped("Characters: Turner, with team colors.");
-        LobbyHint("Lobby players use Turner with their team color. The lobby host keeps Turner's brown fur.");
+        LobbyHint("Players use team colors; the host keeps Turner's brown fur.");
         ImGui_TextColored(kLobbyDim, "The lobby host keeps Turner's brown fur.");
         if(!LobbyIsLocalOnly() && Online_HasFriendInviteOverlay() && MPButton("Invite friends", vec2(-1.0f, 36.0f * scale))) {
             Online_ActivateInviteDialog();
         }
-        if(!LobbyIsLocalOnly() && Online_HasFriendInviteOverlay()) LobbyHint("Open Steam's friend invitation overlay for this lobby. Steam support must be available.");
+        if(!LobbyIsLocalOnly() && Online_HasFriendInviteOverlay()) LobbyHint("Open Steam friend invitations.");
     } else {
         ImGui_TextWrapped("The host chooses visibility and session permissions.");
         ImGui_Spacing();
         ImGui_TextWrapped("Characters: Turner, with team colors. The lobby host keeps Turner's brown fur.");
-        LobbyHint("Lobby players use Turner with their team color. The lobby host keeps Turner's brown fur.");
+        LobbyHint("Players use team colors; the host keeps Turner's brown fur.");
     }
     ImGui_EndDisabled();
     ImGui_PopTextWrapPos();
@@ -670,10 +679,10 @@ void DrawNameForm(float scale) {
         ImGui_SetKeyboardFocusHere();
     }
     bool enter = ImGui_InputText("##player_name", name_buffer, 64, ImGuiInputTextFlags_EnterReturnsTrue);
-    LobbyHint("Edit this player's displayed name. The draft is kept until you save or cancel; press Enter to save.");
+    LobbyHint("Edit the player's display name. Enter saves.");
     ImGui_PopItemWidth();
     if(MPButton(name_keyboard_open ? "Hide keyboard" : "On-screen keyboard", vec2(-1.0f, 30.0f * scale))) name_keyboard_open = !name_keyboard_open;
-    LobbyHint("Show or hide the controller-friendly on-screen keyboard without changing the current name draft.");
+    LobbyHint("Show a keyboard for controller typing.");
     if(name_keyboard_open) {
         const string keys = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-";
         float key_width = (ImGui_GetContentRegionAvailWidth() - 7.0f * 6.0f) / 8.0f;
@@ -684,10 +693,10 @@ void DrawNameForm(float scale) {
         }
         float half = (ImGui_GetContentRegionAvailWidth() - 6.0f) * 0.5f;
         if(MPButton("Space", vec2(half, 30.0f * scale)) && name_buffer.length() < 64) name_buffer += " ";
-        LobbyHint("Add a space to the name draft.");
+        LobbyHint("Add a space.");
         ImGui_SameLine(0.0f, 6.0f);
         if(MPButton("Erase", vec2(half, 30.0f * scale)) && name_buffer.length() > 0) name_buffer.resize(name_buffer.length() - 1);
-        LobbyHint("Remove the last character from the name draft.");
+        LobbyHint("Erase the last character.");
     }
     if(MPButton("Save", vec2(130.0f * scale, 34.0f * scale)) || enter) {
         if(LobbyCanRenamePlayer(uint(editing_name)) && LobbySetPlayerName(uint(editing_name), name_buffer)) {
@@ -697,13 +706,13 @@ void DrawNameForm(float scale) {
             notice = "Use a valid name. The local leader names humans; the host names bots.";
         }
     }
-    LobbyHint("Save the displayed name. Local leaders name humans on this computer; the lobby host names bots.");
+    LobbyHint("Save this name.");
     ImGui_EndDisabled();
     ImGui_SameLine();
     if(MPButton("Cancel", vec2(130.0f * scale, 34.0f * scale))) {
         editing_name = -1;
     }
-    LobbyHint("Discard this unsaved name draft and return to the lobby.");
+    LobbyHint("Discard this name edit.");
     if(notice != "") {
         ImGui_TextWrapped(notice);
     }
@@ -715,7 +724,9 @@ void DrawGUI() {
     if(HasPopup()) {
         return;
     }
-    lobby_hint_has_hover = false;
+    lobby_hover_hint = "";
+    lobby_focus_hint = "";
+    lobby_visible_hint = "";
     MPStyleBegin();
     float sw = float(GetScreenWidth());
     float sh = float(GetScreenHeight());
@@ -758,16 +769,16 @@ void DrawGUI() {
         LobbyForm("##lobby_sections", vec2(x, body_y), vec2(width, tab_h), scale, false);
         float tab_w = (ImGui_GetContentRegionAvailWidth() - 30.0f) / 4.0f;
         if(MPButton(compact_tabs ? "Mode\nand map" : "Mode and map", vec2(tab_w, tab_button_h))) { small_panel = 0; focus_lobby_form = true; }
-        LobbyHint("Choose the game mode and map. Only the lobby host may change this selection.");
+        LobbyHint("Choose the game mode and map. Host only.");
         ImGui_SameLine();
         if(MPButton("Players", vec2(tab_w, tab_button_h))) { small_panel = 1; focus_lobby_form = true; }
-        LobbyHint("View the party, rename players, assign teams and arrange this computer's screens.");
+        LobbyHint("Manage players, names, teams, and this computer's screens.");
         ImGui_SameLine();
         if(MPButton(compact_tabs ? "Mode\nsettings" : "Mode settings", vec2(tab_w, tab_button_h))) { small_panel = 2; focus_lobby_form = true; }
-        LobbyHint("View the selected mode's base rules and optional enemy challenge drivers. Only the lobby host may change them.");
+        LobbyHint("Set the starting difficulty and optional enemy difficulty increases. Host only.");
         ImGui_SameLine();
         if(MPButton(compact_tabs ? "Hosting\noptions" : "Hosting options", vec2(tab_w, tab_button_h))) { small_panel = 3; focus_lobby_form = true; }
-        LobbyHint("Manage session visibility, pause and team permissions, invitations, starting and leaving.");
+        LobbyHint("Manage session permissions, invitations, starting, and leaving.");
         LobbyEndForm();
         vec2 panel_position(x, body_y + tab_h + gap);
         vec2 panel_size(width, body_h - tab_h - gap);
@@ -777,6 +788,7 @@ void DrawGUI() {
         else { DrawHostingForm(panel_position, panel_size, scale); }
     }
     DrawNameForm(scale);
+    DrawLobbyHint();
     ImGui_PopStyleVar(2);
     MPStyleEnd();
 }

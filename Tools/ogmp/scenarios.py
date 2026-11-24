@@ -1227,12 +1227,36 @@ def _difficulty_ui(ctx):
 SCENARIOS["difficulty_ui"] = _difficulty_ui
 
 
+def _difficulty_checkbox_transition(ctx):
+    from .difficulty_ui_suite import difficulty_checkbox_transition
+    return difficulty_checkbox_transition(ctx)
+
+
+SCENARIOS["difficulty_checkbox_transition"] = _difficulty_checkbox_transition
+
+
 def _campaign_scaling(ctx):
     from .campaign_scaling_suite import campaign_scaling
     return campaign_scaling(ctx)
 
 
 SCENARIOS["campaign_scaling"] = _campaign_scaling
+
+
+def _campaign_first_level_reinforcements(ctx):
+    from .campaign_scaling_suite import campaign_first_level_reinforcements
+    return campaign_first_level_reinforcements(ctx)
+
+
+SCENARIOS["campaign_first_level_reinforcements"] = _campaign_first_level_reinforcements
+
+
+def _campaign_bot_checkpoints(ctx):
+    from .campaign_checkpoint_suite import campaign_bot_checkpoints
+    return campaign_bot_checkpoints(ctx)
+
+
+SCENARIOS["campaign_bot_checkpoints"] = _campaign_bot_checkpoints
 
 
 def _campaign_teams(ctx):
@@ -1271,3 +1295,33 @@ def _lobby_tooltips(ctx):
 
 
 SCENARIOS["lobby_tooltips"] = _lobby_tooltips
+
+
+def _tutorial_bots_nan(ctx):
+    from .tutorial_bot_nan_suite import tutorial_bots_nan
+    return tutorial_bots_nan(ctx)
+
+
+def _tutorial_bots_nan_local(ctx):
+    from .tutorial_bot_nan_suite import tutorial_bots_nan
+    return tutorial_bots_nan(ctx, local_only=True)
+
+
+SCENARIOS["tutorial_bots_nan"] = _tutorial_bots_nan
+SCENARIOS["tutorial_bots_nan_local"] = _tutorial_bots_nan_local
+
+
+def _tutorial_decal_guard(ctx):
+    from .tutorial_bot_nan_suite import tutorial_decal_guard
+    return tutorial_decal_guard(ctx)
+
+
+SCENARIOS["tutorial_decal_guard"] = _tutorial_decal_guard
+
+
+def _tutorial_bot_overlap(ctx):
+    from .tutorial_bot_nan_suite import tutorial_bot_overlap
+    return tutorial_bot_overlap(ctx)
+
+
+SCENARIOS["tutorial_bot_overlap"] = _tutorial_bot_overlap

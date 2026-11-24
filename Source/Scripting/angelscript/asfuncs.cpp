@@ -5973,6 +5973,7 @@ vec3 AS_Online_SafeSpotNear(const vec3& base, const vec3& facing, int index) {
 bool AS_Online_CampaignEncounterDefeated(int hotspot, int goal) { return Online::Instance()->CampaignEncounterDefeated(hotspot, goal); }
 int AS_Online_CampaignHumanCount() { return Online::Instance()->CampaignHumanCount(); }
 int AS_Online_CampaignPartySize() { return Online::Instance()->CampaignPartySize(); }
+int AS_Online_CoopRosterSize() { return Online::Instance()->CoopRosterSize(); }
 bool AS_Online_CampaignIsMainCharacter(int avatar) { return Online::Instance()->CampaignCharacterOnMainTeam(avatar); }
 std::string AS_Online_CampaignWaitingText() { return Online::Instance()->CampaignWaitingText(); }
 void AS_Online_ChallengeEncounterBegin(const std::string& key) { Online::Instance()->ChallengeEncounterBegin(key); }
@@ -5993,6 +5994,18 @@ std::string AS_Online_Spectating() {
 
 void AS_Online_SpectateNext() {
     Online::Instance()->SpectateNext();
+}
+
+void AS_Online_SpectatePrevious() {
+    Online::Instance()->SpectatePrevious();
+}
+
+bool AS_Online_RequestCheckpointRestart(int avatar) {
+    return Online::Instance()->RequestCoopCheckpointRestart(avatar);
+}
+
+bool AS_Online_OwnPlayerCharacter(int avatar) {
+    return Online::Instance()->OwnPlayerCharacter(avatar);
 }
 
 // Our own character choice and colours (mp_character, mp_fur, mp_cloth) again
@@ -6224,6 +6237,7 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("bool Online_CampaignEncounterDefeated(int hotspot, int goal)", asFUNCTION(AS_Online_CampaignEncounterDefeated), asCALL_CDECL);
     context->RegisterGlobalFunction("int Online_CampaignHumanCount()", asFUNCTION(AS_Online_CampaignHumanCount), asCALL_CDECL);
     context->RegisterGlobalFunction("int Online_CampaignPartySize()", asFUNCTION(AS_Online_CampaignPartySize), asCALL_CDECL);
+    context->RegisterGlobalFunction("int Online_CoopRosterSize()", asFUNCTION(AS_Online_CoopRosterSize), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_CampaignIsMainCharacter(int avatar)", asFUNCTION(AS_Online_CampaignIsMainCharacter), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_CampaignWaitingText()", asFUNCTION(AS_Online_CampaignWaitingText), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_ChallengeEncounterBegin(const string &in key)", asFUNCTION(AS_Online_ChallengeEncounterBegin), asCALL_CDECL);
@@ -6235,6 +6249,9 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("string Online_ObjectFile(int id)", asFUNCTION(AS_Online_ObjectFile), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_Spectating()", asFUNCTION(AS_Online_Spectating), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_SpectateNext()", asFUNCTION(AS_Online_SpectateNext), asCALL_CDECL);
+    context->RegisterGlobalFunction("void Online_SpectatePrevious()", asFUNCTION(AS_Online_SpectatePrevious), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_RequestCheckpointRestart(int avatar = -1)", asFUNCTION(AS_Online_RequestCheckpointRestart), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_OwnPlayerCharacter(int avatar)", asFUNCTION(AS_Online_OwnPlayerCharacter), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_RestoreOwnCharacter()", asFUNCTION(AS_Online_RestoreOwnCharacter), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_PlaceAvatar(int char_id, const vec3 &in pos, const vec3 &in facing)", asFUNCTION(AS_Online_PlaceAvatar), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_IsPlayerCharacter(int char_id)", asFUNCTION(AS_Online_IsPlayerCharacter), asCALL_CDECL);

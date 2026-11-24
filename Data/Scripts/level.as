@@ -466,6 +466,26 @@ void DrawGUI3() {
 
 
 bool capture_input = false;
+
+void UpdateSpectatorControls() {
+    if(!Online_IsActive()) return;
+    bool spectating = Online_Spectating() != "";
+    bool party = Online_CoopRosterSize() > 1;
+    for(int i = 0; i < GetNumCharacters(); ++i) {
+        MovementObject@ human = ReadCharacter(i);
+        // Seat ownership stays here even when another peer simulates a dragged body.
+        if(!human.controlled || !Online_OwnPlayerCharacter(human.GetID()) || human.GetIntVar("knocked_out") == 0) continue;
+        int input = human.controller_id;
+        if(spectating) {
+            if(GetInputPressed(input, "spectate_previous")) Online_SpectatePrevious();
+            else if(GetInputPressed(input, "spectate_next")) Online_SpectateNext();
+        }
+        // Every local human may request a retry. The host authorizes it only
+        // after the last human teammate is down, including remote requests.
+        if(party && GetInputPressed(input, "attack")) Online_RequestCheckpointRestart(human.GetID());
+    }
+}
+
 void Update(int paused) {
     if(menu_paused && (Online_IsActive() || DebugLocalPlayerCount() > 1)) {
         menu_paused = false;
@@ -476,9 +496,7 @@ void Update(int paused) {
     if(changed_world_pause && has_gui && !draw_settings) AddPauseMenu();
     CoopReviveUpdate();
     CoopStoryUpdate();
-    if(Online_Spectating() != "" && GetInputPressed(controller_id, "attack")){
-        Online_SpectateNext();  // (online, ours down: watch the next player who is up)
-    }
+    UpdateSpectatorControls();
     const bool kDialogueQueueDebug = false;
     if(kDialogueQueueDebug){
         string str;

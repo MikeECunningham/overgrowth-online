@@ -187,6 +187,9 @@ void Online::ClearIDTranslations() {
     coop_cutscene_players.clear();
     coop_hidden.clear();
     coop_cutscene = false;
+    coop_regroup_pending = coop_regroup_ready = false;
+    coop_regroup_anchor = -1; coop_regroup_waiting.clear(); coop_regroup_next_ms = 0.0;
+    coop_restart_avatar = -1;
     campaign_main_avatar_id_ = static_cast<ObjectID>(-1);
     held_hits.clear(); pending_revives.clear(); pending_avatar_characters.clear();
     pending_unsticks.clear(); pending_drop_orders.clear(); pending_item_launches.clear();
@@ -243,6 +246,9 @@ void Online::ChangeLevel(const string& id) {
     coop_cutscene = false;  // (the new level's objects)
     remote_cutscene_active_ = false;
     coop_hidden.clear();
+    coop_regroup_pending = coop_regroup_ready = false;
+    coop_regroup_anchor = -1; coop_regroup_waiting.clear(); coop_regroup_next_ms = 0.0;
+    coop_restart_avatar = -1;
     last_safe_ground.clear();
 
     online_session->outgoing_messages_lock.lock();
@@ -479,6 +485,11 @@ ObjectID Online::CreateLobbyBot(PlayerID id) {
             }
             bot->ASSetIntVar("lobby_escort_player_id", buddy);
         }
+        // Intro dialogue and paused menus can render a new bot before its
+        // first ordinary script Update selects an animation. Seed a real pose
+        // without running AI or moving it while the world is held.
+        if (bot->HasFunction("void ApplyIdle(float, bool)"))
+            bot->Execute("if(this_mo.rigged_object().anim_client().GetCurrAnim()==\"\"){ApplyIdle(5.0f,true);FixDiscontinuity();}");
         return bot->GetID();
     }
     return static_cast<ObjectID>(-1);
@@ -3868,6 +3879,43 @@ bool Online::IsAvatarCameraAttached() const {
 }
 
 void Online::SendLevelMessage(const string& msg) {
+    int restart_peer = -1, restart_avatar = -1;
+    char trailing = 0;
+    const int restart_fields = sscanf(msg.c_str(), "ohr %d coop_checkpoint_restart #%d %c", &restart_peer, &restart_avatar, &trailing);
+    if (restart_fields >= 2) {
+        // SendLevelMessage::Execute inserts the authenticated sender's peer
+        // and translates its #avatar token before this local dispatch.
+        if (restart_fields == 2 && IsHosting() && delivering_network_level_message && restart_peer >= 0 && restart_peer <= 255 &&
+            CanCoopCheckpointRestart(static_cast<PeerID>(restart_peer), restart_avatar)) {
+            coop_restart_peer = static_cast<PeerID>(restart_peer);
+            coop_restart_avatar = restart_avatar;
+        }
+        return;
+    }
+    if (msg.compare(0, 24, "coop_checkpoint_regroup ") == 0) {
+        // This notification comes only from the host's authored CheckReset,
+        // after its human checkpoint transforms have been restored. Never
+        // accept a network request or reflect this private hook to clients.
+        int anchor = -1;
+        if (IsHosting() && !delivering_network_level_message && coop_regroup_pending &&
+            CoopCampaign() && sscanf(msg.c_str() + 24, "%d", &anchor) == 1 && CampaignCharacterOnMainTeam(anchor)) {
+            coop_regroup_anchor = anchor;
+            coop_regroup_waiting.clear();
+            for (const auto& player : GetPlayerStates())
+                if (player.object_id >= 0 && player.object_id != anchor && CampaignPlayerOnMainTeam(player.player_id))
+                    coop_regroup_waiting.insert(player.object_id);
+            coop_regroup_ready = true;
+            coop_regroup_next_ms = 0.0;
+        }
+        return;
+    }
+    if (msg == "reset" && IsHosting() && !delivering_network_level_message) {
+        coop_restart_avatar = -1;
+        coop_regroup_pending = host_started_level && CoopCampaign() && CampaignPartySize() > 1;
+        coop_regroup_ready = false;
+        coop_regroup_anchor = -1; coop_regroup_waiting.clear(); coop_regroup_next_ms = 0.0;
+        pending_revives.clear();
+    }
     // Overgrowth Online: level scripts' own channel to the clients ("ohl ...")
     if (msg.compare(0, 4, "ohl ") == 0) {
         Send<OnlineMessages::SendLevelMessage>(msg);  // the host's ids are the common ones
@@ -4191,6 +4239,128 @@ static bool AvatarUp(SceneGraph* sg, ObjectID id) {
            static_cast<MovementObject*>(o)->ASGetIntVar("knocked_out") == 0;  // aschar.as _awake
 }
 
+int Online::CoopRosterSize() const {
+    SceneGraph* sg = Engine::Instance()->GetSceneGraph();
+    int count = 0;
+    if (sg && online_session) for (const auto& entry : online_session->player_states) {
+        Object* object = sg->GetObjectFromID(entry.second.object_id);
+        if (object && object->GetType() == _movement_object) ++count;
+    }
+    return count;
+}
+
+bool Online::CanCoopCheckpointRestart(PeerID peer, ObjectID avatar) {
+    SceneGraph* sg = Engine::Instance()->GetSceneGraph();
+    if (!IsHosting() || !online_session || !host_started_level || !sg || !sg->level || !CoopCampaign()) return false;
+    bool requester = false, main_human = false;
+    for (const auto& entry : online_session->player_states) {
+        const PlayerState& player = entry.second;
+        if (player.is_bot) continue;
+        Object* object = sg->GetObjectFromID(player.object_id);
+        if (!object || object->GetType() != _movement_object) continue;
+        const bool up = AvatarUp(sg, player.object_id);
+        if (!up && player.connected && player.peer_id == peer && player.object_id == avatar) requester = true;
+        if (CampaignPlayerOnMainTeam(entry.first)) {
+            main_human = true;
+            if (up) return false;
+        }
+    }
+    return requester && main_human;
+}
+
+bool Online::RequestCoopCheckpointRestart(ObjectID avatar) {
+    SceneGraph* sg = Engine::Instance()->GetSceneGraph();
+    if (!IsActive() || !host_started_level || !sg || !CoopCampaign()) return false;
+    bool mine = false;
+    for (const auto& player : GetLocalPlayerStates()) {
+        if (player.is_bot || !player.connected ||
+            (avatar >= 0 && player.object_id != avatar)) continue;
+        Object* object = sg->GetObjectFromID(player.object_id);
+        if (object && object->GetType() == _movement_object && !AvatarUp(sg, player.object_id)) {
+            avatar = player.object_id; mine = true; break;
+        }
+    }
+    if (!mine) return false;
+    if (IsClient()) return SendLevelRequest("ohr coop_checkpoint_restart #" + to_string(avatar));
+    if (!CanCoopCheckpointRestart(LocalPeerID(), avatar)) return false;
+    coop_restart_peer = LocalPeerID(); coop_restart_avatar = avatar;
+    return true;
+}
+
+static float CoopPlacementRadius(MovementObject* actor) {
+    return 0.1f + 0.35f * std::max(0.1f, actor->rigged_object()->GetCharScale());
+}
+
+static bool CoopRegroupSpot(Online* online, SceneGraph* sg, MovementObject* anchor, MovementObject* member, int index,
+                           const std::set<ObjectID>& moving, const vector<std::pair<vec3, float>>& reserved, vec3* position) {
+    if (!sg->bullet_world_ || !Finite3(anchor->position)) return false;
+    const float radius = CoopPlacementRadius(member);
+    const vec3 up(0, 1, 0);
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        vec3 base = anchor->position;
+        if (attempt >= 8) {
+            const float ring = 1.8f + 1.4f * ((attempt - 8) / 8);
+            const float angle = ((index + attempt) % 8) * 0.7853981634f;
+            base += vec3(std::cos(angle) * ring, 0, std::sin(angle) * ring);
+        }
+        vec3 candidate;
+        if (!online->FindSafeSpot(base, anchor->GetFacing(), attempt < 8 ? index + attempt : 0, &candidate, anchor->GetID()) ||
+            std::fabs(candidate.y() - anchor->position.y()) > 0.6f ||
+            sg->bullet_world_->CheckRayCollision(anchor->position, candidate) ||
+            sg->bullet_world_->CheckRayCollision(anchor->position + up * 0.6f, candidate + up * 0.6f)) continue;
+        bool occupied = false;
+        for (Object* object : sg->movement_objects_) {
+            auto* actor = static_cast<MovementObject*>(object);
+            if (!actor->enabled_ || moving.count(actor->GetID())) continue;
+            const vec3 offset = actor->position - candidate;
+            const float clearance = radius + CoopPlacementRadius(actor);
+            if (std::fabs(offset.y()) < 1.8f && offset.x() * offset.x() + offset.z() * offset.z() < clearance * clearance) { occupied = true; break; }
+        }
+        if (occupied) continue;
+        for (const auto& spot : reserved) {
+            const vec3 offset = spot.first - candidate;
+            const float clearance = radius + spot.second;
+            if (std::fabs(offset.y()) < 1.8f && offset.x() * offset.x() + offset.z() * offset.z() < clearance * clearance) { occupied = true; break; }
+        }
+        if (!occupied) { *position = candidate; return true; }
+    }
+    return false;
+}
+
+void Online::CoopResetRegroup(SceneGraph* sg) {
+    if (!coop_regroup_pending || !coop_regroup_ready || !IsHosting() || !host_started_level ||
+        !sg || !sg->level || coop_cutscene || sg->level->DialogueCameraControl() || OnlineClockMs() < coop_regroup_next_ms) return;
+    coop_regroup_next_ms = OnlineClockMs() + 350.0;
+    MovementObject* anchor = nullptr;
+    for (const auto& player : GetPlayerStates()) {
+        if (player.is_bot || !CampaignPlayerOnMainTeam(player.player_id) || !AvatarUp(sg, player.object_id)) continue;
+        auto* human = static_cast<MovementObject*>(sg->GetObjectFromID(player.object_id));
+        if (!anchor || player.object_id == coop_regroup_anchor) anchor = human;
+    }
+    // Surviving bots may still be at their creation transforms. A human at
+    // the authored checkpoint, never a bot, anchors the whole regroup.
+    if (!anchor) return;
+    const std::set<ObjectID> moving = coop_regroup_waiting;
+    vector<std::pair<vec3, float>> reserved;
+    int index = 1;
+    for (auto it = coop_regroup_waiting.begin(); it != coop_regroup_waiting.end();) {
+        const ObjectID id = *it;
+        Object* object = sg->GetObjectFromID(id);
+        if (!object || object->GetType() != _movement_object || id == anchor->GetID() || !IsPlayerCharacter(id) || !CampaignCharacterOnMainTeam(id)) {
+            it = coop_regroup_waiting.erase(it);
+            continue;
+        }
+        auto* member = static_cast<MovementObject*>(object);
+        vec3 position;
+        if (!CoopRegroupSpot(this, sg, anchor, member, index++, moving, reserved, &position)) { ++it; continue; }
+        reserved.push_back({position, CoopPlacementRadius(member)});
+        PlaceAvatar(id, position, anchor->GetFacing(), anchor->GetID());
+        LOGI << "Overgrowth Online: checkpoint regroup, player character " << id << " beside " << anchor->GetID() << std::endl;
+        it = coop_regroup_waiting.erase(it);
+    }
+    if (coop_regroup_waiting.empty()) coop_regroup_pending = coop_regroup_ready = false;
+}
+
 bool Online::AllowScriptReset() {
     if (!IsActive() || !host_started_level) {
         return true;
@@ -4243,6 +4413,7 @@ void Online::CoopUpdate(SceneGraph* sg) {
     }
     TrackSafeGround(sg);
     CoopCutsceneUpdate(sg);
+    CoopResetRegroup(sg);
 
     // Revives: a client's own character, as the host asked
     // (one a teammate still drags comes back first: wait for it, a while)
@@ -4280,13 +4451,25 @@ void Online::CoopUpdate(SceneGraph* sg) {
         return;
     }
 
+    if (coop_restart_avatar >= 0) {
+        const ObjectID avatar = coop_restart_avatar;
+        coop_restart_avatar = -1;
+        if (CanCoopCheckpointRestart(coop_restart_peer, avatar)) {
+            coop_all_down_ms = -1.0;
+            LOGI << "Overgrowth Online: down human " << avatar << " requested a checkpoint restart" << std::endl;
+            sg->level->Message("reset");
+            sg->level->Message("skip_dialogue");
+            return;
+        }
+    }
+
     vector<ObjectID> players;
     for (const auto& player : GetPlayerStates())
         if (!player.is_bot && player.object_id >= 0 && CampaignCharacterOnMainTeam(player.object_id)) players.push_back(player.object_id);
 
-    // Every human down for 5 s in a story level: restart for all. AI cannot
+    // Every human down for 5 s in a story level: restart the checkpoint. AI cannot
     // revive humans and must not trap them watching a surviving escort bot.
-    if ((players.size() < 2 && !LobbyForceTeams()) || players.empty() || !CoopCampaign()) {
+    if (CoopRosterSize() < 2 || players.empty() || !CoopCampaign()) {
         coop_all_down_ms = -1.0;
         return;
     }
@@ -4300,7 +4483,7 @@ void Online::CoopUpdate(SceneGraph* sg) {
         coop_all_down_ms = OnlineClockMs();
     } else if (OnlineClockMs() - coop_all_down_ms > 5000.0) {
         coop_all_down_ms = -1.0;
-        LOGI << "Overgrowth Online: every player is down, the level starts over" << std::endl;
+        LOGI << "Overgrowth Online: all human teammates are down; restarting the checkpoint" << std::endl;
         sg->level->Message("reset");
         sg->level->Message("skip_dialogue");
     }
@@ -4308,7 +4491,8 @@ void Online::CoopUpdate(SceneGraph* sg) {
 
 // Host, from the level's "coop_checkpoint" message (Level::Message): everyone
 // who is down gets up beside the one who reached the checkpoint (else the
-// host, else anyone up), on safe ground
+// host, else another human up), on safe ground. Surviving AI cannot rescue a
+// human-team wipe; downed bots are revived beside the same human anchors.
 void Online::CoopCheckpoint(ObjectID by) {
     SceneGraph* sg = Engine::Instance()->GetSceneGraph();
     if (!IsHosting() || !host_started_level || sg == nullptr) {
@@ -4316,8 +4500,10 @@ void Online::CoopCheckpoint(ObjectID by) {
     }
     vector<ObjectID> players = PlayerAvatarIDs();
     players.erase(std::remove_if(players.begin(), players.end(), [this](ObjectID id) { return !CampaignCharacterOnMainTeam(id); }), players.end());
+    std::set<ObjectID> humans;
+    for (const auto& player : GetPlayerStates()) if (!player.is_bot && CampaignCharacterOnMainTeam(player.object_id)) humans.insert(player.object_id);
     vector<ObjectID> anchors;
-    if (by >= 0 && CampaignCharacterOnMainTeam(by) && AvatarUp(sg, by)) {
+    if (humans.count(by) && AvatarUp(sg, by)) {
         anchors.push_back(by);
     }
     vector<ObjectID> mine = GetLocalAvatarIDs();
@@ -4325,7 +4511,7 @@ void Online::CoopCheckpoint(ObjectID by) {
         anchors.push_back(mine[0]);
     }
     for (ObjectID id : players) {
-        if (AvatarUp(sg, id)) {
+        if (humans.count(id) && AvatarUp(sg, id)) {
             anchors.push_back(id);
         }
     }
@@ -4380,8 +4566,10 @@ void Online::CoopZoneRespawn(SceneGraph* sg) {
         auto timer = lost_since.emplace(me, now).first;
         if (now - timer->second < kRespawnMs) continue;
         vector<std::pair<float, ObjectID>> anchors;
-        for (ObjectID id : PlayerAvatarIDs()) {
-            if (id != me && CampaignCharacterOnMainTeam(id) && AvatarUp(sg, id)) anchors.push_back({distance_squared(static_cast<MovementObject*>(sg->GetObjectFromID(id))->position, mo->position), id});
+        for (const auto& teammate : GetPlayerStates()) {
+            const ObjectID id = teammate.object_id;
+            if (!teammate.is_bot && id != me && CampaignPlayerOnMainTeam(teammate.player_id) && AvatarUp(sg, id))
+                anchors.push_back({distance_squared(static_cast<MovementObject*>(sg->GetObjectFromID(id))->position, mo->position), id});
         }
         std::sort(anchors.begin(), anchors.end());
         bool revived = false;
@@ -4535,11 +4723,11 @@ void Online::CoopSpectateUpdate(SceneGraph* sg) {
         }
         spectate_target = -1;
         spectate_name.clear();
-        spectate_next = false;
+        spectate_next = spectate_previous = false;
         return;
     }
 
-    // Whose: the same one while they stay up; attack: the next; else the nearest
+    // Keep the same target while it stays up; previous/next wrap the roster.
     auto at = std::find(up.begin(), up.end(), spectate_target);
     ObjectID target = spectate_target;
     if (at == up.end()) {
@@ -4554,8 +4742,10 @@ void Online::CoopSpectateUpdate(SceneGraph* sg) {
         }
     } else if (spectate_next) {
         target = *(++at == up.end() ? up.begin() : at);
+    } else if (spectate_previous) {
+        target = *(at == up.begin() ? up.end() - 1 : at - 1);
     }
-    spectate_next = false;
+    spectate_next = spectate_previous = false;
 
     MovementObject* mo = static_cast<MovementObject*>(sg->GetObjectFromID(target));
     Camera* cam = ActiveCameras::GetCamera(0);  // (ours: a host's other cameras are its players' virtual ones)

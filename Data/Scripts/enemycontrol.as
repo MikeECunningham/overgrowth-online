@@ -846,6 +846,7 @@ void Notice(int character_id) {
 }
 
 void ReactToNoticedCharacter(int character_id) {
+    if(!MovementObjectExists(character_id)) return;
     MovementObject@ char = ReadCharacterID(character_id);
 
     if(char.static_char) {

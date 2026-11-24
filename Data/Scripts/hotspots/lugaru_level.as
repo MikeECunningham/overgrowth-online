@@ -97,7 +97,7 @@ void Update() {
         if(Online_IsActive()){
             respawn = "You are down. If everyone is down, the level starts over.";
             if(Online_Spectating() != ""){
-                respawn += "\nWatching " + Online_Spectating() + "  ($attack$: the next player)";
+                respawn += "\nWatching " + Online_Spectating() + (use_keyboard ? "  (Q/E: previous/next)" : "  (L1/R1: previous/next)");
             }
         }
         int index = respawn.findFirst("$attack$");

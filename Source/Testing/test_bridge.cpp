@@ -549,6 +549,10 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 for (const char* name : {"goal", "escort_id", "target_id", "attacked_by_id"}) {
                     if (mo->ASHasVar(name)) c["ai_" + std::string(name)] = mo->ASGetIntVar(name);
                 }
+                for (const char* name : {"updated", "shadow_id", "lf_shadow_id", "rf_shadow_id"}) {
+                    if (mo->ASHasVar(name)) c[name] = mo->ASGetIntVar(name);
+                }
+                c["visible"] = mo->visible;
                 for (const char* name : {"duck_amount", "target_duck_amount"}) {
                     if (mo->ASHasVar(name)) c[name] = mo->ASGetFloatVar(name);
                 }
@@ -1317,15 +1321,29 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         };
         out["objects"] = Json::Value(Json::arrayValue);
         out["characters"] = Json::Value(Json::arrayValue);
+        out["cameras"] = Json::Value(Json::arrayValue);
         if (loaded) {
             for (Object* obj : sg->objects_) {
-                if (bad3(obj->GetTranslation()) || bad3(obj->GetScale())) {
+                bool transform = false;
+                for (int element = 0; element < 16; ++element)
+                    transform = transform || !std::isfinite(obj->GetTransform().entries[element]);
+                if (bad3(obj->GetTranslation()) || bad3(obj->GetScale()) || transform) {
                     Json::Value e;
                     e["id"] = obj->GetID();
                     e["type"] = (int)obj->GetType();
                     e["path"] = obj->obj_file;
+                    e["transform"] = transform;
                     out["objects"].append(e);
                 }
+            }
+            for (int id = 0; id < ActiveCameras::NumCameras(); ++id) {
+                Camera* camera = ActiveCameras::GetCamera(id);
+                if (!camera) continue;
+                const mat4 view = camera->GetViewMatrix(), projection = camera->GetProjMatrix();
+                bool bad = bad3(camera->GetPos());
+                for (int element = 0; element < 16; ++element)
+                    bad = bad || !std::isfinite(view.entries[element]) || !std::isfinite(projection.entries[element]);
+                if (bad) out["cameras"].append(id);
             }
             for (Object* obj : sg->movement_objects_) {
                 MovementObject* mo = (MovementObject*)obj;

@@ -186,7 +186,9 @@ void BuildMain() {
     scaling_options.appendSpacer(10.0f);
     FontSetup scaling_font("Cella", 28, HexColor("#CCCCCC"), true);
     scaling_options.append(IMText("Adjust enemy stats and add limited reinforcements for local and online parties.", scaling_font));
-    scaling_options.append(IMText("Solo encounters stay unchanged. Nightmare adds rare, small AI variations from four participants.", scaling_font));
+    scaling_options.append(IMText("An extra human counts as four friendly bots for stats, or two for enemy numbers.", scaling_font));
+    scaling_options.append(IMText("Extra enemies arrive early; number growth tapers off in larger parties.", scaling_font));
+    scaling_options.append(IMText("Solo encounters stay unchanged. Nightmare adds rare, small AI variations from four humans.", scaling_font));
     scaling_options.append(IMText("Existing reinforcements stay in the fight. Enemies keep damage already taken.", scaling_font));
     if(!CanEditDifficultySettings()) scaling_options.append(IMText("The host controls these match settings.", scaling_font));
     upperMainDiv.appendSpacer(30.0f);

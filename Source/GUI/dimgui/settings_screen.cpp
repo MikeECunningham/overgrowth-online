@@ -741,7 +741,7 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
         if (ImGui::Checkbox("Scale campaign encounters for party size", &checkbox_val)) {
             SetMatchSetting("campaign_mp_scaling", checkbox_val ? "true" : "false");
         }
-        ImGui::TextWrapped("Enemy stats and limited matching reinforcements scale with main-team players and friendly bots. Solo stays unchanged. Nightmare adds rare, small AI variations from four participants; blocking, counters and attack speed stay authored. Existing reinforcements stay in the fight and enemies keep damage already taken.");
+        ImGui::TextWrapped("Enemy difficulty scales with your main-team humans and friendly bots. An extra human counts as four bots for enemy stats, or two for enemy numbers. Extra enemy numbers grow logarithmically: early allies add enemies quickly, then growth tapers off, with at most six extras per regular fight and fewer bodyguards for bosses. Solo stays unchanged. Nightmare adds rare, small AI variations from four humans; blocking, counters and attack speed stay authored. Existing reinforcements stay in the fight and enemies keep damage already taken.");
 
         float global_time_scale_mult = config["global_time_scale_mult"].toNumber<float>();
         if (ImGui::SliderFloat("Game Speed", &global_time_scale_mult, 0.5f, 1.0f)) {

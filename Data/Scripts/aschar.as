@@ -1182,7 +1182,12 @@ void HitByItem(string material, vec3 point, int id, int type) {
     float force_len = length(force);
     level.SendMessage("item_hit " + this_mo.getID());
 
-	attacked_by_id = io.last_held_char_id_;
+    // A thrown item can outlive its owner after a disconnect or respawn.
+    // Its impact still applies, but stale ownership must not become an AI
+    // notice or damage attribution to a deleted/non-character object.
+    int item_attacker = io.last_held_char_id_;
+    if(!MovementObjectExists(item_attacker)) item_attacker = -1;
+    attacked_by_id = item_attacker;
 
     if(this_mo.controlled) {
         if(tutorial == "stealth") {
@@ -1199,8 +1204,8 @@ void HitByItem(string material, vec3 point, int id, int type) {
         AISound(this_mo.position, VERY_LOUD_SOUND_RADIUS, _sound_type_voice);
         Startle();
 
-        if(io.last_held_char_id_ != -1) {
-            ReceiveMessage("notice " + io.last_held_char_id_);
+        if(item_attacker != -1) {
+            ReceiveMessage("notice " + item_attacker);
         }
 
         if(species == _dog && type == 2) {
@@ -1231,8 +1236,8 @@ void HitByItem(string material, vec3 point, int id, int type) {
         }
 
         if(old_knocked_out == _awake) {
-            if(io.last_held_char_id_ != -1) {
-                ReceiveMessage("notice " + io.last_held_char_id_);
+            if(item_attacker != -1) {
+                ReceiveMessage("notice " + item_attacker);
             }
 
             AISound(this_mo.position, VERY_LOUD_SOUND_RADIUS, _sound_type_voice);
@@ -10103,6 +10108,12 @@ void Execute(ExecutionType type) {
 }
 
 void HandleCollisionsBetweenTwoCharacters(MovementObject @other) {
+    // Hidden cinematic companions are held by the session, not participants in
+    // physical separation. Do not accumulate pushes for their eventual release.
+    if(coop_cutscene_hold ||
+       (other.HasVar("coop_cutscene_hold") && other.GetBoolVar("coop_cutscene_hold"))) {
+        return;
+    }
     if(state == _ragdoll_state ||
             reset_no_collide > the_time - 0.2f ||
             other.GetIntVar("state") == _ragdoll_state ||
@@ -10122,7 +10133,23 @@ void HandleCollisionsBetweenTwoCharacters(MovementObject @other) {
         if(distance_squared(this_com, other_com) < distance_threshold * distance_threshold) {
             vec3 dir = other_com - this_com;
             float dist = length(dir);
-            dir /= dist;
+            if(dist > 0.0001f) {
+                dir /= dist;
+            } else {
+                // Freshly placed players can have exactly coincident centers.
+                // Dividing by zero poisoned BOTH characters' position and push
+                // velocity. Prefer their actual horizontal separation; if they
+                // coincide too, choose opposite directions from stable IDs.
+                dir = other.position - this_mo.position;
+                dir.y = 0.0f;
+                if(length_squared(dir) > 0.00000001f) {
+                    dir = normalize(dir);
+                } else {
+                    int mine = Online_ToSharedID(this_mo.GetID());
+                    int theirs = Online_ToSharedID(other.GetID());
+                    dir = vec3(mine < theirs ? 1.0f : -1.0f, 0.0f, 0.0f);
+                }
+            }
             dir *= distance_threshold - dist;
             vec3 other_push = dir * 0.5f / (time_step) * 0.15f;
 

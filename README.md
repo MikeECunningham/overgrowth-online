@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.9** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.10** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -45,7 +45,7 @@ and the remaining Steam friends/relay checks.
   bots count toward scaling and spread their escorts across teammates.
 - Mode-specific challenge settings for active time, level/match progression, encounter wins,
   player-defeat pressure and adaptive win rewards. See [Mode challenge settings](Docs/Markdown/Mode%20Challenge.md).
-- Optional campaign party scaling with capped same-species reinforcements, stronger bosses,
+- Optional campaign party scaling with logarithmic same-species reinforcements, stronger bosses,
   and a fourth **Nightmare** difficulty with rare, modest AI variations. See
   [Campaign difficulty](Docs/Markdown/Campaign%20Difficulty.md) for rules and limits.
 - Font rasterization, controller focus, GUI texture loading and Linux
@@ -143,6 +143,15 @@ character keeps its scripted choreography; extra human characters and their
 weapons are hidden and held still. This also applies to players joining during
 the scene. When it ends, split-screen assignments return and extra players are
 placed safely near the main character with their prior health/control state.
+
+In a campaign party, losing every human on the main character's team restarts
+the last checkpoint after five seconds; surviving bots do not keep it running.
+While spectating, **Q/E** or controller **L1/R1** cycles the watched character.
+Once every human teammate is down, any downed human can press attack (**LMB**
+on keyboard/mouse) to restart the checkpoint immediately, including remote
+players. Otherwise the five-second automatic restart remains active.
+Friendly roster members, including living bots, regroup at the restored
+checkpoint. A solo player retains the usual manual retry controls.
 
 The designated host can choose **End game** from the pause menu to bring everyone back to the same lobby. Connections, players, names and screen assignments stay in place for the next match. **Main menu** still leaves the multiplayer session.
 

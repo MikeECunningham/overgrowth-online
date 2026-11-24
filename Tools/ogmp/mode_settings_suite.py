@@ -23,7 +23,8 @@ def _probe(inst, expression, target="menu", context=None):
         _code(inst, 'SetConfigValueString("mode_setting_probe",""+(' + expression + '));SaveConfig();', target)
         config = dict(line.split(": ", 1) for line in (Path(inst.writedir) / "Data/config.txt").read_text().splitlines()
                       if ": " in line)
-        return config["mode_setting_probe"]
+        # An initially empty result may not dirty/save a new config key.
+        return config.get("mode_setting_probe", "")
     inst.bridge.call("level_messages", prefix="mode_setting_probe")
     _code(inst, 'level.SendMessage("mode_setting_probe "+(' + expression + '));', target, context)
     messages = inst.bridge.call("level_messages", prefix="mode_setting_probe")["messages"]
@@ -327,6 +328,8 @@ def lobby_tooltips(ctx):
     wait = lambda predicate, label: bridge.wait(predicate, 20, step=0.1, what=label)
     def tooltip():
         return next((w for w in bridge.call("ui_state")["windows"] if w["name"].startswith("##Tooltip")), None)
+    def hints():
+        return tuple(_probe(inst, 'lobby_hover_hint+"|"+lobby_focus_hint+"|"+lobby_visible_hint').split("|"))
     def pad(button):
         for down in (True, False):
             bridge.call("virtual_pad", action="button", slot=0, button=button, down=down)
@@ -353,21 +356,35 @@ def lobby_tooltips(ctx):
 
     # Hovering another control while a name draft is active must only show
     # its description, preserving both the text and text input ownership.
-    _code(inst, f'editing_name={roles[0][0]};name_buffer="Unfinished draft";name_keyboard_open=false;')
+    _code(inst, f'editing_name={roles[0][0]};name_buffer="";name_keyboard_open=false;')
     wait(lambda: bridge.call("ui_state")["want_text_input"], "name editor captures text")
-    bridge.call("text", text=" Keep")
-    time.sleep(0.15)
+    bridge.call("text", text="NameDraft")
+    wait(lambda: _probe(inst, 'name_buffer') == "NameDraft", "name editor accepts the draft")
     draft = _probe(inst, 'name_buffer')
-    active = bridge.call("ui_state")["active_id"]
+    name_ui = bridge.call("ui_state")
+    active = name_ui["active_id"]
+    name_field = name_ui["nav_rect"]
+    name_hint = "Edit the player's display name. Enter saves."
+    start_hint = "Start the selected mode and map with this roster. Resets difficulty progression."
     hosting = next(w["rect"] for w in bridge.call("ui_state")["windows"] if w["name"] == "Hosting options")
     bridge.call("pointer", x=int((hosting[0] + hosting[2]) * 0.5), y=int(hosting[1] + 88), buttons=0)
-    wait(lambda: tooltip(), "mouse hover description")
+    # The name field is drawn after Hosting options and remains focused. Its
+    # candidate must not append to or replace the hovered Start description.
+    wait(lambda: hints() == (start_hint, name_hint, start_hint) and tooltip(),
+         "Start hover takes precedence over the focused name field")
     assert _probe(inst, 'name_buffer') == draft, "tooltip hover changed the live name draft"
     assert bridge.call("ui_state")["active_id"] == active, "tooltip hover stole text input focus"
+    bridge.call("pointer", x=int((name_field[0] + name_field[2]) * 0.5),
+                y=int((name_field[1] + name_field[3]) * 0.5), buttons=0)
+    wait(lambda: hints() == (name_hint, "", name_hint) and tooltip(),
+         "second hover replaces the previous description")
+    assert _probe(inst, 'name_buffer') == draft, "second tooltip hover changed the live name draft"
+    assert bridge.call("ui_state")["active_id"] == active, "second tooltip hover stole text input focus"
     assert [(p["id"], p["host"], p["leader"], p["name"]) for p in _rows(inst)] == roles
     ctx.shot(inst, "mouse_hover_preserves_draft")
     _code(inst, 'editing_name=-1;')
     bridge.call("pointer", enabled=False)
     bridge.call("virtual_pad", action="clear")
     assert not script_errors(inst), script_errors(inst)[:8]
-    return {"passed": True, "metrics": {"controller_hint": True, "mouse_hint": True, "draft": draft}, "notes": []}
+    return {"passed": True, "metrics": {"controller_hint": True, "mouse_hint": True,
+            "hover_precedes_focus": True, "hover_replaced": True, "draft": draft}, "notes": []}

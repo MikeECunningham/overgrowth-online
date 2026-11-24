@@ -9,10 +9,12 @@
 namespace CampaignDifficulty {
 enum Strength { Rat = 0, Rabbit = 1, CatOrDog = 2, BigDog = 3, Wolf = 4 };
 
-constexpr int kRegularExtraCap = 4;
+constexpr int kRegularExtraCap = 6;
 constexpr int kBossExtraCap = 2;
-constexpr int kLevelExtraCap = 8;
+constexpr int kConcurrentExtraCap = 8;
 constexpr int kActorCap = 32;
+constexpr float kHumanAllyWeight = 1.4f;
+constexpr float kBotAllyWeight = 0.35f;
 
 struct Factors {
     float vitality = 1.0f;
@@ -42,12 +44,28 @@ inline float ExtraPlayers(int participants) {
     return count <= 4 ? float(count - 1) : 3.0f + std::sqrt(float(count - 4));
 }
 
+// Fixed twentieths keep mixed-party stat weights exact. The main
+// human is the unchanged baseline; each additional human weighs four bots.
+inline int PartyAllyUnits(int humans, int bots) {
+    const int human_allies = std::max(1, std::min(64, humans)) - 1;
+    const int bot_allies = std::max(0, std::min(64, bots));
+    return std::min(63 * 20, human_allies * 28 + bot_allies * 7);
+}
+
+inline float EffectivePartySize(int humans, int bots) {
+    return 1.0f + float(PartyAllyUnits(humans, bots)) / 20.0f;
+}
+
+inline float ExtraPlayersForParty(int humans, int bots) {
+    const float allies = float(PartyAllyUnits(humans, bots)) / 20.0f;
+    return allies <= 3.0f ? allies : 3.0f + std::sqrt(allies - 3.0f);
+}
+
 // Preserve authored species, stats and difficulty. These are independent
 // multipliers; vitality is effective health, not health bars above 100%.
-inline Factors ForPlayers(int participants, bool boss, int strength, bool stats, bool nightmare,
-                          uint32_t shared_id = kUnspecifiedUnit) {
+inline Factors ForExtraPlayers(float extra, int ai_humans, bool boss, int strength, bool stats, bool nightmare,
+                              uint32_t shared_id) {
     Factors out;
-    const float extra = ExtraPlayers(participants);
     const int rank = std::max(int(Rat), std::min(int(Wolf), strength));
     if (stats) {
         const float vitality_step = (boss ? 0.65f + 0.08f * rank : 0.18f + 0.035f * rank) * 0.85f;
@@ -55,21 +73,32 @@ inline Factors ForPlayers(int participants, bool boss, int strength, bool stats,
         out.damage = std::min(boss ? 1.9f : 1.6f, 1.0f + (boss ? 0.12f : 0.075f) * 0.85f * extra);
         out.armor = std::min(boss ? 1.9f : 1.5f, 1.0f + (boss ? 0.15f : 0.07f) * 0.85f * extra);
     }
-    if (nightmare && TweakForUnit(shared_id) != NoTweak) out.ai = NightmareAIAmount(participants);
+    if (nightmare && TweakForUnit(shared_id) != NoTweak) out.ai = NightmareAIAmount(ai_humans);
     return out;
 }
 
-// Additional allies buy a small fixed number budget, independent of the
-// original crowd's size. Bosses and stronger species receive additions later.
-inline int ExtraEnemies(int participants, int original_count, bool boss, int strength) {
-    if (participants <= 1 || original_count <= 0) return 0;
+// Legacy callers retain the original unweighted participant model.
+inline Factors ForPlayers(int participants, bool boss, int strength, bool stats, bool nightmare,
+                          uint32_t shared_id = kUnspecifiedUnit) {
+    return ForExtraPlayers(ExtraPlayers(participants), participants, boss, strength, stats, nightmare, shared_id);
+}
+
+inline Factors ForParty(int humans, int bots, bool boss, int strength, bool stats, bool nightmare,
+                        uint32_t shared_id = kUnspecifiedUnit) {
+    return ForExtraPlayers(ExtraPlayersForParty(humans, bots), humans, boss, strength, stats, nightmare, shared_id);
+}
+
+// Counts grow eagerly, then logarithmically. Unlike stat scaling, another
+// human contributes two bots here. Round only after the species/boss factor.
+inline int ExtraEnemiesForParty(int humans, int bots, int original_count, bool boss, int strength) {
+    if (original_count <= 0) return 0;
+    const int human_allies = std::max(1, std::min(64, humans)) - 1;
+    const int bot_allies = std::max(0, std::min(64, bots));
+    const double allies = double(human_allies) + double(bot_allies) * 0.5;
+    const double growth = 2.0 * std::log2(1.0 + allies * 0.5);
     const int rank = std::max(int(Rat), std::min(int(Wolf), strength));
-    if (boss) {
-        if (rank == Wolf) return participants >= 12 ? 1 : 0;
-        if (rank == BigDog) return participants >= 8 ? 1 : 0;
-        return std::min(kBossExtraCap, (participants - 1) / 5);
-    }
-    const int allies_per_extra = rank <= Rabbit ? 3 : 4;
-    return std::min(kRegularExtraCap, (participants - 1) / allies_per_extra);
+    const double rate = boss ? (rank == Wolf ? 0.25 : rank == BigDog ? 0.30 : 0.40) : (rank <= Rabbit ? 1.0 : 0.85);
+    const int cap = boss ? (rank >= BigDog ? 1 : kBossExtraCap) : kRegularExtraCap;
+    return std::min(cap, static_cast<int>(std::lround(growth * rate)));
 }
 }  // namespace CampaignDifficulty
