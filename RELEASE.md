@@ -1,7 +1,7 @@
 # Publishing this fork
 
 This fork is published at <https://github.com/MikeECunningham/overgrowth-online>.
-The current version is **0.42.0-alpha.14**, a testing prerelease. See [VERSION](VERSION)
+The current version is **0.42.0-alpha.15**, a testing prerelease. See [VERSION](VERSION)
 for the authoritative version, [FRIENDS.md](FRIENDS.md) for building and playing,
 and [COMPILING.md](COMPILING.md) for dependency details.
 
@@ -12,8 +12,9 @@ party and recover stalled defeat objectives. The host can choose Legacy,
 Weighted or Localized armor. Controllers can scroll menus with the right stick.
 Alpha.13 updates shop meshes and locks enemy strength to gameplay boundaries.
 Alpha.14 adds four armor materials, stealth upgrades and permission-aware menu pausing.
-Protocol **15** carries exact wearable sockets, the expanded progression state
-and shared menu-pause requests.
+Alpha.15 adds host-local save cards, persistent lobby slots, selectable AI rates,
+and an Arena shop after the match-winning camera. Protocol **16** synchronizes slot
+assignments, new loadout choices and Nightmare scaling rates.
 Distribute the matching executable and Data overrides to every participant.
 
 ## Versioning
@@ -39,7 +40,7 @@ maintained local-multiplayer protocol revision.
   compatibility is determined by the fork version and protocol, not that ID.
 
 Once a release commit has passed its checks, create its corresponding version
-tag, such as `v0.42.0-alpha.14`. Create a GitHub **prerelease** from that tag and
+tag, such as `v0.42.0-alpha.15`. Create a GitHub **prerelease** from that tag and
 attach the tested artifacts.
 Do not move a published tag to different code; publish another version instead.
 
@@ -82,6 +83,8 @@ clean-machine installation and Steam-specific behavior are separate checks.
    python3 Tools/ogmp.py run lobby_role_ui connection_cancel
    python3 Tools/ogmp.py run difficulty_ui difficulty_hud mode_settings_lobby mode_challenge
    python3 Tools/ogmp.py run performance_solo campaign_equipment campaign_menu_resume
+   python3 Tools/ogmp.py run session_slots session_saves session_saves_solo arena_saves
+   python3 Tools/ogmp.py run difficulty_rates progression_weapons_xp ice_cliffs_retries
    ```
 
    Close a normally running game before using the test runner. Repeat relevant

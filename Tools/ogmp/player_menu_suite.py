@@ -22,7 +22,7 @@ def player_menus(ctx):
         keys[f"gamepad_{player}_look_sensitivity"] = "0.25"
         for axis in ("x", "y"):
             keys[f"gamepad_{player}_invert_{axis}_look"] = "false"
-    inst = ctx.instance("player_menus", level=LEVEL, width=1280, height=720, keys=keys)
+    inst = ctx.instance("player_menus", width=1280, height=720, keys=keys)
 
     def run(code, player=None):
         target = "level" if player is None else "player_menu"
@@ -75,6 +75,14 @@ def player_menus(ctx):
             f'change.addString("{value}");imGUI.receiveMessage(change);break;}}}}', player)
 
     try:
+        # Navigating a menu with the keyboard must leave the SDL pointer free
+        # when the user reaches for the mouse again.
+        inst.bridge.call("key", key="Down", down=True)
+        time.sleep(.15)
+        inst.bridge.call("key", key="Down", down=False)
+        inst.bridge.call("exec", target="menu", code="SetGrabMouse(true);")
+        check(not status()["grab_mouse"], "main menu captured the keyboard player's mouse")
+        inst.bridge.call("load_level", path="Data/Levels/" + LEVEL)
         wait_loaded(inst)
         start(0)
         wait(lambda: status()["open_menu_players"] == [0] and status()["paused"], "single-player menu pauses")
@@ -83,6 +91,9 @@ def player_menus(ctx):
         window_width, window_height = map(int, probe(0, 'GetScreenWidth() + " " + GetScreenHeight()').split())
         metrics["single_player_cursor"] = status()["cursor_visible"]
         check(metrics["single_player_cursor"], "paused single player has no mouse cursor")
+        run("SetGrabMouse(true);", 0)
+        run("SetGrabMouse(true);")
+        check(not status()["grab_mouse"], "pause menu or live level script recaptured the mouse")
         run('string actions="";for(uint i=0;i<controller_items.size();++i){'
             'IMMessage@ m=controller_items[i].controllerItem.getMessage();'
             'if(m !is null)actions+=m.name+"|";}'
@@ -101,7 +112,7 @@ def player_menus(ctx):
         run("int extra_player = DebugAddLocalPlayer();")
         wait(lambda: status()["local_players"] == 2 and not status()["paused"], "second player clears automatic pause")
         metrics["two_view_size"] = probe(0, 'GetScreenWidth() + " " + GetScreenHeight()')
-        check(metrics["two_view_size"] == f"{window_width // 2} {window_height}", "existing menu did not resize to its half-screen")
+        check(metrics["two_view_size"] == f"{window_width} {window_height // 2}", "P1 menu did not resize to its full-width top screen")
         shot("two_views")
 
         run("int extra_player = DebugAddLocalPlayer();")

@@ -116,10 +116,10 @@ separate AI scaling option controls combat behavior.
 
 ## Optional AI scaling
 
-**AI scaling** replaces Nightmare as an independent checkbox. One in eight
+Choose the **AI scaling** rate under **Difficulty → Scaling**. Off disables it. Gentle, Standard, Brisk and Nightmare multiply the variation by 0.5×, 1×, 1.5× and 2×. One in eight
 stable enemy identities is eligible for one small offensive variation:
 aggression, ground aggression or block follow-up. Four, eight and sixteen humans
-allow 1%, 2% and 3% adjustments; later encounter pressure can unlock those same
+allow 1%, 2% and 3% adjustments at Standard; later encounter pressure can unlock those same
 small tiers for solo play. Defensive blocking, counters, weapon catching and
 attack speed remain authored, and explicit zero/maximum values stay exact.
 Friendly bots do not gain these changes. AI and physical equipment are separate

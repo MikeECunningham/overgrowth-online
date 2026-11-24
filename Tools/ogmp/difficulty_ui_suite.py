@@ -89,10 +89,19 @@ def difficulty_ui(ctx):
         focus_message('Back')
         g.pad(0)
         assert g.probe('GetConfigValueBool("tutorials")') == 'false', 'Back committed a checkbox draft'
+        g.inst.bridge.call('menu', script='main_menu_settings.as')
+        g.code('SwitchSettingsScreen("Difficulty");')
+        for rate in (1, 4):
+            g.code(f'SetCurrentControllerItem("rate_campaign_ai_scaling_rate_{rate}");')
+            g.pad(0)
+            g.wait(lambda: g.probe('GetConfigValueInt("campaign_ai_scaling_rate")') == str(rate),
+                   'controller selects compact AI rate card')
+        assert g.probe('GetConfigValueBool("campaign_ai_scaling")') == 'true'
+        metrics['rate_cards_screenshot'] = g.shot('compact_ai_rate_controller')
         assert not script_errors(g.inst), script_errors(g.inst)
         metrics.update({'right_navigation': navigation, 'down_navigation': down,
                         'original_three_presets': True, 'mode_independent_of_base': True,
-                        'checkbox_commit_and_cancel': True})
+                        'checkbox_commit_and_cancel': True, 'rate_card_controller_input': True})
         return {'passed': True, 'metrics': metrics, 'notes': []}
     except Exception:
         return {'passed': False, 'metrics': metrics, 'notes': [traceback.format_exc()]}

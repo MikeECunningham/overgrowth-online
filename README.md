@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.14** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.15** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -51,7 +51,7 @@ and the remaining Steam friends/relay checks.
 - A readable host-view difficulty readout shows encounter modifiers, reinforcements,
   progression conditions and an estimated threat relative to the unscaled encounter.
 - Optional campaign party scaling with logarithmic same-species reinforcements, stronger bosses,
-  physical armor, staged weapons for extra enemies, and optional gentle AI variations. See
+  physical armor, staged weapons for extra enemies, and selectable AI scaling rates. See
   [Campaign difficulty](Docs/Markdown/Campaign%20Difficulty.md) for rules and limits.
 - Font rasterization, controller focus, GUI texture loading and Linux
   compatibility fixes. The lobby uses the game's menu artwork and fonts.
@@ -100,7 +100,7 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 | Who may change what | Any connected player could delete, spawn or move any object and rewrite player states and settings | The host checks every message: a player can only affect their own character; hits and grabs must be in reach |
 | Malformed packets | Could crash the game | Dropped unread; tested with forged attacks |
 
-See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **15** requires matching updated binaries on every computer.
+See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **16** requires matching updated binaries on every computer.
 
 ## Multiplayer lobby
 
@@ -122,7 +122,11 @@ to use. The button used to join a controller does not also activate a menu item.
 
 The host's P1 starts as Turner. Other players start with their team's fur and clothing colors; the numbered team dropdowns include matching color swatches. The lobby uses the game's menu artwork and fonts, with native scrolling and controller navigation underneath.
 
-The host can choose **Add bot** in the lobby or pause menu. Bots appear in the
+The host can choose **Add slot** in the lobby or pause menu. A new slot starts with a bot. In the lobby, switch it to a player slot to reserve an opening. The admission dropdown controls whether remote players and local controllers can create slots or must take an opening. Swapping occupants moves control to the destination unit, including its XP, upgrades and equipment.
+
+**Save game** in the pause menu offers six manual slots on the host’s machine. **Load game** is available from the main menu, lobby and pause menu. Each card shows a camera preview, mode, map and save time. **Continue** opens the autosave, updated at level entry, campaign checkpoints and Arena deployments. Loading a lobby game first restores its settings and roster in the lobby. The host can reassign the saved units before pressing **Start**. Manual campaign saves restore authored actors and objective progress. Loading an Arena fight restarts its round with the saved scores and match setup. A save made in a shop reopens that shop.
+
+Bots appear in the
 same roster, with host-managed names, teams and removal, but have no controller
 or screen. They stay with the party between levels and when returning to the
 lobby. In automatic Arena matches, players and lobby bots get first choice of
@@ -186,7 +190,7 @@ dialogue is checked separately with `newcampaign_cinematic_retry`.
 
 ## Local split screen
 
-Press a button on an unassigned controller to join the local party and enable split screen. If a controller owns P1, press **Enter** to join with keyboard and mouse. Players fill the grid from the top left: two use 2×1, three or four use 2×2, five or six use 3×2, and seven through nine use 3×3. Unused cells are black. Player, input and camera lists grow dynamically rather than stopping at four players.
+Press a button on an unassigned controller to join the local party and enable split screen. If a controller owns P1, press **Enter** to join with keyboard and mouse. With two players, screen 1 spans the top half and screen 2 spans the bottom half. Larger parties fill the grid from the top left. Three or four players use 2×2, five or six use 3×2, and seven through nine use 3×3. Unused cells are black. Player, input and camera lists grow dynamically rather than stopping at four players.
 
 Keyboard and mouse control P1 initially; controllers join or reconnect through the same local roster. Added players spawn on checked ground near the group. Their runtime characters are excluded from level saves and are recreated for their retained roster entries when a level reloads.
 

@@ -26,6 +26,7 @@
 #include <Logging/logdata.h>
 #include <JSON/json.h>
 #include <Scripting/angelscript/ascontext.h>
+#include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
 #include <Math/vec3math.h>
 #include <Graphics/camera.h>
 #include <algorithm>
@@ -1205,7 +1206,7 @@ std::string Online::CampaignWaitingText() {
 
 void Online::ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions, float base) {
     if (!std::isfinite(vitality) || !std::isfinite(damage) || !std::isfinite(armor) || !std::isfinite(ai) ||
-        vitality < 0.75f || vitality > 6 || damage < 0.9625f || damage > 2 || armor < 0.975f || armor > 2 || ai < 0 || ai > 0.03f ||
+        vitality < 0.75f || vitality > 6 || damage < 0.9625f || damage > 2 || armor < 0.975f || armor > 2 || ai < 0 || ai > 0.06f ||
         !std::isfinite(base) || (base != -1 && (base < 0 || base > 1)) ||
         armor_regions < -1 || armor_regions > CampaignEquipment::kAllRegions) return;
     MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), GetObjectID(character));
@@ -1250,6 +1251,93 @@ bool Online::CampaignEncounterDefeated(ObjectID hotspot, int goal) const {
         if (actor && actor->enabled_ && Awake(actor)) return false;
     }
     return true;
+}
+
+Json::Value Online::ProgressionEncounterScope(ObjectID viewer) const {
+    Json::Value result(Json::objectValue);
+    result["actors"] = Json::Value(Json::arrayValue);
+    result["pending"] = Json::Value(Json::arrayValue);
+    SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    MovementObject* reference = Actor(graph, viewer);
+    if (!graph || !graph->level || !reference) return result;
+    const bool arena = LobbyMode() == "com-wolfire-arena" || LobbyCampaign() == "com-wolfire-arena";
+    if (arena) for (const auto& hook : graph->level->as_contexts_) {
+        auto* module = hook.ctx->module.GetInternalScriptModule();
+        if (!module) continue;
+        const int index = module->GetGlobalVarIndexByName("roster");
+        if (index < 0) continue;
+        int type = 0;
+        module->GetGlobalVar(index, nullptr, nullptr, &type);
+        if (type != module->GetTypeIdByDecl("array<int>")) continue;
+        const auto* roster = static_cast<CScriptArray*>(hook.ctx->GetVarPtr("roster"));
+        if (!roster) continue;
+        result["label"] = "Current match";
+        for (unsigned member = 0; member < roster->GetSize(); ++member)
+            result["actors"].append(*static_cast<const int*>(roster->At(member)));
+        return result;
+    }
+    const Encounter* current = nullptr;
+    float nearest = std::numeric_limits<float>::max();
+    if (campaign_difficulty_state && campaign_difficulty_state->graph == graph) {
+        for (const auto& entry : campaign_difficulty_state->encounters) {
+            const Encounter& encounter = entry.second;
+            Object* object = graph->GetObjectFromID(encounter.hotspot);
+            if (!object || object->GetType() != _hotspot_object ||
+                static_cast<Hotspot*>(object)->ASGetIntVar("progress") != encounter.goal) continue;
+            for (ObjectID id : encounter.originals) if (MovementObject* actor = Actor(graph, id)) {
+                const float distance = distance_squared(reference->position, actor->position);
+                if (distance < nearest) { nearest = distance; current = &encounter; }
+            }
+        }
+    }
+    if (!current) {
+        result["label"] = arena ? "Current match" : "Nearby encounter";
+        for (Object* object : graph->movement_objects_) {
+            auto* actor = static_cast<MovementObject*>(object);
+            if (actor != reference && actor->enabled_ && !reference->ASOnSameTeam(actor) &&
+                (arena || distance_squared(reference->position, actor->position) < 55.0f * 55.0f))
+                result["actors"].append(actor->GetID());
+        }
+        return result;
+    }
+    result["label"] = "Current encounter";
+    for (ObjectID id : current->originals) result["actors"].append(id);
+    for (const auto& extra : current->extras) result["actors"].append(extra.actor);
+    const auto sample = EnemyDifficulty();
+    const int target = sample.stats && !current->reinforcements_deferred ?
+        std::max(current->spawned, EncounterReinforcements(graph, *current, sample.humans, sample.bots)) : current->spawned;
+    if (current->originals.empty()) return result;
+    const auto challenge = ChallengeScaling::Evaluate(sample.pressure);
+    const double intensity = CampaignEquipment::Intensity(sample.pressure, sample.stats ?
+        CampaignDifficulty::ExtraPlayersForParty(sample.humans, sample.bots) : 0);
+    const uint32_t base = CampaignEquipment::ExtraSeed(GetOriginalID(current->originals.front()),
+                                                      GetOriginalID(current->hotspot), current->goal, 0);
+    for (int slot = current->spawned; slot < target; ++slot) {
+        MovementObject* source = Actor(graph, current->originals[slot % current->originals.size()]);
+        if (!current->bosses.empty()) for (ObjectID id : current->originals)
+            if (MovementObject* candidate = Actor(graph, id))
+                if (!source || Strength(candidate) < Strength(source)) source = candidate;
+        if (!source) continue;
+        const auto factors = CampaignDifficulty::ForParty(sample.humans, sample.bots, false, Strength(source),
+                                                          sample.stats, sample.ai, CampaignDifficulty::kUnspecifiedUnit);
+        const uint32_t seed = CampaignEquipment::ExtraSeed(GetOriginalID(current->originals.front()),
+                                                          GetOriginalID(current->hotspot), current->goal, slot);
+        const auto plan = CampaignEquipment::ForUnit(seed, intensity, sample.armor, false,
+                                                     Strength(source) == CampaignDifficulty::Wolf);
+        ArmorProtection::Coverage coverage{};
+        for (unsigned region = 0; region < coverage.size(); ++region)
+            if (plan.armor_regions & (1 << region)) coverage[region] = CampaignEquipment::ArmorTier(seed, region, intensity);
+        const auto weapon = sample.weapons ? CampaignEquipment::WaveWeapon(base, slot, target, intensity,
+            Strength(source) == CampaignDifficulty::Wolf) : CampaignEquipment::Unarmed;
+        Json::Value row;
+        row["source"] = source->GetID();
+        row["vitality"] = std::min(6.f, factors.vitality * challenge.vitality);
+        row["damage"] = std::min(2.f, factors.damage * challenge.damage);
+        row["equipment"] = ArmorProtection::Rating(coverage) + (weapon == CampaignEquipment::Unarmed ? 0 :
+                                                                  weapon == CampaignEquipment::Dagger ? .18 : .38);
+        result["pending"].append(row);
+    }
+    return result;
 }
 
 void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
@@ -1381,7 +1469,7 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
             factors.damage = std::min(2.0f, factors.damage * challenge.damage);
             factors.armor = 1;
             if (ai_scaling && !LobbyBot(this, actor->GetID()) && CampaignDifficulty::TweakForUnit(GetOriginalID(actor->GetID())) != CampaignDifficulty::NoTweak)
-                factors.ai = CampaignDifficulty::AIAmount(humans, sample.pressure);
+                factors.ai = CampaignDifficulty::AIAmount(humans, sample.pressure, sample.ai_rate);
         }
         const float base = hostile && !LobbyBot(this, actor->GetID()) && actor->ASHasVar("campaign_base_difficulty") ? sample.base : -1.f;
         const std::array<float, 5> values = {{factors.vitality, factors.damage, factors.armor, factors.ai, base}};
@@ -1499,7 +1587,7 @@ namespace {
 struct HUDContext {
     Online* online;
     SceneGraph* graph;
-    int humans = 1, bots = 0;
+    int humans = 1, bots = 0, ai_rate = 2;
     bool campaign = false, stats = false, ai_enabled = false;
     double pressure = 0, next_pressure = 0;
 };
@@ -1521,7 +1609,7 @@ HUDFactors PredictedHUDFactors(const HUDContext& ctx, MovementObject* source, bo
     // Match the live publisher's millipressure quantization and caps.
     const auto growth = ChallengeScaling::Evaluate(std::round(static_cast<float>(ctx.next_pressure) * 1000.0) / 1000.0);
     if (ctx.ai_enabled && !bot && source && !generated && CampaignDifficulty::TweakForUnit(ctx.online->GetOriginalID(source->GetID())) != CampaignDifficulty::NoTweak)
-        values.ai = CampaignDifficulty::AIAmount(ctx.humans, ctx.next_pressure);
+        values.ai = CampaignDifficulty::AIAmount(ctx.humans, ctx.next_pressure, ctx.ai_rate);
     return {{std::min(6.0f, values.vitality * growth.vitality), std::min(2.0f, values.damage * growth.damage),
              1, values.ai}};
 }
@@ -1606,7 +1694,7 @@ Json::Value HUDProfile(const HUDContext& ctx, const Encounter* encounter, bool f
         alive = 0;
         if (forecast) for (int i = 0; i < expected; ++i) add(nullptr, false, true);
     }
-    const float possible_ai = forecast && ctx.ai_enabled && (expected > 0 || !encounter) ? CampaignDifficulty::AIAmount(ctx.humans, ctx.next_pressure) : maximum[3];
+    const float possible_ai = forecast && ctx.ai_enabled && (expected > 0 || !encounter) ? CampaignDifficulty::AIAmount(ctx.humans, ctx.next_pressure, ctx.ai_rate) : maximum[3];
     const char* names[] = {"vitality", "damage", "armor", "ai"};
     for (int i = 0; i < 4; ++i) {
         result["factors"][names[i]]["min"] = minimum[i];
@@ -1652,7 +1740,7 @@ std::string HUDMods(const Json::Value& profile) {
 std::string HUDGear(const Json::Value& profile) {
     return "Gear " + std::to_string(profile["armor_pieces"].asInt()) + " pieces | Weapons " + std::to_string(profile["weapons"].asInt()) + " (" + profile["weapon_label"].asString() + ")";
 }
-const char* HUDRate(int rate) { return rate == 1 ? "Gentle" : rate == 2 ? "Standard" : rate == 3 ? "Brisk" : "Off"; }
+const char* HUDRate(int rate) { return rate == 1 ? "Gentle" : rate == 2 ? "Standard" : rate == 3 ? "Brisk" : rate == 4 ? "Nightmare" : "Off"; }
 }
 
 std::string Online::DifficultyHUDSnapshot() {
@@ -1678,7 +1766,8 @@ std::string Online::DifficultyHUDSnapshot() {
     ctx.campaign = IsActive() && CoopCampaign();
     const bool master = DifficultyScalingEnabled();
     ctx.stats = ctx.campaign && master && config["campaign_mp_scaling"].toBool();
-    ctx.ai_enabled = master && config["campaign_ai_scaling"].toBool();
+    ctx.ai_rate = std::max(0, std::min(4, config["campaign_ai_scaling_rate"].toNumber<int>()));
+    ctx.ai_enabled = master && config["campaign_ai_scaling"].toBool() && ctx.ai_rate != 0;
     ctx.pressure = result["progression"]["pressure"].asDouble();
     ctx.next_pressure = result["progression"]["next_pressure"].asDouble();
     MovementObject* reference = scene ? Actor(graph, ChallengeReferenceAvatar()) : nullptr;
@@ -1703,7 +1792,7 @@ std::string Online::DifficultyHUDSnapshot() {
             result["base"]["game_difficulty"] = sample.base;
         }
         applied.humans = sample.humans; applied.bots = sample.bots;
-        applied.stats = sample.stats; applied.ai_enabled = sample.ai;
+        applied.stats = sample.stats; applied.ai_enabled = sample.ai; applied.ai_rate = sample.ai_rate;
         applied.pressure = sample.pressure;
     }
     result["progression"]["applied_pressure"] = applied.pressure;
@@ -1713,6 +1802,8 @@ std::string Online::DifficultyHUDSnapshot() {
     result["party"]["stats_weight"] = CampaignDifficulty::EffectivePartySize(applied.humans, applied.bots);
     result["party"]["count_weight"] = std::max(1, std::min(64, applied.humans)) + 0.5 * std::min(64, applied.bots);
     result["party"]["ai_humans"] = applied.humans;
+    result["party"]["ai_rate"] = applied.ai_enabled ? applied.ai_rate : 0;
+    result["party"]["pending_ai_rate"] = ctx.ai_enabled ? ctx.ai_rate : 0;
     result["party"]["ai_enabled"] = applied.ai_enabled;
     result["equipment"]["armor_enabled"] = sample.humans ? sample.armor : master && config["campaign_armor_scaling"].toBool();
     result["equipment"]["weapons_enabled"] = sample.humans ? sample.weapons : master && config["campaign_weapon_scaling"].toBool();
@@ -1784,7 +1875,7 @@ std::string Online::DifficultyHUDSnapshot() {
     const int performance_rate = result["progression"]["performance"]["rate"].asInt();
     const bool growth = master && (rates["time"].asInt() || (performance_mode && performance_rate) || completion_rate);
     const bool party_stats = applied.stats && (applied.humans > 1 || applied.bots > 0);
-    const bool ai = applied.ai_enabled && CampaignDifficulty::AIAmount(applied.humans, applied.pressure) > 0;
+    const bool ai = applied.ai_enabled && CampaignDifficulty::AIAmount(applied.humans, applied.pressure, applied.ai_rate) > 0;
     const bool scaled = retained_factors || retained_extras || ((eligible_npcs || arena) && (party_stats || ai || growth || applied.pressure > 0.00001));
     result["scaled_context"] = scaled;
     result["visible"] = authoritative && gameplay && scaled && !CoopCutscene() && !RemoteCutsceneActive() && !graph->level->DialogueCameraControl();
@@ -1820,7 +1911,7 @@ std::string Online::DifficultyHUDSnapshot() {
     if (master) {
         driver("Time", rates["time"].asInt()); driver("Levels", completion_rate);
         driver(performance_mode == 1 ? "On win" : performance_mode == 2 ? "On loss" : "Forced 50/50", performance_mode ? performance_rate : 0);
-        if (ctx.ai_enabled) growth_line += (growth_line.empty() ? "" : " | ") + std::string("AI gentle");
+        if (ctx.ai_enabled) driver("AI", ctx.ai_rate);
     }
     lines.append("Growth: " + (growth_line.empty() ? "Off" : growth_line));
     const auto& progress = result["progression"];
@@ -1844,13 +1935,20 @@ int Online::AuthoredArmorRegions(ObjectID avatar) const {
     return mask;
 }
 
-float Online::WornArmorRating(ObjectID avatar) const {
+std::array<int, 9> Online::WornArmorCoverage(ObjectID avatar) const {
     MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), avatar);
-    if (!actor || !actor->rigged_object()) return 0;
     ArmorProtection::Coverage pieces{};
+    if (!actor || !actor->rigged_object()) return pieces;
     WornItemRegions(actor, &pieces);
     for (const auto& attachment : actor->rigged_object()->children)
         AuthoredPieceRegions(actor, attachment.direct_ptr, attachment, 0, &pieces);
+    return pieces;
+}
+
+float Online::WornArmorRating(ObjectID avatar) const {
+    MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), avatar);
+    if (!actor || !actor->rigged_object()) return 0;
+    const auto pieces = WornArmorCoverage(avatar);
     float rating = ArmorProtection::Rating(pieces);
     // A legacy actor may declare metal armor without any recognizable mesh.
     return rating == 0 && actor->ASHasVar("g_wearing_metal_armor") && actor->ASGetBoolVar("g_wearing_metal_armor") ? .36f : rating;
@@ -1879,8 +1977,8 @@ struct ProgressionEquipmentState {
 namespace {
 const char* SelectedWeapon(const FriendlyProgression::Build& build, bool offhand) {
     if (offhand) return build.dagger ? "Data/Items/rabbit_weapons/rabbit_knife.xml" : nullptr;
-    if (build.big_weapon == 1) return "Data/Items/DogWeapons/DogSword.xml";
-    if (build.big_weapon == 2) return "Data/Items/DogWeapons/DogSpear.xml";
+    for (const auto& weapon : FriendlyProgression::Weapons())
+        if (weapon.selection && build.big_weapon == weapon.selection) return weapon.path;
     return nullptr;
 }
 

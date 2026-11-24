@@ -1249,6 +1249,14 @@ def _difficulty_ui(ctx):
 SCENARIOS["difficulty_ui"] = _difficulty_ui
 
 
+def _difficulty_rates(ctx):
+    from .difficulty_rates_suite import difficulty_rates
+    return difficulty_rates(ctx)
+
+
+SCENARIOS["difficulty_rates"] = _difficulty_rates
+
+
 def _difficulty_checkbox_transition(ctx):
     from .difficulty_ui_suite import difficulty_checkbox_transition
     return difficulty_checkbox_transition(ctx)
@@ -1434,6 +1442,14 @@ def _authored_armor_slots(ctx):
 SCENARIOS["authored_armor_slots"] = _authored_armor_slots
 
 
+def _session_slots(ctx):
+    from .session_slots_suite import session_slots
+    return session_slots(ctx)
+
+
+SCENARIOS["session_slots"] = _session_slots
+
+
 def _enemy_difficulty_boundaries(ctx):
     from .enemy_difficulty_boundary_suite import enemy_difficulty_boundaries
     return enemy_difficulty_boundaries(ctx)
@@ -1458,6 +1474,14 @@ def _enemy_armor_integrity(ctx):
 SCENARIOS["enemy_armor_integrity"] = _enemy_armor_integrity
 
 
+def _progression_weapons_xp(ctx):
+    from .progression_weapons_xp_suite import progression_weapons_xp
+    return progression_weapons_xp(ctx)
+
+
+SCENARIOS["progression_weapons_xp"] = _progression_weapons_xp
+
+
 def _ice_cliffs_retries(ctx):
     from .ice_cliffs_suite import ice_cliffs_retries
     return ice_cliffs_retries(ctx)
@@ -1478,3 +1502,41 @@ def _lobby_menu_pause(ctx):
 
 SCENARIOS["well_sentry"] = _well_sentry
 SCENARIOS["lobby_menu_pause"] = _lobby_menu_pause
+
+def _session_saves(ctx):
+    from .session_saves_suite import session_saves
+    return session_saves(ctx)
+
+SCENARIOS["session_saves"] = _session_saves
+
+def _session_saves_solo(ctx):
+    from .session_saves_suite import session_saves_solo
+    return session_saves_solo(ctx)
+
+SCENARIOS["session_saves_solo"] = _session_saves_solo
+
+def _campaign_shop_saves(ctx):
+    from .campaign_shop_saves_suite import campaign_shop_saves
+    return campaign_shop_saves(ctx)
+
+SCENARIOS["campaign_shop_saves"] = _campaign_shop_saves
+
+def _arena_saves(ctx):
+    from .arena_saves_suite import arena_saves
+    return arena_saves(ctx)
+
+SCENARIOS["arena_saves"] = _arena_saves
+
+
+def _arena_stats_layout(ctx):
+    from .arena_stats_layout_suite import arena_stats_layout
+    return arena_stats_layout(ctx)
+
+
+def _arena_stats_layout_small(ctx):
+    from .arena_stats_layout_suite import arena_stats_layout
+    return arena_stats_layout(ctx, small=True)
+
+
+SCENARIOS["arena_stats_layout"] = _arena_stats_layout
+SCENARIOS["arena_stats_layout_small"] = _arena_stats_layout_small

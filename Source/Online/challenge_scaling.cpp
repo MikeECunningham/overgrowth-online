@@ -27,6 +27,7 @@ double RateMultiplier(int rate) {
         case Gentle: return 0.5;
         case Standard: return 1.0;
         case Brisk: return 1.5;
+        case Nightmare: return 2.0;
         default: return 0.0;
     }
 }
@@ -139,9 +140,9 @@ bool State::Restore(const Snapshot& snapshot) {
     for (const auto& entry : snapshot.encounters) {
         const EncounterRecord& encounter = entry.second;
         if (!ValidID(entry.first) || !std::isfinite(encounter.win_award) || encounter.win_award < 0 ||
-            encounter.win_award > kForcedWinAward * RateMultiplier(Brisk) + 1e-9 || (!encounter.won && encounter.win_award != 0) ||
+            encounter.win_award > kForcedWinAward * RateMultiplier(Nightmare) + 1e-9 || (!encounter.won && encounter.win_award != 0) ||
             !std::isfinite(encounter.relief) || encounter.relief < 0 || encounter.relief > kRetryReliefCap ||
-            encounter.relief > encounter.wipes * kRetryRelief * RateMultiplier(Brisk) + 1e-9 ||
+            encounter.relief > encounter.wipes * kRetryRelief * RateMultiplier(Nightmare) + 1e-9 ||
             (encounter.won && encounter.relief != 0) || (encounter.wipes == 0 && encounter.relief != 0)) return false;
         recorded_wipes += encounter.wipes;
     }

@@ -703,11 +703,11 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
         const bool can_edit_match = !Online::Instance()->IsActive() || Online::Instance()->IsLobbyHost(MatchSettingsActor());
         if (!can_edit_match) ImGui::TextDisabled("The host controls match difficulty.");
         ImGui::BeginDisabled(!can_edit_match);
-        int difficulty_mode = config["difficulty_scaling"].toBool() ? 1 : 0;
-        const char* difficulty_modes[] = {"Traditional", "Scaling"};
-        if (ImGui::Combo("Difficulty mode", &difficulty_mode, difficulty_modes, 2))
-            SetMatchSetting("difficulty_scaling", difficulty_mode ? "true" : "false");
         if (ImGui::BeginMenu("Difficulty")) {
+            int difficulty_mode = config["difficulty_scaling"].toBool() ? 1 : 0;
+            const char* difficulty_modes[] = {"Traditional", "Scaling"};
+            if (ImGui::Combo("Difficulty mode", &difficulty_mode, difficulty_modes, 2))
+                SetMatchSetting("difficulty_scaling", difficulty_mode ? "true" : "false");
             const auto presets = config.GetDifficultyPresets();
             std::vector<const char*> choices;
             int selected = -1;
@@ -733,13 +733,27 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
                 factor("Party stats and reinforcements", "campaign_mp_scaling");
                 factor("Physical armor", "campaign_armor_scaling");
                 factor("Weapons for extra enemies", "campaign_weapon_scaling");
-                factor("AI scaling", "campaign_ai_scaling");
+                const char* rates[] = {"Off", "Gentle", "Standard", "Brisk", "Nightmare"};
+                const ImVec4 colors[] = {{.45f,.45f,.45f,1},{.29f,.92f,.53f,1},{1,.84f,.24f,1},{.75f,0,0,1},{.58f,.29f,.91f,1}};
+                auto rate_buttons = [&](const char* label, const char* key, bool ai) {
+                    ImGui::TextUnformatted(label);
+                    int selected = ai ? (config["campaign_ai_scaling"].toBool() ? config[key].toNumber<int>() : 0) : Online::Instance()->ModeSetting(key);
+                    ImGui::PushID(key);
+                    for (int i=0;i<5;++i) {
+                        if (i) ImGui::SameLine();
+                        ImGui::PushStyleColor(ImGuiCol_Button, i == selected ? colors[i] : ImVec4(.1f,.1f,.1f,1));
+                        ImGui::PushStyleColor(ImGuiCol_Text, i == selected && i < 3 ? ImVec4(.05f,.05f,.05f,1) : ImVec4(1,1,1,1));
+                        if (ImGui::Button(rates[i])) {
+                            if (ai) { SetMatchSetting(key,std::to_string(i)); SetMatchSetting("campaign_ai_scaling",i ? "true" : "false"); }
+                            else Online::Instance()->SetModeSetting(key,i,MatchSettingsActor());
+                        }
+                        ImGui::PopStyleColor(2);
+                    }
+                    ImGui::PopID();
+                };
+                rate_buttons("AI scaling","campaign_ai_scaling_rate",true);
                 if (Online::Instance()->IsActive()) {
-                    const char* rates[] = {"Off", "Gentle", "Standard", "Brisk"};
-                    auto progression = [&](const char* label, const char* key) {
-                        int rate = Online::Instance()->ModeSetting(key);
-                        if (ImGui::Combo(label, &rate, rates, 4)) Online::Instance()->SetModeSetting(key, rate, MatchSettingsActor());
-                    };
+                    auto progression = [&](const char* label, const char* key) { rate_buttons(label,key,false); };
                     ImGui::Separator();
                     progression("Active time", "challenge_time");
                     if (!Online::Instance()->LobbyCampaign().empty() && Online::Instance()->LobbyCampaign() != "com-wolfire-sandbox-levels")

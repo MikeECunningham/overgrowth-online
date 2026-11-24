@@ -2,6 +2,7 @@
 // The native menu manager supplies that player's input and camera viewport.
 #include "menu_common.as"
 #include "settings.as"
+#include "session_save_cards.as"
 
 IMGUI@ imGUI;
 bool capture_input = false;
@@ -20,6 +21,7 @@ const int kVisibleTeamRows = 4;
 bool HasFocus() { return capture_input; }
 
 void MenuBack() {
+    if(save_cards_open) { BuildPlayerPauseMenu(); return; }
     if(HasPopup()) {
         RemovePopup();
     } else if(personal_bot_name) {
@@ -57,6 +59,7 @@ void Dispose() {
 }
 
 void BuildPlayerPauseMenu() {
+    save_cards_open=false;
     ClearControllerItems();
     imGUI.clear();
     imGUI.setup();
@@ -113,6 +116,10 @@ void BuildPlayerPauseMenu() {
         AddButton(world_paused ? "Resume world" : "Pause world", buttons, "null", button_background_diamond,
                   false, 650.0f, 30.0f, mouseover_scale_button, IMMessage("toggle_world_pause"));
     }
+    if(SessionCanManageSaves()) {
+        if(SessionCanSave()) AddButton("Save game", buttons,"null",button_background_diamond,false,650,30,mouseover_scale_button,IMMessage("open_save_cards"));
+        AddButton("Load game", buttons,"null",button_background_diamond,false,650,30,mouseover_scale_button,IMMessage("open_load_cards"));
+    }
     if(host && !Online_IsClient()) {
         AddButton("Retry", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("Retry"));
@@ -134,7 +141,7 @@ void BuildPlayerPauseMenu() {
                   30.0f, mouseover_scale_button, IMMessage("Invite friends"));
     }
     if(host) {
-        AddButton("Add bot", buttons, "null", button_background_diamond, false, 650.0f,
+        AddButton("Add slot", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("add_lobby_bot"));
     }
     if(primary && EditorEnabled()) {
@@ -450,7 +457,8 @@ void ProcessBotNameMessage(IMMessage@ message) {
 }
 
 void Update() {
-    if(!personal_settings && !personal_teams && !personal_bot_name &&
+    if(save_cards_open) UpdateSaveCards();
+    if(!save_cards_open && !personal_settings && !personal_teams && !personal_bot_name &&
        (world_paused != GetPlayerMenuWorldPaused() || player_menu_revision != LobbySnapshotRevision())) {
         BuildPlayerPauseMenu();
     }
@@ -467,6 +475,14 @@ void Update() {
     }
     while(imGUI.getMessageQueueSize() > 0) {
         IMMessage@ message = imGUI.getNextMessage();
+        if(message.name == "open_save_cards" || message.name == "open_load_cards") {
+            OpenSaveCards(message.name == "open_save_cards"); continue;
+        }
+        if(save_cards_open) {
+            if(message.name=="save_back" || message.name=="Back") BuildPlayerPauseMenu();
+            else SaveCardMessage(message);
+            continue;
+        }
         if(message.name == "capture_input") {
             capture_input = true;
         } else if(message.name == "release_input") {
@@ -510,7 +526,7 @@ void Update() {
             }
         } else if(message.name == "add_lobby_bot") {
             if(LobbyIsHost()) {
-                local_player_notice = LobbyAddBot() ? "" : "Could not add bot";
+                local_player_notice = LobbyAddBot() ? "" : "Could not add slot";
                 BuildPlayerPauseMenu();
             }
         }
@@ -522,6 +538,7 @@ void Update() {
 
 void Resize() {
     imGUI.doScreenResize();
+    if(save_cards_open) { BuildSaveCards(); return; }
     if(personal_settings) {
         string page = current_screen;
         ClearControllerItems();

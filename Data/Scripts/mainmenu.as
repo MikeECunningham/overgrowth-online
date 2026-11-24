@@ -80,10 +80,11 @@ void BuildUI(){
 
     string last_campaign_id = GetGlobalSave().GetValue("last_campaign_played");
     Campaign camp = GetCampaign(last_campaign_id);  
-    if(camp.GetRequiresOnline() == false && camp.GetLevels().size() > 0 && GetConfigValueInt("difficulty_preset_value") != 0) {
+    if(SessionSaveExists(0) || (camp.GetRequiresOnline() == false && camp.GetLevels().size() > 0 && GetConfigValueInt("difficulty_preset_value") != 0)) {
         AddButton("Continue", buttons_holder, forward_chevron);
     }
 
+    AddButton("Load game", buttons_holder, forward_chevron);
     AddButton("Play", buttons_holder, play_icon);
     AddButton("Multiplayer", buttons_holder, online_icon);
     AddButton("Settings", buttons_holder, settings_icon);
@@ -149,6 +150,10 @@ void Update() {
                 this_ui.SendCallback( "difficulty_menu.as" );
             } else
                 this_ui.SendCallback( "play_menu.as" );
+        }
+        else if( message.name == "Load game" ) this_ui.SendCallback("session_load_menu.as");
+        else if( message.name == "Continue" && SessionSaveExists(0) ) {
+            if(!SessionLoad(0)) QueueBasicPopup("Load game", SessionSaveStatus());
         }
         else if( message.name == "Continue" )
         {

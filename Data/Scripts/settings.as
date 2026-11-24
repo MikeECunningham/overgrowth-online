@@ -587,7 +587,6 @@ void AddGameScreen(){
         AddDropDown("Language", settings_content, DropdownConfiguration( locale_values, locale_names, "language", " (English)" ));
     }
     if(CanEditCampaignSettings()) {
-        AddDropDown("Difficulty mode", settings_content, DropdownConfiguration(DifficultyModeConfiguration()));
         AddBasicButton("Difficulty", "open_difficulty_settings", 500, settings_content);
         AddCheckBox("Show difficulty readout", settings_content, "show_difficulty_readout");
         AddNote("Host view; visible only during scaled play.", settings_content);
@@ -623,12 +622,47 @@ class DifficultyProgressionConfiguration : DropdownConfigurationBaseClass {
     }
 }
 
+void AddDifficultyRate(const string &in key, const string &in title, bool ai = false) {
+    IMContainer heading(800,30);
+    IMText title_text(title,FontSetup(button_font_small.fontName,30,vec4(1),true));
+    title_text.setZOrdering(4); heading.setAlignment(CALeft,CACenter); heading.setElement(title_text);
+    settings_content.append(heading);
+    int selected = ai ? (GetConfigValueBool("campaign_ai_scaling") ? GetConfigValueInt(key) : 0) : LobbyGetModeSetting(key);
+    array<string> names = {"Off", "Gentle", "Standard", "Brisk", "Nightmare"};
+    array<vec4> colors = {vec4(0.45f,0.45f,0.45f,1), HexColor("#49EA86"), HexColor("#FFD53D"), HexColor("#C00000"), HexColor("#944AE8")};
+    IMDivider row("rate_row_"+key,DOHorizontal);
+    for(int i=0;i<5;++i) {
+        IMContainer cell(152.0f,40.0f);
+        cell.setName("rate_"+key+"_"+i);
+        IMImage background(white_background);
+        background.setSize(vec2(148,38));
+        background.setZOrdering(2);
+        background.setColor(i == selected ? colors[i] : vec4(0.12f,0.12f,0.12f,1));
+        background.addMouseOverBehavior(mouseover_scale_background,"");
+        cell.addFloatingElement(background,"rate_background",vec2(2,2),0);
+        FontSetup rate_font(button_font_small.fontName,30,i==selected && i<3 ? vec4(0.05f,0.05f,0.05f,1) : vec4(1),true);
+        IMText text(names[i],rate_font);
+        text.setZOrdering(8);
+        text.addMouseOverBehavior(text_color_mouse_over,"");
+        cell.sendMouseOverToChildren(true);
+        cell.setElement(text);
+        IMMessage message("difficulty_rate"); message.addString(key); message.addInt(i);
+        cell.addLeftMouseClickBehavior(IMFixedMessageOnClick(message),"rate_click");
+        cell.addMouseOverBehavior(button_hover_sound,"");
+        AddControllerItem(cell,message);
+        row.append(cell);
+        if(i<4) row.appendSpacer(8.0f);
+    }
+    settings_content.append(row); settings_content.appendSpacer(5.0f);
+}
+
 void AddDifficultyScreen() {
     current_screen = "Difficulty";
     if(!CanEditCampaignSettings()) {
         settings_content.append(IMText("The host controls match difficulty.", button_font_small));
         return;
     }
+    AddDropDown("Difficulty mode", settings_content, DropdownConfiguration(DifficultyModeConfiguration()));
     array<string> presets = GetConfigValueOptions("difficulty_preset");
     AddDropDown("Starting preset", settings_content, DropdownConfiguration(presets, presets, "difficulty_preset"));
     AddSlider("Game Speed", settings_content, "global_time_scale_mult", 1.0f, 100.0f, 0.5f, 50.0f);
@@ -639,22 +673,19 @@ void AddDifficultyScreen() {
     array<string> armor_labels = {"Legacy", "Weighted", "Localized"};
     AddDropDown("Armor protection", settings_content, DropdownConfiguration(armor_values, armor_labels, "armor_localized"));
     if(GetConfigValueBool("difficulty_scaling")) {
-        AddSection("Scaling factors", settings_content);
         AddCheckBox("Party stats and reinforcements", settings_content, "campaign_mp_scaling");
         AddCheckBox("Physical armor", settings_content, "campaign_armor_scaling");
         AddCheckBox("Weapons for extra enemies", settings_content, "campaign_weapon_scaling");
-        AddCheckBox("AI scaling", settings_content, "campaign_ai_scaling");
+        AddDifficultyRate("campaign_ai_scaling_rate","AI scaling",true);
         if(Online_IsActive()) {
-            AddSection("Progression", settings_content);
-            array<string> rates = {"Off", "Gentle", "Standard", "Brisk"};
-            AddDropDown("Active time", settings_content, DropdownConfiguration(DifficultyProgressionConfiguration("challenge_time", rates)));
+            AddDifficultyRate("challenge_time","Active time");
             string campaign = LobbyGetCampaign();
             if(campaign != "" && campaign != "com-wolfire-sandbox-levels")
-                AddDropDown("Level / match completion", settings_content, DropdownConfiguration(DifficultyProgressionConfiguration("challenge_round", rates)));
+                AddDifficultyRate("challenge_round","Level / match completion");
             array<string> performance = {"Off", "On win", "On loss", "Forced-50"};
             AddDropDown("Performance scaling", settings_content, DropdownConfiguration(DifficultyProgressionConfiguration("challenge_performance", performance)));
             if(LobbyGetModeSetting("challenge_performance") != 0)
-                AddDropDown("Performance strength", settings_content, DropdownConfiguration(DifficultyProgressionConfiguration("challenge_performance_rate", rates)));
+                AddDifficultyRate("challenge_performance_rate","Performance strength");
             AddNote("Loss = all human teammates down.", settings_content);
         } else AddNote("Progression options unlock once play starts.", settings_content);
     }
@@ -841,6 +872,12 @@ void ProcessSettingsMessage(IMMessage@ message){
         CloseAllOptionMenus();
         if( message.name == "ui_element_clicked" ){
             ToggleUIElement(message.getString(0));
+        }
+        else if(message.name == "difficulty_rate") {
+            string key = message.getString(0); int rate = message.getInt(0);
+            if(key == "campaign_ai_scaling_rate") { SetConfigValueInt(key,rate); SetConfigValueBool("campaign_ai_scaling",rate != 0); }
+            else LobbySetModeSetting(key,rate);
+            SwitchSettingsScreen("Difficulty");
         }
         else if(message.name == "open_difficulty_settings") { SwitchSettingsScreen("Difficulty"); }
         else if(message.name == "close_difficulty_settings") { SwitchSettingsScreen("Game"); }

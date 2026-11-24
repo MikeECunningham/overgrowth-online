@@ -15767,7 +15767,7 @@ void SetCampaignScaling(float vitality, float damage, float armor, float ai) {
     if(perception != campaign_perception_mult) fov_hulls_calculated = false;
     campaign_perception_mult = perception;
     campaign_armor_mult = 1.0f;  // defense follows actual equipped regions
-    campaign_ai_bonus = max(0.0f, min(0.03f, ai));
+    campaign_ai_bonus = max(0.0f, min(0.06f, ai));
     CampaignApplyAuthoredScaling();
 }
 

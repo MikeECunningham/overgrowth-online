@@ -27,11 +27,14 @@ inline double Reward(int species, bool large_dog, double difficulty, double equi
     return std::round(xp);
 }
 struct Wallet {
+    // Double-backed balances can distinguish every whole XP through 2^53 - 1.
+    static constexpr double kMaxExactXP = 9007199254740991.0;
     double held = 0, pooled = 0, commit_amount = 0;
     unsigned commit_serial = 0;
     void Earn(double amount, bool bank) {
+        if (!std::isfinite(amount)) return;
         auto& balance = bank ? held : pooled;
-        balance = Bound(balance + amount, 0.0, 100000000.0);
+        balance = Bound(balance + amount, 0.0, kMaxExactXP);
     }
     void Commit() {
         if (pooled <= 0) return;

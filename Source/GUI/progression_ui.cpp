@@ -1,4 +1,4 @@
-// Per-seat experience readout and between-round shop. Apache-2.0.
+// Per-seat experience readout and progression shop. Apache-2.0.
 #include "progression_ui.h"
 
 #include <imgui.h>
@@ -19,6 +19,8 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <sstream>
+#include <iomanip>
 #include <string>
 #include <vector>
 
@@ -38,20 +40,67 @@ struct Box {
     bool contains(ImVec2 p) const { return p.x >= x && p.x < x+w && p.y >= y && p.y < y+h; }
 };
 
+// The Arena script draws a single scoreboard at the window's top left. Its
+// occupied bounds last only for the frame in which the script actually drew it.
+Box arena_score{};
+int arena_score_frame = -1;
+Box arena_announcement{};
+int arena_announcement_frame = -1;
+
+float gameplay_scale(const Box& area) {
+    return std::max(0.55f, std::min({1.16f, area.w / 420.0f, area.h / 480.0f}));
+}
+
+Box gameplay_viewport(unsigned index, unsigned count, ImVec2 display) {
+    const auto vp = LocalViewports::ForPlayer(index, count);
+    return {vp.left * display.x, (1 - vp.top) * display.y,
+            (vp.right - vp.left) * display.x, (vp.top - vp.bottom) * display.y};
+}
+
+Box gameplay_wallet(const Box& area, float scale) {
+    const float width = std::min(308 * scale, std::max(1.0f, area.w - 24 * scale));
+    return {area.x + area.w - width - 12 * scale, area.y + area.h - 46 * scale, width, 34 * scale};
+}
+
+Box gameplay_stats(const Box& area, float scale) {
+    const float margin = 12.0f * scale;
+    const float width = 174.0f * scale;
+    const float height = 201.0f * scale;
+    const float wallet_width = gameplay_wallet(area, scale).w;
+    const bool above_wallet = width + wallet_width + 3*margin > area.w;
+    const float bottom = above_wallet ? 58*scale : margin;
+    return {area.x + margin, std::max(area.y + margin, area.y + area.h - bottom - height), width, height};
+}
+
+ImVec2 arena_units() {
+    if (!ImGui::GetCurrentContext() || !FriendlyProgression::Enabled()) return {0, 0};
+    const auto display = ImGui::GetIO().DisplaySize;
+    const auto* graphics = Graphics::Instance();
+    if (graphics->window_dims[0] <= 0 || graphics->window_dims[1] <= 0) return {0, 0};
+    // Arena text uses framebuffer pixels and the player overlays use logical window pixels.
+    return {display.x / graphics->window_dims[0], display.y / graphics->window_dims[1]};
+}
+
 // Keep the interpolated amounts across level loads. A commit moves XP between
 // the two bars even when the server sends both new totals in one snapshot.
 struct Wallet {
     bool seen = false;
     double held = 0, pool = 0, held_from = 0, pool_from = 0;
-    int held_goal = 0, pool_goal = 0;
+    double held_goal = 0, pool_goal = 0;
     unsigned commit = 0;
     double started = 0, duration = 0.4, strength = 0;
+    double world_remaining = 0, encounter_expected = 0;
+    double projected_held() const { return held + world_remaining; }
+    double held_fraction() const { return held > 0 ? held / projected_held() : 0; }
+    double pooled_fraction() const { return pool > 0 ? pool / std::max(pool, encounter_expected) : 0; }
     void update(const Json::Value& view, double now) {
+        world_remaining = view["xp_scale"]["world_remaining"].asDouble();
+        encounter_expected = view["xp_scale"]["encounter_expected"].asDouble();
         const double t = std::min(1.0, std::max(0.0, (now-started)/duration));
         const double ease = t*t*(3-2*t);
         held = held_from + (held_goal-held_from)*ease;
         pool = pool_from + (pool_goal-pool_from)*ease;
-        const int next_held = view["held"].asInt(), next_pool = view["pooled"].asInt();
+        const double next_held = view["held"].asDouble(), next_pool = view["pooled"].asDouble();
         const unsigned next_commit = view["commit_serial"].asUInt();
         if (!seen) {
             seen = true;
@@ -62,11 +111,11 @@ struct Wallet {
         }
         if (next_held == held_goal && next_pool == pool_goal && next_commit == commit) return;
         double amount = std::max(std::abs(next_held-held), std::abs(next_pool-pool));
-        bool transfer = next_commit != commit && view["commit_amount"].asInt() > 0;
+        const double committed = view["commit_amount"].asDouble();
+        bool transfer = next_commit != commit && committed > 0;
         if (transfer) {
-            int committed = view["commit_amount"].asInt();
-            held = std::max(0, next_held-committed);
-            pool = static_cast<double>(next_pool) + committed;
+            held = std::max(0.0, next_held-committed);
+            pool = next_pool + committed;
             amount = committed;
         }
         held_from = held; pool_from = pool;
@@ -105,7 +154,7 @@ std::map<std::string, TextureAssetRef, std::less<>> thumbnails;
 struct Artwork {
     const char* path;
     const char* abbreviation;
-    bool mirror = false, blade = false;
+    bool mirror = false, blade = false, horizontal = false;
 };
 
 Artwork card_art(const std::string& id, int material) {
@@ -130,9 +179,9 @@ Artwork card_art(const std::string& id, int material) {
     };
     if (id.size() == 7 && id.compare(0, 6, "armor_") == 0 && id[6] >= '0' && id[6] <= '8')
         return armor[id[6] - '0'];
-    if (id == "dagger") return {"Object/rabbit_knife", "DGR", false, true};
-    if (id == "sword") return {"Object/DogSword", "SWD", false, true};
-    if (id == "spear") return {"Object/DogSpear", "SPR", false, true};
+    for (const auto& weapon : FriendlyProgression::Weapons()) if (id == weapon.key)
+        return {weapon.artwork, id == "dagger" ? "DGR" : id == "sword" ? "SWD" :
+                id == "spear" ? "SPR" : id == "staff" ? "STF" : "BSW", false, true, id == "staff"};
     if (id == "recruit") return {"Character/turner", "BOT"};
     return {"Character/rabbitguard", "AI"};
 }
@@ -185,8 +234,11 @@ void draw_card_art(ImDrawList* draw, const Box& area, const Artwork& art, ImU32 
                 auto corner = [&](float vertical, float horizontal) {
                     return ImVec2(center.x+vertical*up.x+horizontal*side.x,center.y+vertical*up.y+horizontal*side.y);
                 };
-                draw->AddImageQuad(image,corner(1,-1),corner(1,1),corner(-1,1),corner(-1,-1),
-                                   {0.375f,0},{0.625f,0},{0.625f,1},{0.375f,1});
+                if (art.horizontal)
+                    draw->AddImageQuad(image,corner(1,-1),corner(1,1),corner(-1,1),corner(-1,-1),
+                                       {0,.45f},{0,.55f},{1,.55f},{1,.45f});
+                else draw->AddImageQuad(image,corner(1,-1),corner(1,1),corner(-1,1),corner(-1,-1),
+                                       {0.375f,0},{0.625f,0},{0.625f,1},{0.375f,1});
                 return;
             }
             const float size = std::min(area.w, area.h);
@@ -206,22 +258,66 @@ void balance(ImDrawList* draw, const Wallet& wallet, Box box, double now, float 
     const float inset = 6*scale, gap = 9*scale;
     float w = (box.w-2*inset-gap)*0.5f;
     float h = 3*scale;
-    double largest = std::max({wallet.held_from, wallet.pool_from, double(wallet.held_goal), double(wallet.pool_goal), 1.0});
-    double range = 100.0;
-    while (range < largest) range *= 2;
     for (int i=0; i<2; ++i) {
         const float x = box.x+inset+i*(w+gap);
         const float y = box.y+box.h-inset-h;
         double amount = i ? wallet.pool : wallet.held;
+        const double fill = i ? wallet.pooled_fraction() : wallet.held_fraction();
         ImU32 color = i ? purple : green;
-        const float text_size = std::min(18*scale, w*0.14f);
         const char* caption = i ? "Pooled XP" : "Held XP";
+        const std::string total = std::to_string(std::llround(amount));
+        const float text_units = font(false)->CalcTextSizeA(1,10000,0,caption).x +
+                                 font(true)->CalcTextSizeA(1,10000,0,total.c_str()).x*wallet.pulse(now);
+        const float text_size = std::min({18*scale, w*0.14f, (w-5*scale)/std::max(1.f,text_units)});
         label(draw, {x,box.y+2*scale,w,box.h}, caption, text_size, color);
         const float prefix = font(false)->CalcTextSizeA(text_size, 10000, 0, caption).x + 5*scale;
-        label(draw, {x+prefix,box.y+2*scale,w-prefix,box.h}, std::to_string(std::llround(amount)), text_size*wallet.pulse(now), color, true);
+        label(draw, {x+prefix,box.y+2*scale,w-prefix,box.h}, total, text_size*wallet.pulse(now), color, true);
         draw->AddRectFilled({x,y}, {x+w,y+h}, IM_COL32(83,75,77,255));
-        draw->AddRectFilled({x,y}, {x+w*float(std::min(1.0,amount/range)),y+h}, color);
+        draw->AddRectFilled({x,y}, {x+w*float(fill),y+h}, color);
     }
+}
+std::string number(double value, int precision = 2) {
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(precision) << value;
+    return text.str();
+}
+void stats_column(ImDrawList* draw, Box box, const Json::Value& stats, float scale, bool armor_details = true) {
+    draw->AddRectFilled(box.min(), box.max(), ink, 3*scale);
+    draw->AddLine(box.min(), {box.x+box.w,box.y}, gold, std::max(1.f,scale));
+    const float pad = 8*scale, size = std::max(10.f,15*scale), line = 22*scale;
+    float y = box.y+pad;
+    label(draw,{box.x+pad,y,box.w-2*pad,line},stats["name"].asString(),18*scale,ivory,true);
+    y += line+4*scale;
+    auto row = [&](const char* title, const std::string& value, ImU32 color = ivory) {
+        const float value_width = font(false)->CalcTextSizeA(size,10000,0,value.c_str()).x;
+        const float title_width = std::max(1.f,box.w-2*pad-value_width-6*scale);
+        const float title_size = std::min(size,title_width/std::max(1.f,font(false)->CalcTextSizeA(1,10000,0,title).x));
+        label(draw,{box.x+pad,y,title_width,line},title,title_size,muted);
+        label(draw,{box.x+box.w-pad-value_width,y,value_width+1,line},value,size,color);
+        y += line;
+    };
+    row("Durability", "x"+number(stats["durability"].asDouble()));
+    row("Damage", "x"+number(stats["damage"].asDouble()));
+    row("Movement", "x"+number(stats["movement"].asDouble()));
+    row("Passive stealth", number((1-stats["passive_range"].asDouble())*100,0)+"%");
+    row("Active stealth", number((1-stats["active_range"].asDouble())*100,0)+"%");
+    y += 5*scale;
+    const auto& armor = stats["armor"];
+    int covered = 0;
+    for (const auto& tier : armor) covered += tier.asInt() > 0;
+    if (stats["armor_mode"].asInt() == 2)
+        row("Armor reduction", number(stats["armor_reduction"].asDouble()*100,0)+"%",gold);
+    else row("Armor", stats["armor_mode"].asInt() == 0 && stats["armor_rating"].asDouble() > 0 ?
+                      "Whole body" : std::to_string(covered)+" / 9",gold);
+    if (armor_details && box.y+box.h-y >= 9*line) {
+        static const char* names[] = {"Chest","Back","Head","L forearm","R forearm","L shoulder","R shoulder","L thigh","R thigh"};
+        for (unsigned region = 0; region < 9; ++region) {
+            const int material = region < armor.size() ? armor[region].asInt() : 0;
+            row(names[region], material == ArmorProtection::Grey ? "Grey" : material == ArmorProtection::Dog ?
+                "Dog armor" : material ? ArmorProtection::MaterialName(material) : "None",
+                material ? tiers[std::min(4,material)].accent : muted);
+        }
+    } else row("Covered slots", std::to_string(covered)+" / 9");
 }
 float input_depth(const PlayerInput* input, const char* key) {
     if (!input || !input->enabled || input->remote_controlled) return 0;
@@ -240,7 +336,7 @@ struct Button {
     int armor_material = 0;
 };
 struct Panel {
-    Box bounds, list, wallet, heading, note;
+    Box bounds, list, wallet, heading, note, stats;
     float scale, total = 0;
     std::vector<Button> buttons;
 };
@@ -256,7 +352,9 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     p.bounds = area;
     p.scale = std::max(0.48f, std::min({1.22f, area.w/490.0f, area.h/375.0f}));
     const float s = p.scale, pad = 12*s, gap = 6*s, line = 30*s;
-    const float x = area.x+pad, w = area.w-2*pad;
+    const float sidebar = 174*s;
+    p.stats = {area.x+area.w-pad-sidebar,area.y+pad,sidebar,area.h-2*pad};
+    const float x = area.x+pad, w = area.w-2*pad-sidebar-gap;
     float y = area.y+pad;
     p.heading = {x,y,w,line}; y += line+gap;
     p.wallet = {x,y,w,33*s}; y += p.wallet.h+gap;
@@ -315,8 +413,8 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
         int equipped = v["big_weapon"].asInt();
         const bool edit = v["can_equip"].asBool();
         row(Action::Equip,"none",equipped == 0 ? "(*)  No main weapon" : "( )  No main weapon",edit);
-        if (v["owned_sword"].asBool()) row(Action::Equip,"sword",equipped == 1 ? "(*)  Sword" : "( )  Sword",edit);
-        if (v["owned_spear"].asBool()) row(Action::Equip,"spear",equipped == 2 ? "(*)  Spear" : "( )  Spear",edit);
+        for (const auto& weapon : FriendlyProgression::Weapons()) if (weapon.selection && v[std::string("owned_")+weapon.key].asBool())
+            row(Action::Equip,weapon.key,std::string(equipped == weapon.selection ? "(*)  " : "( )  ")+weapon.label,edit);
         if (v["owned_dagger"].asBool()) row(Action::Equip,"dagger",v["dagger"].asBool() ? "[x]  Offhand dagger" : "[ ]  Offhand dagger",edit);
     } else {
         for (const auto& member : v["teammates"]) {
@@ -460,10 +558,12 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     label(draw,{p.heading.x,p.heading.y,p.heading.w-(clock.empty()?0:52*s),p.heading.h},title+"  /  "+player.playername,25*s,ivory,true);
     if (!clock.empty()) label(draw,{p.heading.x+p.heading.w-49*s,p.heading.y,49*s,p.heading.h},clock,22*s,gold,true);
     balance(draw,seat.wallet,p.wallet,now,s);
+    stats_column(draw,p.stats,view["stats"],s);
     bool mouse_delta = io.MousePos.x != seat.previous_mouse.x || io.MousePos.y != seat.previous_mouse.y;
     seat.previous_mouse = io.MousePos;
     bool clicked = mouse_owner && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     const Button* chosen = nullptr;
+    audit["visible_cards"] = Json::Value(Json::arrayValue);
     for (const auto& b : p.buttons) {
         if (!visible(b,p,seat)) continue;
         Box box = screen_box(b,seat);
@@ -472,6 +572,7 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
         if (hovered && (mouse_delta || clicked)) seat.focus = b.id;
         bool focused = seat.focus == b.id;
         const bool card = b.action == Action::Buy;
+        if (card) audit["visible_cards"].append(b.id);
         const Tier& tier = tiers[b.rarity];
         ImU32 surface = card ? tier.surface : focused ? IM_COL32(86,67,40,255) : IM_COL32(47,41,34,255);
         ImU32 border = focused || b.badge == "selected" ? gold : card ? tier.accent : IM_COL32(97,83,65,255);
@@ -510,6 +611,7 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     audit["target"] = seat.target;
     audit["scroll"] = seat.scroll;
     audit["page"] = seat.page == Page::Shop ? "shop" : seat.page == Page::Loadout ? "equipment" : "team";
+    audit["stats_drawn"] = true;
     if (chosen) dispatch(*chosen,seat,player.player_id,view,now);
 }
 }
@@ -519,6 +621,76 @@ void Clear() {
     thumbnails.clear();
     layout = Json::Value(Json::arrayValue);
 }
+vec2 LayoutArenaScore(float left, float top, float width, float height) {
+    const ImVec2 units = arena_units();
+    if (units.x <= 0 || units.y <= 0 || width <= 0 || height <= 0) return {left, 1.0f};
+    const unsigned screens = std::max(1u, Online::Instance()->LocalLobbyPlayerCount());
+    const Box area = gameplay_viewport(0, screens, ImGui::GetIO().DisplaySize);
+    const float ui_scale = gameplay_scale(area);
+    const Box stats = gameplay_stats(area, ui_scale);
+    const float margin = 12.0f * ui_scale;
+    Box score{left * units.x, top * units.y, width * units.x, height * units.y};
+    float scale = std::min({1.0f, (area.w - margin - score.x) / score.w,
+                            (stats.y - margin - score.y) / score.h});
+    // In a very short split viewport, put a tall roster alongside the stats
+    // before shrinking its 36px type below 13px. Keep the upper-left anchor otherwise.
+    if (scale < 0.36f) {
+        const float beside = stats.x + stats.w + margin;
+        const float beside_scale = std::min({1.0f, (area.w - margin - beside) / score.w,
+                                             (gameplay_wallet(area, ui_scale).y - margin - score.y) / score.h});
+        if (beside_scale > scale) {
+            score.x = beside;
+            scale = beside_scale;
+        }
+    }
+    scale = std::max(0.0f, scale);
+    arena_score = {score.x, score.y, score.w * scale, score.h * scale};
+    arena_score_frame = ImGui::GetFrameCount();
+    return {score.x / units.x, scale};
+}
+
+vec2 LayoutArenaAnnouncement(float top, float width, float height) {
+    const ImVec2 units = arena_units();
+    if (units.x <= 0 || units.y <= 0 || width <= 0 || height <= 0) return {top, 1.0f};
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float w = width * units.x, h = height * units.y;
+    const float desired_y = top * units.y;
+    const float left = (display.x - w) / 2.0f;
+    std::vector<std::pair<float, float>> occupied;
+    auto reserve = [&](const Box& box, float gap) {
+        if (box.x < left + w && box.x + box.w > left)
+            occupied.emplace_back(box.y - gap, box.y + box.h + gap);
+    };
+    if (arena_score_frame == ImGui::GetFrameCount()) reserve(arena_score, 4.0f);
+    const unsigned screens = std::max(1u, Online::Instance()->LocalLobbyPlayerCount());
+    for (unsigned i = 0; i < screens; ++i) {
+        const Box area = gameplay_viewport(i, screens, display);
+        const float scale = gameplay_scale(area);
+        reserve(gameplay_stats(area, scale), 6 * scale);
+        reserve(gameplay_wallet(area, scale), 6 * scale);
+    }
+    // Fit the measured lines into the nearest free vertical interval. Prefer
+    // their original size and baseline whenever there is room.
+    occupied.emplace_back(display.y, display.y);
+    std::sort(occupied.begin(), occupied.end());
+    float available_top = 0.0f, best_y = desired_y, best_scale = 0.0f;
+    for (const auto& interval : occupied) {
+        const float end = std::min(interval.first, display.y);
+        if (end > available_top) {
+            const float scale = std::min(1.0f, (end - available_top) / h);
+            const float y = std::max(available_top, std::min(desired_y, end - h * scale));
+            if (scale > best_scale || (scale == best_scale && std::abs(y - desired_y) < std::abs(best_y - desired_y))) {
+                best_scale = scale;
+                best_y = y;
+            }
+        }
+        available_top = std::max(available_top, interval.second);
+    }
+    arena_announcement = {(display.x - w * best_scale) / 2, best_y, w * best_scale, h * best_scale};
+    arena_announcement_frame = ImGui::GetFrameCount();
+    return {best_y / units.y, best_scale};
+}
+
 const Json::Value& Inspect() { return layout; }
 
 void Draw(Engine& engine) {
@@ -545,8 +717,7 @@ void Draw(Engine& engine) {
         auto view = FriendlyProgression::View(player.player_id,seat.target);
         if (!view["enabled"].asBool()) continue;
         bool open = view["shop_open"].asBool();
-        const auto vp = LocalViewports::ForPlayer(std::max(0,player.screen-1),count);
-        const Box area{vp.left*display.x,(1-vp.top)*display.y,(vp.right-vp.left)*display.x,(vp.top-vp.bottom)*display.y};
+        const Box area = gameplay_viewport(std::max(0,player.screen-1),count,display);
         if (area.w < 1 || area.h < 1) continue;
         const int actual = devices->GetLocalPlayerInputID(player.local_index);
         const PlayerInput* input = devices->GetController(actual);
@@ -565,6 +736,11 @@ void Draw(Engine& engine) {
         audit["shop"] = open;
         audit["display_held"] = seat.wallet.held;
         audit["display_pooled"] = seat.wallet.pool;
+        audit["green_max"] = seat.wallet.projected_held();
+        audit["purple_max"] = seat.wallet.encounter_expected;
+        audit["green_fraction"] = seat.wallet.held_fraction();
+        audit["purple_fraction"] = seat.wallet.pooled_fraction();
+        audit["stats"] = view["stats"];
         if (open) {
             bool valid = false;
             for (const auto& target : view["targets"]) valid |= target["id"].asUInt() == seat.target;
@@ -573,9 +749,19 @@ void Draw(Engine& engine) {
         draw->PushClipRect(area.min(),area.max(),true);
         if (open) shop(draw,player,view,area,seat,input,int(player.local_index) == devices->LocalKeyboardPlayerIndex(),now,audit);
         else if (!engine.waiting_for_input_ && !engine.PlayerHasMenu(actual)) {
-            const float s = std::max(0.55f,std::min({1.16f,area.w/420.f,area.h/480.f}));
-            const float width = std::min(308*s,std::max(1.f,area.w-24*s));
-            balance(draw,seat.wallet,{area.x+area.w-width-12*s,area.y+area.h-46*s,width,34*s},now,s);
+            const float s = gameplay_scale(area);
+            const Box wallet = gameplay_wallet(area,s);
+            balance(draw,seat.wallet,wallet,now,s);
+            const Box stats = gameplay_stats(area,s);
+            stats_column(draw,stats,view["stats"],s,false);
+            for (float value : {stats.x, stats.y, stats.x+stats.w, stats.y+stats.h}) audit["stats_rect"].append(value);
+            if (arena_score_frame == ImGui::GetFrameCount())
+                for (float value : {arena_score.x, arena_score.y, arena_score.x+arena_score.w, arena_score.y+arena_score.h})
+                    audit["arena_score_rect"].append(value);
+            if (arena_announcement_frame == ImGui::GetFrameCount())
+                for (float value : {arena_announcement.x, arena_announcement.y, arena_announcement.x+arena_announcement.w, arena_announcement.y+arena_announcement.h})
+                    audit["arena_announcement_rect"].append(value);
+            audit["stats_drawn"] = true;
         }
         draw->PopClipRect();
         layout.append(audit);

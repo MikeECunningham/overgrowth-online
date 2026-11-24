@@ -104,7 +104,10 @@ BaseState<PendingConnection>* StateHandshake::OnUpdate() {
                 Online::Instance()->CloseConnection(actor->net_connection_id, ConnectionClosedReason::DISCONNECTED);
                 return new StateSuspended();
             }
-            Online::Instance()->EstablishPeerPlayers(peer->peer_id, actor->local_names.empty() ? std::vector<std::string>{actor->player_name} : actor->local_names, actor->local_screens);
+            if (!Online::Instance()->EstablishPeerPlayers(peer->peer_id, actor->local_names.empty() ? std::vector<std::string>{actor->player_name} : actor->local_names, actor->local_screens)) {
+                Online::Instance()->CloseConnection(actor->net_connection_id, ConnectionClosedReason::LOBBY_FULL);
+                return new StateSuspended();
+            }
         }
         return Online::Instance()->LobbyWaiting() ? static_cast<BaseState<PendingConnection>*>(new StateLobbyWaiting()) : new StateSync();
     }

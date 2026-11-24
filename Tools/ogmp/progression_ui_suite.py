@@ -92,11 +92,11 @@ def progression_ui(ctx):
         assert rows()[0]["display_held"] >= before
         ctx.shot(host, "independent_upgrade_cards")
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=32500)
-        wait(lambda: rows()[1]["scroll"] > 315, "P2 reaches wooden guard previews")
+        wait(lambda: "armor_3" in rows()[1].get("visible_cards", []), "P2 reaches wooden guard previews")
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
         ctx.shot(host, "stock_armor_catalog")
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=29000)
-        wait(lambda: rows()[1]["scroll"] > 775, "P2 reaches weapon previews")
+        wait(lambda: {"staff", "broadsword"} <= set(rows()[1].get("visible_cards", [])), "P2 reaches weapon previews")
         time.sleep(.4)
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
         ctx.shot(host, "equipment_rarities")

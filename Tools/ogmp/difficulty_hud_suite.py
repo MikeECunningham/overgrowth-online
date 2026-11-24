@@ -71,7 +71,7 @@ def difficulty_hud(ctx):
         host_actor = next(c for c in actors().values() if c["id"] == host_row["avatar_id"])
         assert shown["host_player"] == host_row["id"] == p2["id"]
         assert shown["local_index"] == 1 and shown["camera"] == host_actor["camera_id"]
-        viewport = [640 * (screen - 1), 0, 640 * screen, 720]
+        viewport = [0, 360 * (screen - 1), 1280, 360 * screen]
         assert all(abs(a - b) <= 1 for a, b in zip(shown["viewport"], viewport)), shown
         x1, y1, x2, y2 = shown["rect"]
         left, top, right, bottom = shown["viewport"]
@@ -133,6 +133,7 @@ def difficulty_hud(ctx):
     try:
         code(host, 'LobbyBeginHost();LobbyAddLocalPlayer();LobbyAddBot();'
              f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
+             'LobbySetModeSetting("challenge_time",0);LobbySetModeSetting("challenge_round",0);'
              'LobbySetModeSetting("challenge_performance",1);LobbySetModeSetting("challenge_performance_rate",2);', "menu")
         guest.bridge.call("connect", ip="127.0.0.1:28084")
         wait(lambda: len(rows()) == len(rows(guest)) == 4, "three humans and one friendly bot")

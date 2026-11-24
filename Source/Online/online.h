@@ -31,6 +31,7 @@
 #include <Online/state_machine.h>
 #include <Online/lobby_authority.h>
 #include <memory>
+#include <array>
 
 #include <Online/Message/audio_play_sound_group_relative_gain_message.h>
 #include <Online/Message/audio_play_sound_group_gain_message.h>
@@ -722,14 +723,19 @@ class Online {
     std::string ModeSettingsKey() const;
     int ModeSetting(const std::string& key) const;
     bool SetModeSetting(const std::string& key, int value, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    Json::Value SaveGameRules() const;
+    bool ValidateGameRules(const Json::Value& rules);
+    void RestoreGameRules(const Json::Value& rules);
     std::string ModeChallengePayload() const;
-    void ReceiveModeChallenge(const std::string& payload);
+    bool ReceiveModeChallenge(const std::string& payload, bool validate_only = false);
     void ResetModeChallenge();
     CampaignDifficulty::Sample EnemyDifficulty() const;
     void CaptureEnemyDifficulty(bool new_match = false);
     void ChallengeSceneChanged();
     void BeginChallengeCampaignLoop();
     float WornArmorRating(ObjectID avatar) const;
+    std::array<int, 9> WornArmorCoverage(ObjectID avatar) const;
+    Json::Value ProgressionEncounterScope(ObjectID viewer) const;
     std::shared_ptr<ProgressionEquipmentState> progression_equipment;
     void ApplyProgressionEquipment(SceneGraph* graph);
     void RefreshProgressionLoadouts(bool arena_round);
@@ -818,7 +824,11 @@ class Online {
     string last_safe_level;
     void CoopReviveRequest(const string& msg);      // "ohg revive <common id> x y z [fx fz]" from the host
     void ReviveAvatar(MovementObject* mo, const vec3& pos, const vec3& facing = vec3(0.0f));
-    void PlaceAvatar(ObjectID id, const vec3& pos, const vec3& facing, ObjectID course_anchor = -1);  // host: up at pos, wherever it runs
+    struct SavedVitals {
+        int knocked_out = -1;
+        float temp_health = 1.0f, blood_health = 1.0f, permanent_health = 1.0f;
+    };
+    void PlaceAvatar(ObjectID id, const vec3& pos, const vec3& facing, ObjectID course_anchor = -1, const SavedVitals* vitals = nullptr);  // host: up at pos, wherever it runs
     double coop_all_down_ms = -1.0;
     struct PendingRevive {
         ObjectID id;
@@ -826,6 +836,7 @@ class Online {
         vec3 facing;
         double queued_ms;  // waits (3 s at most) while another machine still has it (a teammate's drag)
         ObjectID course_anchor = -1;
+        SavedVitals vitals;
     };
     bool OwnPlayerCharacter(ObjectID id) const;  // our player's, whoever runs it now
     vector<PendingRevive> pending_revives;
@@ -916,7 +927,7 @@ class Online {
     PeerID LocalPeerID() const;
     unsigned LocalLobbyPlayerCount() const;
     bool HasMultipleLobbyHumans() const;
-    bool BeginLobby();
+    bool BeginLobby(bool local_only = false);
     bool EnsureLocalSession();
     bool IsLocalOnlySession() const { return local_only_session_ && IsHosting(); }
     bool OpenLobbyToNetwork(PlayerID actor = LobbyAuthority::InvalidPlayer);
@@ -924,6 +935,14 @@ class Online {
     bool LobbyWaiting() const { return lobby_waiting_; }
     PlayerID AddLocalLobbyPlayer(const std::string& name);
     PlayerID AddLobbyBot(const std::string& name = "", PlayerID actor = LobbyAuthority::InvalidPlayer);
+    std::vector<LobbySlot> GetLobbySlots() const;
+    bool LobbyAutoAdmission() const { return lobby_auto_admission_; }
+    bool SetLobbyAutoAdmission(bool automatic, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool SetLobbySlotPlayer(PlayerID slot, bool player, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    bool SwapLobbySlots(PlayerID first, PlayerID second, PlayerID actor = LobbyAuthority::InvalidPlayer);
+    Json::Value SaveLobbySlots() const;
+    bool ValidateLobbySlots(const Json::Value& saved) const;
+    bool RestoreLobbySlots(const Json::Value& saved);
     ObjectID CreateLobbyBot(PlayerID id);
     void AssignLobbyBots();
     PlayerID LobbyPlayerIDForLocalIndex(unsigned index) const;
@@ -994,7 +1013,7 @@ class Online {
     bool StartLobbyGame(const std::string& level = "", const std::string& campaign = "", bool build = false, PlayerID actor = LobbyAuthority::InvalidPlayer);
     void ReceiveLobbyControl(PeerID from, const std::string& payload);
     void BroadcastLobby();
-    void EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& names, const std::vector<int>& screens = {});
+    bool EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& names, const std::vector<int>& screens = {});
     void AssignPeerAvatars(PeerID peer);
     std::vector<std::string> LocalLobbyNames() const;
     std::vector<int> LocalLobbyScreens() const;
@@ -1021,6 +1040,11 @@ class Online {
     bool lobby_build_ = false;
     std::string lobby_mode_, lobby_campaign_, lobby_map_;
     PlayerID next_local_player_id_ = 256;
+    std::map<PlayerID, LobbySlot> lobby_slots_;
+    bool lobby_auto_admission_ = true;
+    void SyncLobbySlotDefinitions();
+    bool StageLobbySlots(const Json::Value& saved, std::map<PlayerID, LobbySlot>& slots,
+                         std::map<PlayerID, PlayerState>& players, LobbyAuthority::State& authority, PlayerID& next) const;
     std::string LobbyPayload() const;
     void SubmitLobbyRequest(const std::string& payload);
     void PrepareReturnToLobby();

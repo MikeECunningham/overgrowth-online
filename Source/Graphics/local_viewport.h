@@ -1,4 +1,5 @@
-// Local split-screen cells, in row-major order starting at the top left.
+// Local split-screen cells: two players stack top/bottom; larger parties use
+// row-major order starting at the top left.
 // Copyright 2026. Licensed under the Apache License, Version 2.0.
 #pragma once
 
@@ -19,6 +20,9 @@ struct Rect {
 inline Grid ForPlayers(int player_count) {
     if (player_count < 1) {
         player_count = 1;
+    }
+    if (player_count == 2) {
+        return {1, 2};
     }
     // Smallest square containing the players, then discard an unused last row.
     // Division avoids overflow for counts near the integer limit.

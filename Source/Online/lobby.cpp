@@ -1,5 +1,6 @@
 // Session roster and pre-game lobby control. Apache-2.0.
 #include <Online/online.h>
+#include <Online/session_saves.h>
 #include <Online/friendly_progression.h>
 #include <Online/online_utility.h>
 #include <Main/engine.h>
@@ -14,6 +15,7 @@
 #include <Scripting/angelscript/lobby_bindings.h>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <sstream>
 
@@ -23,6 +25,45 @@ std::string NameOrDefault(const std::string& name, unsigned index) {
     if (OnlineUtility::IsValidPlayerName(name)) return name;
     return index == 0 ? "Unknown Rabbit" : "Local player " + std::to_string(index + 1);
 }
+std::string NewSlotUID(PlayerID id) {
+    static uint64_t serial = 0;
+    const auto stamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    return std::to_string(stamp) + "-" + std::to_string(++serial) + "-" + std::to_string(id);
+}
+int TeamChoiceLimit(const std::map<PlayerID, LobbySlot>& slots) {
+    int count = static_cast<int>(slots.size());
+    for (const auto& entry : slots) count = std::max(count, entry.second.team);
+    return std::min(4096, count);
+}
+bool DecodeSlotDefinitions(const Json::Value& saved, std::map<PlayerID, LobbySlot>& slots, PlayerID& next) {
+    if (!saved.isObject() || !saved["version"].isInt() || saved["version"].asInt() != 1 ||
+        !saved["auto_admit"].isBool() || !saved["host_slot"].isUInt() || !saved["next_slot_id"].isUInt() ||
+        !saved["slots"].isArray() || saved["slots"].size() == 0 || saved["slots"].size() > 4096) return false;
+    std::set<std::string> identities;
+    std::set<uint32_t> orders;
+    next = saved["next_slot_id"].asUInt();
+    if (next < 256 || next == LobbyAuthority::InvalidPlayer) return false;
+    for (const auto& row : saved["slots"]) {
+        if (!row.isObject() || !row["id"].isUInt() || row["id"].asUInt() >= LobbyAuthority::InvalidPlayer - 1 ||
+            !row["order"].isUInt() || row["order"].asUInt() == 0 || row["order"].asUInt() == UINT32_MAX ||
+            !row["uid"].isString() || !row["kind"].isString() || !row["name"].isString() || !row["team"].isInt()) return false;
+        LobbySlot slot;
+        slot.id = row["id"].asUInt(); slot.order = row["order"].asUInt(); slot.uid = row["uid"].asString(); slot.name = row["name"].asString(); slot.team = row["team"].asInt();
+        const auto kind = row["kind"].asString();
+        // Removing a bot during play retains the surviving teams until the
+        // lobby reopens, so their labels may exceed the reduced slot count.
+        if ((kind != "player" && kind != "bot") || slot.uid.empty() || slot.uid.size() > 96 ||
+            !std::all_of(slot.uid.begin(), slot.uid.end(), [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_'; }) ||
+            !OnlineUtility::IsValidPlayerName(slot.name) || slot.team < 1 || slot.team > 4096 ||
+            slots.count(slot.id) || !identities.insert(slot.uid).second || !orders.insert(slot.order).second) return false;
+        slot.is_bot = kind == "bot";
+        slots[slot.id] = slot;
+        if (slot.id >= next) next = slot.id + 1;
+    }
+    const PlayerID host = saved["host_slot"].asUInt();
+    if (!slots.count(host) || slots.at(host).is_bot || next == LobbyAuthority::InvalidPlayer) return false;
+    return true;
+}
 std::map<PlayerID, ObjectID> initialized_appearances;
 const SceneGraph* appearance_graph = nullptr;
 std::string appearance_level;
@@ -31,11 +72,11 @@ std::string natural_team_level;
 const SceneGraph* natural_team_graph = nullptr;
 const char* const migration_match_settings[] = {
     "oo_arena_bots", "oo_arena_random", "oo_public_game", "game_difficulty",
-    "global_time_scale_mult", "tutorials", "auto_ledge_grab", "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized"
+    "global_time_scale_mult", "tutorials", "auto_ledge_grab", "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_ai_scaling_rate", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized"
 };
 const char* const campaign_match_settings[] = {
     "game_difficulty", "global_time_scale_mult", "tutorials", "auto_ledge_grab",
-    "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized", "oo_arena_random"
+    "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_ai_scaling_rate", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized", "oo_arena_random"
 };
 
 bool NormalizeCampaignMatchSetting(const std::string& key, const std::string& value, std::string* normalized) {
@@ -43,6 +84,9 @@ bool NormalizeCampaignMatchSetting(const std::string& key, const std::string& va
     if (key == "difficulty_preset") {
         const auto presets = config.GetDifficultyPresets();
         if (std::find(presets.begin(), presets.end(), value) == presets.end()) return false;
+        *normalized = value;
+    } else if (key == "campaign_ai_scaling_rate") {
+        if (value.size() != 1 || value[0] < '0' || value[0] > '4') return false;
         *normalized = value;
     } else if (key == "armor_localized" && value == "2") {
         *normalized = value;
@@ -106,6 +150,9 @@ std::vector<LobbyAuthority::Seat> Online::LobbySeats(bool include_bots) const {
     std::vector<LobbyAuthority::Seat> seats;
     if (online_session) for (const auto& entry : online_session->player_states)
         if (include_bots || !entry.second.is_bot) seats.push_back({entry.first, entry.second.peer_id, entry.second.local_index});
+    if (include_bots) for (const auto& entry : lobby_slots_)
+        if (!online_session || !online_session->player_states.count(entry.first))
+            seats.push_back({entry.first, 255, std::numeric_limits<uint32_t>::max()});
     return seats;
 }
 
@@ -305,7 +352,7 @@ std::vector<PlayerState> Online::GetLocalPlayerStates() const {
     return result;
 }
 
-bool Online::BeginLobby() {
+bool Online::BeginLobby(bool local_only) {
     if (IsActive()) return IsHosting() && lobby_waiting_;
     if (local_lobby_profiles_.empty()) {
         LocalLobbyProfile profile;
@@ -321,13 +368,31 @@ bool Online::BeginLobby() {
     lobby_authority_ = LobbyAuthority::State();
     mode_teams_.clear();
     level_name.clear(); campaign_id.clear();
-    StartHostingMultiplayer();
+    if (local_only) {
+        StartMultiplayer(MultiplayerMode::Host);
+        local_only_session_ = true;
+    } else {
+        StartHostingMultiplayer();
+    }
     EstablishPeerPlayers(255, LocalLobbyNames());
     return IsHosting();
 }
 
 PlayerID Online::AddLocalLobbyPlayer(const std::string& name) {
     if (LobbyMigrationBusy()) return static_cast<PlayerID>(-1);
+    if (IsHosting() && !lobby_auto_admission_) {
+        const bool available = std::any_of(lobby_slots_.begin(), lobby_slots_.end(), [this](const std::pair<const PlayerID, LobbySlot>& slot) {
+            return !slot.second.is_bot && !online_session->player_states.count(slot.first);
+        });
+        if (!available) return LobbyAuthority::InvalidPlayer;
+    }
+    if (IsClient() && !lobby_auto_admission_) {
+        const auto players = GetPlayerStates();
+        const bool available = std::any_of(lobby_slots_.begin(), lobby_slots_.end(), [&players](const std::pair<const PlayerID, LobbySlot>& slot) {
+            return !slot.second.is_bot && std::none_of(players.begin(), players.end(), [&slot](const PlayerState& p) { return p.player_id == slot.first; });
+        });
+        if (!available) return LobbyAuthority::InvalidPlayer;
+    }
     Engine* engine = Engine::Instance();
     const bool world = engine->IsLevelLoaded() || engine->current_engine_state_.type == kEngineLevelState ||
         engine->current_engine_state_.type == kEngineEditorLevelState;
@@ -386,9 +451,18 @@ PlayerID Online::AddLobbyBot(const std::string& name, PlayerID actor) {
     return bot.player_id;
 }
 
-void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& names, const std::vector<int>& requested_screens) {
-    if (!IsHosting() || online_session == nullptr) return;
+bool Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& names, const std::vector<int>& requested_screens) {
+    if (!IsHosting() || online_session == nullptr) return false;
     const size_t count = std::max<size_t>(1, names.size());
+    SyncLobbySlotDefinitions();
+    size_t additions = 0;
+    for (size_t index = 0; index < count; ++index)
+        if (std::none_of(online_session->player_states.begin(), online_session->player_states.end(), [peer,index](const std::pair<const PlayerID,PlayerState>& p) {
+            return !p.second.is_bot && p.second.peer_id == peer && p.second.local_index == index;
+        })) ++additions;
+    size_t available = 0;
+    for (const auto& slot : lobby_slots_) if (!slot.second.is_bot && !online_session->player_states.count(slot.first)) ++available;
+    if (!lobby_auto_admission_ && additions > available) return false;
     std::vector<int> screens = peer == LocalPeerID() ? LocalLobbyScreens() : requested_screens;
     std::set<int> unique_screens(screens.begin(), screens.end());
     const bool valid_screens = screens.size() == count && unique_screens.size() == count &&
@@ -408,7 +482,10 @@ void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& n
         auto found = std::find_if(online_session->player_states.begin(), online_session->player_states.end(),
             [peer, index](const std::pair<const PlayerID, PlayerState>& p) { return !p.second.is_bot && p.second.peer_id == peer && p.second.local_index == index; });
         if (found != online_session->player_states.end()) continue;
-        const PlayerID id = LobbyAuthority::AllocatePlayerID(LobbySeats(true), peer, static_cast<unsigned>(index), next_local_player_id_);
+        PlayerID id = LobbyAuthority::InvalidPlayer;
+        for (const auto& slot : GetLobbySlots()) if (!slot.is_bot && !online_session->player_states.count(slot.id)) { id = slot.id; break; }
+        if (id == LobbyAuthority::InvalidPlayer)
+            id = LobbyAuthority::AllocatePlayerID(LobbySeats(true), peer, static_cast<unsigned>(index), next_local_player_id_);
         PlayerState state;
         state.player_id = id;
         state.peer_id = peer;
@@ -416,8 +493,9 @@ void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& n
         state.playername = NameOrDefault(index < names.size() ? names[index] : "", static_cast<unsigned>(index));
         state.object_id = -1;
         state.screen = valid_screens ? screens[index] : static_cast<int>(index + 1);
-        state.team = lobby_mode_ == "com-wolfire-arena" || lobby_campaign_ == "com-wolfire-arena" ?
-            static_cast<int>(online_session->player_states.size() + 1) : couch_team;
+        state.team = lobby_slots_.count(id) ? lobby_slots_.at(id).team :
+            lobby_mode_ == "com-wolfire-arena" || lobby_campaign_ == "com-wolfire-arena" ?
+                static_cast<int>(lobby_slots_.size() + 1) : couch_team;
         online_session->player_states[id] = state;
         if (peer == LocalPeerID()) {
             online_session->player_states[id].controller_id = Input::Instance()->GetLocalPlayerInputID(static_cast<unsigned>(index));
@@ -427,6 +505,7 @@ void Online::EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& n
         }
     }
     BroadcastLobby();
+    return true;
 }
 
 void Online::AssignPeerAvatars(PeerID peer) {
@@ -470,6 +549,220 @@ void Online::AssignPeerAvatars(PeerID peer) {
     AssignLobbyBots();
 }
 
+void Online::SyncLobbySlotDefinitions() {
+    if (!online_session) return;
+    uint32_t order = 0;
+    for (const auto& entry : lobby_slots_) order = std::max(order, entry.second.order);
+    for (const auto& entry : online_session->player_states) {
+        auto& slot = lobby_slots_[entry.first];
+        slot.id = entry.first;
+        if (slot.uid.empty()) slot.uid = NewSlotUID(slot.id);
+        if (!slot.order) slot.order = ++order;
+        slot.name = entry.second.playername;
+        slot.team = entry.second.team;
+        slot.is_bot = entry.second.is_bot;
+    }
+}
+
+std::vector<LobbySlot> Online::GetLobbySlots() const {
+    auto slots = lobby_slots_;
+    if (online_session) for (const auto& entry : online_session->player_states) {
+        auto& slot = slots[entry.first];
+        slot.id = entry.first; slot.name = entry.second.playername; slot.team = entry.second.team; slot.is_bot = entry.second.is_bot;
+    }
+    std::vector<LobbySlot> result;
+    for (const auto& entry : slots) result.push_back(entry.second);
+    std::sort(result.begin(), result.end(), [](const LobbySlot& a, const LobbySlot& b) { return a.order != b.order ? a.order < b.order : a.id < b.id; });
+    return result;
+}
+
+Json::Value Online::SaveLobbySlots() const {
+    Json::Value result;
+    result["version"] = 1;
+    result["auto_admit"] = lobby_auto_admission_;
+    result["host_slot"] = lobby_authority_.host;
+    result["next_slot_id"] = next_local_player_id_;
+    result["slots"] = Json::Value(Json::arrayValue);
+    for (const auto& slot : GetLobbySlots()) {
+        Json::Value row;
+        row["id"] = slot.id; row["uid"] = slot.uid; row["order"] = slot.order;
+        row["kind"] = slot.is_bot ? "bot" : "player";
+        row["name"] = slot.name; row["team"] = slot.team;
+        result["slots"].append(row);
+    }
+    return result;
+}
+
+bool Online::StageLobbySlots(const Json::Value& saved, std::map<PlayerID, LobbySlot>& slots,
+                             std::map<PlayerID, PlayerState>& players, LobbyAuthority::State& authority, PlayerID& next) const {
+    if (!IsHosting() || !online_session || !DecodeSlotDefinitions(saved, slots, next)) return false;
+    const PlayerID host = saved["host_slot"].asUInt();
+    std::set<std::string> identities;
+    for (const auto& entry : slots) identities.insert(entry.second.uid);
+    std::vector<PlayerState> humans;
+    for (const auto& entry : online_session->player_states) if (!entry.second.is_bot) humans.push_back(entry.second);
+    std::sort(humans.begin(), humans.end(), [this](const PlayerState& a, const PlayerState& b) {
+        if (a.player_id == lobby_authority_.host) return b.player_id != lobby_authority_.host;
+        if (b.player_id == lobby_authority_.host) return false;
+        return a.peer_id != b.peer_id ? a.peer_id < b.peer_id : a.local_index < b.local_index;
+    });
+    if (humans.empty()) return false;
+    std::set<PlayerID> occupied;
+    std::map<PlayerID, PlayerID> reassigned;
+    for (size_t i = 0; i < humans.size(); ++i) {
+        const auto& human = humans[i];
+        PlayerID target = i == 0 ? host : LobbyAuthority::InvalidPlayer;
+        const auto old = lobby_slots_.find(human.player_id);
+        if (target == LobbyAuthority::InvalidPlayer && old != lobby_slots_.end())
+            for (const auto& entry : slots) if (!entry.second.is_bot && !occupied.count(entry.first) && entry.second.uid == old->second.uid) target = entry.first;
+        if (target == LobbyAuthority::InvalidPlayer)
+            for (const auto& entry : slots) if (!entry.second.is_bot && !occupied.count(entry.first)) { target = entry.first; break; }
+        if (target == LobbyAuthority::InvalidPlayer) {
+            if (!saved["auto_admit"].asBool() || slots.size() >= 4096 || next >= LobbyAuthority::InvalidPlayer - 1) return false;
+            target = next++;
+            LobbySlot extra;
+            extra.id = target; extra.uid = old != lobby_slots_.end() ? old->second.uid : "restored-" + std::to_string(target);
+            for (const auto& entry : slots) extra.order = std::max(extra.order, entry.second.order);
+            ++extra.order;
+            if (!identities.insert(extra.uid).second) extra.uid += "-" + std::to_string(target);
+            extra.name = human.playername; extra.team = human.team; extra.is_bot = false;
+            slots[target] = extra;
+        }
+        occupied.insert(target);
+        PlayerState bound = human;
+        bound.player_id = target; bound.team = slots.at(target).team; bound.object_id = -1;
+        players[target] = bound;
+        reassigned[human.player_id] = target;
+    }
+    for (const auto& entry : slots) if (entry.second.is_bot) {
+        PlayerState bot;
+        bot.player_id = entry.first; bot.is_bot = true; bot.playername = entry.second.name; bot.team = entry.second.team;
+        bot.peer_id = 255; bot.local_index = std::numeric_limits<uint32_t>::max(); bot.screen = 0; bot.controller_id = bot.camera_id = -1; bot.object_id = -1;
+        players[entry.first] = bot;
+    }
+    authority.host = host;
+    for (const auto& leader : lobby_authority_.leaders) if (reassigned.count(leader.second)) authority.leaders[leader.first] = reassigned.at(leader.second);
+    std::vector<LobbyAuthority::Seat> seats;
+    for (const auto& entry : players) if (!entry.second.is_bot) seats.push_back({entry.first, entry.second.peer_id, entry.second.local_index});
+    authority.Refresh(seats);
+    return true;
+}
+
+bool Online::ValidateLobbySlots(const Json::Value& saved) const {
+    std::map<PlayerID, LobbySlot> slots;
+    if (!IsActive()) {
+        PlayerID next;
+        if (!DecodeSlotDefinitions(saved, slots, next)) return false;
+        const size_t humans = std::max<size_t>(1, local_lobby_profiles_.size());
+        size_t available = 0;
+        for (const auto& entry : slots) if (!entry.second.is_bot) ++available;
+        return humans <= available || (saved["auto_admit"].asBool() && slots.size() + humans - available <= 4096);
+    }
+    std::map<PlayerID, PlayerState> players;
+    LobbyAuthority::State authority;
+    PlayerID next;
+    return StageLobbySlots(saved, slots, players, authority, next);
+}
+
+bool Online::RestoreLobbySlots(const Json::Value& saved) {
+    if (!LobbyWaiting() || LobbyMigrationBusy() || Engine::Instance()->IsLevelLoaded()) return false;
+    std::map<PlayerID, LobbySlot> slots;
+    std::map<PlayerID, PlayerState> players;
+    LobbyAuthority::State authority;
+    PlayerID next;
+    if (!StageLobbySlots(saved, slots, players, authority, next)) return false;
+    for (const auto& entry : online_session->player_states) ReleaseMenuPause(entry.first);
+    lobby_slots_ = std::move(slots);
+    online_session->player_states.clear();
+    online_session->player_states.insert(players.begin(), players.end());
+    online_session->player_inputs.clear();
+    lobby_authority_ = std::move(authority);
+    lobby_auto_admission_ = saved["auto_admit"].asBool();
+    next_local_player_id_ = next;
+    initialized_appearances.clear();
+    if (!lobby_slots_.count(campaign_main_player_id_)) campaign_main_player_id_ = lobby_authority_.host;
+    campaign_main_avatar_id_ = -1;
+    ApplyLocalLobbyScreens();
+    BroadcastLobby();
+    return true;
+}
+
+bool Online::SetLobbyAutoAdmission(bool automatic, PlayerID actor) {
+    actor = ResolveLobbyActor(actor);
+    if (!LobbyWaiting() || LobbyMigrationBusy() || !IsLobbyHost(actor)) return false;
+    if (IsClient()) {
+        Json::Value request; request["action"] = "slot_admission"; request["actor"] = actor; request["automatic"] = automatic;
+        SubmitLobbyRequest(Encode(request)); return true;
+    }
+    if (!IsHosting()) return false;
+    lobby_auto_admission_ = automatic;
+    BroadcastLobby();
+    return true;
+}
+
+bool Online::SetLobbySlotPlayer(PlayerID id, bool player, PlayerID actor) {
+    actor = ResolveLobbyActor(actor);
+    if (!LobbyWaiting() || LobbyMigrationBusy() || !IsLobbyHost(actor) || !lobby_slots_.count(id)) return false;
+    const auto occupied = online_session->player_states.find(id);
+    if (occupied != online_session->player_states.end() && !occupied->second.is_bot) return false;
+    if (IsClient()) {
+        Json::Value request; request["action"] = "slot_kind"; request["actor"] = actor; request["id"] = id; request["player"] = player;
+        SubmitLobbyRequest(Encode(request)); return true;
+    }
+    auto& slot = lobby_slots_.at(id);
+    if (slot.is_bot == !player) return true;
+    if (player) {
+        online_session->player_states.erase(id);
+        online_session->player_inputs.erase(id);
+        Send<OnlineMessages::RemovePlayerState>(id);
+    } else {
+        PlayerState bot;
+        bot.player_id = id; bot.playername = slot.name; bot.team = slot.team; bot.is_bot = true;
+        bot.local_index = std::numeric_limits<uint32_t>::max(); bot.object_id = -1; bot.screen = 0; bot.controller_id = bot.camera_id = -1;
+        online_session->player_states[id] = bot;
+    }
+    slot.is_bot = !player;
+    BroadcastLobby();
+    return true;
+}
+
+bool Online::SwapLobbySlots(PlayerID first, PlayerID second, PlayerID actor) {
+    actor = ResolveLobbyActor(actor);
+    if (!LobbyWaiting() || LobbyMigrationBusy() || !IsLobbyHost(actor) || first == second ||
+        !lobby_slots_.count(first) || !lobby_slots_.count(second)) return false;
+    if (IsClient()) {
+        Json::Value request; request["action"] = "slot_swap"; request["actor"] = actor; request["first"] = first; request["second"] = second;
+        SubmitLobbyRequest(Encode(request)); return true;
+    }
+    std::map<PlayerID, PlayerState> occupants;
+    for (PlayerID id : {first, second}) {
+        const auto found = online_session->player_states.find(id);
+        if (found != online_session->player_states.end()) occupants[id] = found->second;
+    }
+    if (occupants.empty()) return false;
+    for (PlayerID target : {first, second}) {
+        const PlayerID source = target == first ? second : first;
+        online_session->player_states.erase(target);
+        online_session->player_inputs.erase(target);
+        auto& slot = lobby_slots_.at(target);
+        if (occupants.count(source)) {
+            PlayerState bound = occupants.at(source);
+            bound.player_id = target; bound.team = slot.team; bound.object_id = -1;
+            online_session->player_states[target] = bound;
+            slot.is_bot = bound.is_bot;
+            slot.name = bound.playername;
+        } else {
+            slot.is_bot = false;
+        }
+    }
+    auto moved = [first, second](PlayerID id) { return id == first ? second : id == second ? first : id; };
+    lobby_authority_.host = moved(lobby_authority_.host);
+    for (auto& leader : lobby_authority_.leaders) leader.second = moved(leader.second);
+    ApplyLocalLobbyScreens();
+    BroadcastLobby();
+    return true;
+}
+
 std::string Online::LobbyPayload() const {
     Json::Value message;
     message["action"] = "snapshot";
@@ -481,6 +774,7 @@ std::string Online::LobbyPayload() const {
     challenge_reader.parse(ModeChallengePayload(), message["mode_challenge"], false);
     message["progression"] = FriendlyProgression::Snapshot();
     message["host_controls_teams"] = lobby_host_controls_teams_;
+    message["slot_definitions"] = SaveLobbySlots();
     message["match_settings"] = Json::Value(Json::objectValue);
     for (const char* key : campaign_match_settings) message["match_settings"][key] = config[key].str();
     message["decision_host"] = lobby_authority_.host;
@@ -523,21 +817,10 @@ std::string Online::LobbyPayload() const {
 
 void Online::BroadcastLobby() {
     if (!IsHosting() || online_session == nullptr) return;
+    SyncLobbySlotDefinitions();
     RefreshLobbyAuthorities();
-    if (lobby_waiting_ && !LobbyMigrationBusy()) {
-        std::set<int> teams;
-        bool outside = false;
-        for (const auto& entry : online_session->player_states) {
-            teams.insert(entry.second.team);
-            outside = outside || entry.second.team < 1 || static_cast<size_t>(entry.second.team) > online_session->player_states.size();
-        }
-        if (outside) {
-            std::map<int, int> compact;
-            int next = 1;
-            for (int team : teams) compact[team] = next++;
-            for (auto& entry : online_session->player_states) entry.second.team = compact[entry.second.team];
-        }
-    }
+    // Team IDs also own shared progression wallets and campaign affiliation.
+    // Keep their identity when a removed unit leaves a gap in the roster.
     Send<OnlineMessages::LobbyControl>(LobbyPayload());
 }
 
@@ -555,6 +838,9 @@ bool Online::RestoreLobbyForMigration(const std::string& payload, PeerID origin_
     if (!IsHosting() || !online_session) return false;
     Json::Value message; Json::Reader reader;
     if (!reader.parse(payload, message, false) || !message["players"].isArray() || !message.get("waiting", false).asBool()) return false;
+    std::map<PlayerID, LobbySlot> slot_definitions;
+    PlayerID slot_next = 256;
+    if (message.isMember("slot_definitions") && !DecodeSlotDefinitions(message["slot_definitions"], slot_definitions, slot_next)) return false;
     std::map<PlayerID, PlayerState> saved;
     for (const auto& row : message["players"]) {
         PlayerState player;
@@ -602,6 +888,9 @@ bool Online::RestoreLobbyForMigration(const std::string& payload, PeerID origin_
     online_session->player_inputs.clear();
     mode_teams_.clear();
     next_local_player_id_ = 256;
+    lobby_slots_ = std::move(slot_definitions);
+    lobby_auto_admission_ = message.get("slot_definitions", Json::Value()).get("auto_admit", true).asBool();
+    next_local_player_id_ = std::max(next_local_player_id_, slot_next);
     for (const auto& row : saved) if (row.first >= next_local_player_id_ && row.first != LobbyAuthority::InvalidPlayer) next_local_player_id_ = row.first + 1;
     for (const auto& row : saved) if (row.second.is_bot) online_session->player_states[row.first] = row.second;
     local_lobby_profiles_.clear();
@@ -646,6 +935,7 @@ bool Online::CanRenameLobbyPlayer(PlayerID id, PlayerID actor) const {
     actor = ResolveLobbyActor(actor);
     const auto found = online_session->player_states.find(id);
     const auto owner = online_session->player_states.find(actor);
+    if (found == online_session->player_states.end() && lobby_slots_.count(id)) return LobbyWaiting() && IsLobbyHost(actor);
     if (found == online_session->player_states.end() || owner == online_session->player_states.end() || owner->second.is_bot) return false;
     return found->second.is_bot ? IsLobbyHost(actor) : IsLobbyLeader(actor) && found->second.peer_id == owner->second.peer_id;
 }
@@ -655,14 +945,17 @@ bool Online::RenameLobbyPlayer(PlayerID id, const std::string& name, PlayerID ac
     actor = ResolveLobbyActor(actor);
     auto found = online_session->player_states.find(id);
     Json::Value request; request["action"] = "name"; request["actor"] = actor; request["id"] = id; request["name"] = name;
-    const auto index = found->second.local_index;
-    if (!found->second.is_bot && found->second.peer_id == LocalPeerID() && index < local_lobby_profiles_.size()) local_lobby_profiles_[index].name = name;
+    if (found != online_session->player_states.end()) {
+        const auto index = found->second.local_index;
+        if (!found->second.is_bot && found->second.peer_id == LocalPeerID() && index < local_lobby_profiles_.size()) local_lobby_profiles_[index].name = name;
+    }
     SubmitLobbyRequest(Encode(request)); return true;
 }
 
 bool Online::CanSetLobbyTeam(PlayerID id, PlayerID actor) const {
     if (!online_session) return false;
     const auto found = online_session->player_states.find(id);
+    if (found == online_session->player_states.end() && lobby_slots_.count(id)) return LobbyWaiting() && IsLobbyHost(ResolveLobbyActor(actor));
     if (found != online_session->player_states.end() && found->second.is_bot)
         return !LobbyMigrationBusy() && IsActive() && IsLobbyHost(ResolveLobbyActor(actor));
     return !LobbyMigrationBusy() && IsActive() && lobby_authority_.CanSetTeam(LobbySeats(), ResolveLobbyActor(actor), id,
@@ -671,7 +964,7 @@ bool Online::CanSetLobbyTeam(PlayerID id, PlayerID actor) const {
 
 bool Online::SetLobbyTeam(PlayerID id, int team, PlayerID actor) {
     actor = ResolveLobbyActor(actor);
-    if (!online_session || !CanSetLobbyTeam(id, actor) || team < 1 || static_cast<size_t>(team) > online_session->player_states.size()) return false;
+    if (!online_session || !CanSetLobbyTeam(id, actor) || team < 1 || team > TeamChoiceLimit(lobby_slots_)) return false;
     Json::Value request; request["action"] = "team"; request["actor"] = actor; request["id"] = id; request["team"] = team;
     SubmitLobbyRequest(Encode(request)); return true;
 }
@@ -703,6 +996,8 @@ void Online::ApplyLocalLobbyScreens() {
 }
 
 bool Online::CanRemoveLobbyPlayer(PlayerID id, PlayerID actor) const {
+    if (online_session && !online_session->player_states.count(id) && lobby_slots_.count(id))
+        return LobbyWaiting() && !LobbyMigrationBusy() && IsLobbyHost(ResolveLobbyActor(actor));
     if (online_session) {
         const auto found = online_session->player_states.find(id);
         if (found != online_session->player_states.end() && found->second.is_bot)
@@ -729,6 +1024,12 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
         SubmitLobbyRequest(Encode(request));
         return true;
     }
+    if (!online_session->player_states.count(id)) {
+        lobby_slots_.erase(id);
+        FriendlyProgression::ForgetPlayer(id);
+        BroadcastLobby();
+        return true;
+    }
     const PlayerState removed = online_session->player_states.at(id);
     if (removed.is_bot) {
         const CommonObjectID common = GetOriginalID(removed.object_id);
@@ -740,6 +1041,7 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
         Object* object = graph && removed.object_id != static_cast<ObjectID>(-1) ? graph->GetObjectFromID(removed.object_id) : nullptr;
         if (object) graph->map_editor->RemoveObject(object, graph);
         FriendlyProgression::ForgetPlayer(id);
+        lobby_slots_.erase(id);
         online_session->player_states.erase(id);
         online_session->player_inputs.erase(id);
         Send<OnlineMessages::RemovePlayerState>(id);
@@ -766,7 +1068,7 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
         }
         ActiveCameras::Instance()->FreeVirtualCameraInstance(removed.camera_id);
     }
-    FriendlyProgression::ForgetPlayer(id);
+    // The human leaves their persistent unit available in its original slot.
     online_session->player_states.erase(id);
     online_session->player_inputs.erase(id);
     for (auto& entry : online_session->player_states) if (!entry.second.is_bot && entry.second.peer_id == removed.peer_id) {
@@ -1072,6 +1374,61 @@ bool Online::RequestPause(unsigned local_index, bool paused, bool from_menu) {
     SubmitLobbyRequest(Encode(request)); return true;
 }
 
+Json::Value Online::SaveGameRules() const {
+    Json::Value rules;
+    rules["match"] = Json::Value(Json::objectValue);
+    for (const char* key : migration_match_settings)
+        if (config.HasKey(key)) rules["match"][key] = config[key].str();
+    if (!rules["match"].isMember("oo_arena_random")) rules["match"]["oo_arena_random"] = "0";
+    if (!rules["match"].isMember("oo_public_game")) rules["match"]["oo_public_game"] = "1";
+    rules["preset"] = config.GetDifficultyPreset();
+    rules["join_character"] = default_hot_join_characte_path;
+    rules["allow_pause"] = lobby_allow_all_pause_;
+    rules["force_teams"] = lobby_force_teams_;
+    rules["host_teams"] = lobby_host_controls_teams_;
+    rules["build"] = lobby_build_;
+    Json::Reader().parse(ModeChallengePayload(), rules["challenge"], false);
+    return rules;
+}
+
+bool Online::ValidateGameRules(const Json::Value& rules) {
+    if (!rules.isObject() || !rules["match"].isObject() || !rules["preset"].isString() ||
+        !rules["allow_pause"].isBool() || !rules["force_teams"].isBool() || !rules["host_teams"].isBool() ||
+        !rules["build"].isBool() || !ReceiveModeChallenge(Encode(rules["challenge"]), true)) return false;
+    if (rules.isMember("join_character") && (!rules["join_character"].isString() ||
+        !OnlineUtility::IsSafeCharacterPath(rules["join_character"].asString()))) return false;
+    for (const auto& key : rules["match"].getMemberNames()) {
+        const auto& entry = rules["match"][key];
+        if (!entry.isString() || entry.asString().size() > 64) return false;
+        const auto value = entry.asString();
+        if (key == "oo_arena_bots") {
+            if (value.empty() || value.size() > 4 || value.find_first_not_of("0123456789") != std::string::npos) return false;
+        } else if (key == "oo_public_game") {
+            if (value != "0" && value != "1" && value != "true" && value != "false") return false;
+        } else {
+            std::string normalized;
+            if (!NormalizeCampaignMatchSetting(key, value, &normalized)) return false;
+        }
+    }
+    return true;
+}
+
+void Online::RestoreGameRules(const Json::Value& rules) {
+    if (rules["join_character"].isString()) SetDefaultHotJoinCharacter(rules["join_character"].asString());
+    std::string preset;
+    if (NormalizeCampaignMatchSetting("difficulty_preset", rules["preset"].asString(), &preset))
+        config.SetDifficultyPreset(preset);
+    for (const char* key : migration_match_settings) {
+        const auto& value = rules["match"][key];
+        if (value.isString()) config.GetRef(key) = value.asString();
+    }
+    config.ReloadDynamicSettings();
+    lobby_allow_all_pause_ = rules["allow_pause"].asBool();
+    lobby_force_teams_ = rules["force_teams"].asBool();
+    lobby_host_controls_teams_ = rules["host_teams"].asBool();
+    ReceiveModeChallenge(Encode(rules["challenge"]));
+}
+
 bool Online::StartLobbyGame(const std::string& level, const std::string& campaign, bool build, PlayerID actor) {
     actor = ResolveLobbyActor(actor);
     if (LobbyMigrationBusy() || !IsLobbyHost(actor) || !lobby_waiting_) return false;
@@ -1090,9 +1447,9 @@ bool Online::StartLobbyGame(const std::string& level, const std::string& campaig
     }
     lobby_waiting_ = false;
     mode_teams_.clear();
-    ResetModeChallenge();
-    lobby_start_pending_ = true;
     const bool building = level.empty() ? lobby_build_ : build;
+    if (!SessionSaves::ResumeLobby(lobby_mode_, camp, selected, building)) ResetModeChallenge();
+    lobby_start_pending_ = true;
     if (building) BuildOnLoad();
     SetBuildSession(building);
     BroadcastLobby();
@@ -1119,6 +1476,11 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     const std::string action = message.get("action", "").asString();
     if (LobbyMigrationBusy() && action != "snapshot" && action != "device") return;
     if (IsClient()) {
+        if (from == 0 && action == "join_denied") {
+            const unsigned index = message.get("local_index", UINT32_MAX).asUInt();
+            if (index < local_lobby_profiles_.size() && index >= GetLocalPlayerStates().size()) RemoveLocalLobbyProfile(index);
+            return;
+        }
         if (from == 0 && action == "progress_snapshot") {
             FriendlyProgression::Restore(message["progression"]);
             return;
@@ -1130,8 +1492,15 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         for (const auto& row : message["players"]) if (!row.get("bot", false).asBool() && row.get("peer", 0).asUInt() == LocalPeerID())
             incoming_local.insert(row.get("id", 0).asUInt());
         std::vector<unsigned> removed_local;
-        for (const auto& previous : GetLocalPlayerStates()) if (!incoming_local.count(previous.player_id))
-            removed_local.push_back(previous.local_index);
+        const auto previous_local = GetLocalPlayerStates();
+        std::set<PlayerID> previous_ids;
+        for (const auto& previous : previous_local) previous_ids.insert(previous.player_id);
+        for (const auto& previous : previous_local) if (!incoming_local.count(previous.player_id)) {
+            bool rebound = false;
+            for (const auto& row : message["players"]) if (!row.get("bot", false).asBool() && row.get("peer", 0).asUInt() == LocalPeerID() &&
+                row.get("local_index", UINT32_MAX).asUInt() == previous.local_index && !previous_ids.count(row.get("id", 0).asUInt())) rebound = true;
+            if (!rebound) removed_local.push_back(previous.local_index);
+        }
         std::sort(removed_local.rbegin(), removed_local.rend());
         for (unsigned index : removed_local) RemoveLocalLobbyProfile(index);
         lobby_waiting_ = message.get("waiting", false).asBool();
@@ -1140,6 +1509,13 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         lobby_allow_all_pause_ = message.get("allow_all_pause", false).asBool();
         lobby_force_teams_ = message.get("force_teams", false).asBool();
         lobby_host_controls_teams_ = message.get("host_controls_teams", true).asBool();
+        std::map<PlayerID, LobbySlot> definitions;
+        PlayerID next_slot;
+        if (DecodeSlotDefinitions(message["slot_definitions"], definitions, next_slot)) {
+            lobby_slots_ = std::move(definitions);
+            lobby_auto_admission_ = message["slot_definitions"]["auto_admit"].asBool();
+            next_local_player_id_ = next_slot;
+        }
         ReceiveModeChallenge(Encode(message["mode_challenge"]));
         FriendlyProgression::Restore(message["progression"]);
         ApplyCampaignMatchSnapshot(message["match_settings"]);
@@ -1230,6 +1606,18 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     // A reliable control message may act only for a logical player owned by
     // its sending machine. No role grant or fabricated ID bypasses this gate.
     const bool valid_actor = acting_player != online_session->player_states.end() && !acting_player->second.is_bot && acting_player->second.peer_id == from;
+    if (action == "slot_admission") {
+        if (valid_actor && message["automatic"].isBool()) SetLobbyAutoAdmission(message["automatic"].asBool(), actor);
+        return;
+    }
+    if (action == "slot_kind") {
+        if (valid_actor && message["id"].isUInt() && message["player"].isBool()) SetLobbySlotPlayer(message["id"].asUInt(), message["player"].asBool(), actor);
+        return;
+    }
+    if (action == "slot_swap") {
+        if (valid_actor && message["first"].isUInt() && message["second"].isUInt()) SwapLobbySlots(message["first"].asUInt(), message["second"].asUInt(), actor);
+        return;
+    }
     if (action == "progress_hit") { FriendlyProgression::ReceiveEvent(from, message); return; }
     if (action == "progress_action") {
         if (valid_actor) FriendlyProgression::ReceiveAction(actor, message);
@@ -1267,9 +1655,12 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     if (action == "team") {
         const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         const int team = message.get("team", 0).asInt();
-        if (!valid_actor || !CanSetLobbyTeam(id, actor) || team < 1 || static_cast<size_t>(team) > online_session->player_states.size()) return;
-        online_session->player_states.at(id).team = team;
-        ApplyManualTeam(id);
+        if (!valid_actor || !CanSetLobbyTeam(id, actor) || team < 1 || team > TeamChoiceLimit(lobby_slots_)) return;
+        lobby_slots_.at(id).team = team;
+        if (online_session->player_states.count(id)) {
+            online_session->player_states.at(id).team = team;
+            ApplyManualTeam(id);
+        }
         BroadcastLobby(); return;
     }
     if (action == "screen") {
@@ -1299,8 +1690,12 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         auto found = online_session->player_states.find(id);
         const std::string name = message.get("name", "").asString();
-        if (!valid_actor || !CanRenameLobbyPlayer(id, actor) || found == online_session->player_states.end() ||
+        if (!valid_actor || !CanRenameLobbyPlayer(id, actor) ||
             !OnlineUtility::IsValidPlayerName(name)) return;
+        if (found == online_session->player_states.end()) {
+            lobby_slots_.at(id).name = name;
+            BroadcastLobby(); return;
+        }
         found->second.playername = name;
         if (found->second.is_bot && found->second.object_id != static_cast<ObjectID>(-1)) {
             SceneGraph* graph = Engine::Instance()->GetSceneGraph();
@@ -1325,7 +1720,12 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         std::vector<std::string> names;
         for (const auto& seat : owned) names.push_back(seat.playername);
         names.push_back(NameOrDefault(message.get("name", "").asString(), index));
-        EstablishPeerPlayers(from, names);
+        if (!EstablishPeerPlayers(from, names)) {
+            Json::Value denied; denied["action"] = "join_denied"; denied["local_index"] = index;
+            const Peer* peer = GetPeerFromID(from);
+            if (peer) SendTo<OnlineMessages::LobbyControl>(peer->conn_id, Encode(denied));
+            return;
+        }
         if (!loading && (from == LocalPeerID() || online_session->client_connection_manager.IsClientLoaded(from))) AssignPeerAvatars(from);
         BroadcastLobby(); return;
     }

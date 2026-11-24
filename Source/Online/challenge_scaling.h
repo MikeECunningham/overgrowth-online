@@ -7,7 +7,7 @@
 #include <string>
 
 namespace ChallengeScaling {
-enum Rate { Off = 0, Gentle = 1, Standard = 2, Brisk = 3 };
+enum Rate { Off = 0, Gentle = 1, Standard = 2, Brisk = 3, Nightmare = 4 };
 enum PerformanceMode { PerformanceOff = 0, OnWin = 1, OnLoss = 2, Forced50 = 3 };
 constexpr double kPressureCap = 1.5;
 constexpr double kRetryReliefCap = 0.25;

@@ -91,6 +91,17 @@ struct PlayerState {
     int32_t camera_id = -1;  // Virtual camera id, used for character logic, some data may be syned to/from this camera from the client.
 };
 
+// A slot owns a persistent unit; transport/input ownership is kept separately
+// in PlayerState only while a human or bot occupies it.
+struct LobbySlot {
+    PlayerID id = 0;
+    uint32_t order = 0;
+    std::string uid;
+    std::string name;
+    int team = 1;
+    bool is_bot = true;
+};
+
 struct MorphTargetStateStorage {
     float disp_weight;
     float mod_weight;

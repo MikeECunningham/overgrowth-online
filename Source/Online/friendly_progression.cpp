@@ -41,12 +41,14 @@ struct Run {
     bool open = false, final = false, loop = false;
     double deadline_ms = 0;
     std::set<ID> ready;
+    std::map<ID, Json::Value> xp_scales;
 };
 Run run;
 std::map<ID, unsigned> last_action;
 unsigned next_action = 0;
 bool dirty = false;
 double next_send = 0, next_sample = 0;
+std::map<ID, std::pair<double, Json::Value>> stats_cache;
 
 struct Spawn {
     MovementObject* actor = nullptr;
@@ -140,6 +142,82 @@ double Bounty(MovementObject* victim, double gear) {
     return Reward(species, large, sample.base >= 0 ? sample.base : config["game_difficulty"].toNumber<double>(), gear,
         factor("campaign_vitality_mult"), factor("campaign_damage_mult"), sample.pressure);
 }
+void SampleXPScales(SceneGraph* graph) {
+    const auto sample = Net()->EnemyDifficulty();
+    for (const auto& row : Net()->online_session->player_states) {
+        const auto& player = row.second;
+        if (player.is_bot || !player.connected) continue;
+        MovementObject* hero = Actor(player.object_id);
+        if (!hero || !hero->as_context) continue;
+        double world = 0, encounter = 0;
+        auto enemy = [&](MovementObject* actor) {
+            return actor && actor != hero && actor->as_context && actor->ASHasVar("species") && actor->ASHasVar("knocked_out") &&
+                   !hero->ASOnSameTeam(actor);
+        };
+        for (Object* object : graph->movement_objects_) {
+            auto* actor = static_cast<MovementObject*>(object);
+            if (!enemy(actor) || actor->ASGetIntVar("knocked_out") != 0) continue;
+            auto& spawn = Observe(actor);
+            if (!spawn.defeated) world += Bounty(actor, spawn.equipment);
+        }
+        const auto scope = Net()->ProgressionEncounterScope(hero->GetID());
+        std::set<int> counted;
+        for (const auto& id : scope["actors"]) {
+            MovementObject* actor = Actor(id.asInt());
+            if (enemy(actor) && counted.insert(actor->GetID()).second)
+                encounter += Bounty(actor, Observe(actor).equipment);
+        }
+        for (const auto& pending : scope["pending"]) {
+            MovementObject* source = Actor(pending["source"].asInt());
+            if (!enemy(source)) continue;
+            const int species = source->ASGetIntVar("species");
+            const bool large = species == 2 && source->character_path.find("dog_big") != std::string::npos;
+            encounter += Reward(species, large, sample.base >= 0 ? sample.base :
+                config["game_difficulty"].toNumber<double>(), pending["equipment"].asDouble(),
+                pending["vitality"].asDouble(), pending["damage"].asDouble(), sample.pressure);
+        }
+        Json::Value scale;
+        scale["world_remaining"] = world;
+        scale["encounter_expected"] = encounter;
+        scale["encounter_label"] = scope.get("label", "Current encounter").asString();
+        if (run.xp_scales[player.player_id] != scale) {
+            run.xp_scales[player.player_id] = scale;
+            dirty = true;
+        }
+    }
+}
+Json::Value PlayerStats(const PlayerState& player) {
+    auto& cache = stats_cache[player.player_id];
+    const double now = OnlineClockMs();
+    if (now < cache.first && !cache.second.isNull()) return cache.second;
+    cache.first = now + 200;
+    Json::Value stats;
+    const auto build = GetBuild(player.player_id);
+    stats["player"] = player.player_id;
+    stats["name"] = player.playername;
+    stats["health_rank"] = build.health; stats["damage_rank"] = build.damage; stats["speed_rank"] = build.speed;
+    stats["stealth_passive_rank"] = build.stealth_passive; stats["stealth_active_rank"] = build.stealth_active;
+    stats["passive_range"] = 1.0 / (1.0 + .06 * build.stealth_passive);
+    stats["active_range"] = 1.0 / (1.0 + .06 * build.stealth_active);
+    MovementObject* actor = Actor(player.object_id);
+    auto value = [&](const char* key, double fallback) {
+        return actor && actor->ASHasVar(key) ? double(actor->ASGetFloatVar(key)) : fallback;
+    };
+    stats["durability"] = 1.0 / std::max(.00001, value("p_damage_multiplier", 1));
+    stats["damage"] = value("p_attack_damage_mult", 1);
+    stats["movement"] = value("p_speed_mult", 1) * (1.0 + .03 * build.speed);
+    auto armor = Net()->WornArmorCoverage(player.object_id);
+    if (run.open) for (unsigned region = 0; region < armor.size(); ++region)
+        if (build.armor[region]) armor[region] = build.armor[region];
+    stats["armor_rating"] = run.open && std::any_of(armor.begin(), armor.end(), [](int tier) { return tier > 0; }) ?
+        ArmorProtection::Rating(armor) : Net()->WornArmorRating(player.object_id);
+    stats["armor_reduction"] = 1.0 - 1.0 / (1.0 + stats["armor_rating"].asDouble());
+    stats["armor_mode"] = config["armor_localized"].toNumber<int>();
+    stats["armor"] = Json::Value(Json::arrayValue);
+    for (int tier : armor) stats["armor"].append(tier);
+    cache.second = stats;
+    return stats;
+}
 void RewardKill(const PlayerState& killer, MovementObject* fighter, double reward) {
     const int team = ShopTeam(killer);
     if (Shared()) run.teams[team].wallet.Earn(reward, Arena());
@@ -184,9 +262,14 @@ struct Offer {
     ID recipient = invalid;
     int armor_material = 0;
 };
-enum WeaponBit { Knife = 1, Sword = 2, Spear = 4 };
+enum WeaponBit { Knife = 1, Sword = 2, Spear = 4, Staff = 8, Broadsword = 16 };
 unsigned WeaponFlag(const std::string& key) {
-    return key == "dagger" ? Knife : key == "sword" ? Sword : key == "spear" ? Spear : 0;
+    for (const auto& weapon : Weapons()) if (key == weapon.key) return weapon.ownership;
+    return 0;
+}
+int WeaponSelection(const std::string& key) {
+    for (const auto& weapon : Weapons()) if (key == weapon.key) return weapon.selection;
+    return 0;
 }
 int* Stat(Build& b, const std::string& key) {
     if (key == "health") return &b.health;
@@ -244,12 +327,11 @@ std::vector<Offer> Catalog(const PlayerState& buyer, const PlayerState& target) 
             break;
         }
     }
-    for (const auto& key : {"dagger", "sword", "spear"}) {
+    for (const auto& weapon : Weapons()) {
         for (ID id : choices) {
-            if (run.players[id].weapons & WeaponFlag(key)) continue;
-            const std::string k(key);
-            offer(k, k == "dagger" ? "Offhand dagger" : k == "sword" ? "Sword" : "Spear",
-                  "Unlock for " + Seat(id)->playername, k == "dagger" ? 140 : k == "sword" ? 880 : 1040, k == "dagger" ? 2 : 3, id);
+            if (run.players[id].weapons & weapon.ownership) continue;
+            offer(weapon.key, weapon.label, "Unlock for " + Seat(id)->playername,
+                  weapon.price, weapon.rarity, id);
             break;
         }
     }
@@ -293,7 +375,7 @@ bool Buy(const PlayerState& buyer, const PlayerState& target, const std::string&
     } else if (unsigned flag = WeaponFlag(key)) {
         account.weapons |= flag;
         if (flag == Knife) account.build.dagger = true;
-        else account.build.big_weapon = flag == Sword ? 1 : 2;
+        else account.build.big_weapon = WeaponSelection(key);
     } else {
         const unsigned region = static_cast<unsigned>(key.back() - '0'); // key came from the catalog
         account.build.armor[region] = it->armor_material;
@@ -352,10 +434,13 @@ void NewSession() {
     next_action = 0;
     dirty = false;
     next_sample = next_send = 0;
+    stats_cache.clear();
 }
 void ForgetPlayer(ID id) {
     if (!Net()->IsHosting() || Net()->LobbyMigrationBusy()) return;
     run.players.erase(id);
+    run.xp_scales.erase(id);
+    stats_cache.erase(id);
     run.ready.erase(id);
     last_action.erase(id);
     for (auto& team : run.teams)
@@ -374,6 +459,8 @@ void ResetAttempt() {
 }
 void NewWorld() {
     spawns.clear();
+    stats_cache.clear();
+    run.xp_scales.clear();
     next_sample = 0;
     if (!Net()->IsHosting()) return;
     run.open = run.final = run.loop = false;
@@ -391,6 +478,7 @@ bool BeginShop(bool final) {
     if (!Enabled() || !Net()->IsHosting() || Net()->LobbyWaiting()) return false;
     if (run.open) return true;
     Checkpoint();
+    if (SceneGraph* graph = Engine::Instance()->GetSceneGraph()) SampleXPScales(graph);
     TrainBots();
     run.open = true;
     run.final = final;
@@ -443,6 +531,7 @@ void Update() {
             for (auto it = spawns.begin(); it != spawns.end();) {
                 if (!present.count(it->first)) it = spawns.erase(it); else ++it;
             }
+            SampleXPScales(graph);
         }
     }
     if (dirty && now >= next_send) Publish();
@@ -485,11 +574,13 @@ Json::Value View(ID actor, ID target) {
     v["commit_amount"] = w.commit_amount;
     v["commit_serial"] = w.commit_serial;
     v["shop_open"] = run.open;
+    v["xp_scale"] = run.xp_scales[actor];
+    const auto* subject = run.open ? Seat(target) : buyer;
+    if (!CanTarget(*buyer,subject)) subject = buyer;
+    v["stats"] = PlayerStats(*subject);
     if (!run.open) return v;
     const int team = ShopTeam(*buyer);
     const ID leader = Leader(team);
-    const auto* subject = Seat(target);
-    if (!CanTarget(*buyer,subject)) subject = buyer;
     v["shared"] = Shared();
     v["team_leader"] = leader;
     v["can_buy"] = !Shared() || actor == leader;
@@ -512,6 +603,8 @@ Json::Value View(ID actor, ID target) {
     v["owned_dagger"] = bool(account.weapons & Knife);
     v["owned_sword"] = bool(account.weapons & Sword);
     v["owned_spear"] = bool(account.weapons & Spear);
+    v["owned_staff"] = bool(account.weapons & Staff);
+    v["owned_broadsword"] = bool(account.weapons & Broadsword);
     v["big_weapon"] = account.build.big_weapon;
     v["dagger"] = account.build.dagger;
     v["can_equip"] = subject == buyer || (subject->is_bot && v["can_buy"].asBool());
@@ -550,7 +643,7 @@ bool ReceiveAction(ID actor, const Json::Value& m) {
         auto& acc = run.players[target];
         if (key != "none" && !(acc.weapons & WeaponFlag(key))) return false;
         if (key == "dagger") acc.build.dagger = !acc.build.dagger;
-        else acc.build.big_weapon = key == "sword" ? 1 : key == "spear" ? 2 : 0;
+        else acc.build.big_weapon = WeaponSelection(key);
     } else return false;
     Publish();
     return true;
@@ -574,8 +667,8 @@ Json::Value WriteWallet(const Wallet& w) {
     return j;
 }
 bool ReadWallet(const Json::Value& j, Wallet& w) {
-    if (!j["held"].isNumeric() || !j["pooled"].isNumeric() || !j["amount"].isNumeric() || !j["serial"].isUInt()) return false;
-    auto balance = [](double v) { return std::isfinite(v) && v >= 0 && v <= 100000000; };
+    if (!j.isObject() || !j["held"].isNumeric() || !j["pooled"].isNumeric() || !j["amount"].isNumeric() || !j["serial"].isUInt()) return false;
+    auto balance = [](double v) { return std::isfinite(v) && v >= 0 && v <= Wallet::kMaxExactXP; };
     w.held = j["held"].asDouble(); w.pooled = j["pooled"].asDouble(); w.commit_amount = j["amount"].asDouble();
     w.commit_serial = j["serial"].asUInt();
     return balance(w.held) && balance(w.pooled) && balance(w.commit_amount);
@@ -592,6 +685,12 @@ Json::Value Snapshot() {
     j["ms_left"] = run.deadline_ms > 0 ? std::max(0., run.deadline_ms-OnlineClockMs()) : -1.;
     j["ready"] = Json::Value(Json::arrayValue);
     for (auto id : run.ready) j["ready"].append(id);
+    j["xp_scales"] = Json::Value(Json::arrayValue);
+    for (const auto& entry : run.xp_scales) {
+        Json::Value row = entry.second;
+        row["player"] = entry.first;
+        j["xp_scales"].append(row);
+    }
     j["players"] = Json::Value(Json::arrayValue);
     for (const auto& p : run.players) {
         const auto& a = p.second; const auto& b = a.build;
@@ -616,31 +715,46 @@ Json::Value Snapshot() {
     }
     return j;
 }
-void Restore(const Json::Value& j) {
+bool Restore(const Json::Value& j, bool validate_only) {
     if (!j.isObject() || !j["v"].isInt() || (j["v"].asInt() != 1 && j["v"].asInt() != 2) ||
         !j["players"].isArray() || j["players"].size() > 8192 || !j["teams"].isArray() || j["teams"].size() > 8192 ||
         !j["ready"].isArray() || j["ready"].size() > 8192 || !j["shop"].isUInt() || !j["attempt"].isUInt() ||
-        !j["open"].isBool() || !j["final"].isBool() || !j["loop"].isBool() || !j["ms_left"].isNumeric()) return;
+        !j["open"].isBool() || !j["final"].isBool() || !j["loop"].isBool() || !j["ms_left"].isNumeric()) return false;
     Run next;
     next.shop_generation = j["shop"].asUInt(); next.attempt = j["attempt"].asUInt();
     next.open = j["open"].asBool(); next.final = j["final"].asBool(); next.loop = j["loop"].asBool();
     double left = j["ms_left"].asDouble();
-    if (!std::isfinite(left) || left < -1 || left > 120001) return;
+    if (!std::isfinite(left) || left < -1 || left > 120001) return false;
     if (left >= 0) next.deadline_ms = OnlineClockMs() + left;
-    for (const auto& seat : j["ready"]) { if (!seat.isUInt()) return; next.ready.insert(seat.asUInt()); }
+    for (const auto& seat : j["ready"]) { if (!seat.isUInt()) return false; next.ready.insert(seat.asUInt()); }
+    if (j.isMember("xp_scales")) {
+        const auto& scales = j["xp_scales"];
+        if (!scales.isArray() || scales.size() > 8192) return false;
+        for (const auto& row : scales) {
+            if (!row.isObject() || !row["player"].isUInt() || row["player"].asUInt() == invalid ||
+                !row["world_remaining"].isNumeric() || !row["encounter_expected"].isNumeric()) return false;
+            const double world = row["world_remaining"].asDouble(), encounter = row["encounter_expected"].asDouble();
+            if (!std::isfinite(world) || !std::isfinite(encounter) || world < 0 || encounter < 0 ||
+                !row["encounter_label"].isString() ||
+                row["encounter_label"].asString().size() > 128 || next.xp_scales.count(row["player"].asUInt())) return false;
+            auto& scale = next.xp_scales[row["player"].asUInt()];
+            scale = row;
+            scale.removeMember("player");
+        }
+    }
     for (const auto& r : j["players"]) {
-        if (!r.isObject() || !r["id"].isUInt() || !r["weapons"].isUInt() || r["weapons"].asUInt() > 7 ||
+        if (!r.isObject() || !r["id"].isUInt() || !r["weapons"].isUInt() || r["weapons"].asUInt() > kWeaponOwnershipMask ||
             !r["dagger"].isBool() || !r["trained"].isBool() || !r["recruited"].isBool() || !r["owner"].isUInt() ||
-            !r["armor"].isArray() || r["armor"].size()!=9) return;
+            !r["armor"].isArray() || r["armor"].size()!=9) return false;
         auto& a = next.players[r["id"].asUInt()]; auto& b = a.build;
         if (!ReadWallet(r["w"],a.wallet) || !ReadInt(r["health"],0,kMaxRank,b.health) ||
             !ReadInt(r["damage"],0,kMaxRank,b.damage) || !ReadInt(r["speed"],0,kMaxRank,b.speed) ||
             !ReadInt(r.get("stealth_passive",0),0,kMaxRank,b.stealth_passive) ||
             !ReadInt(r.get("stealth_active",0),0,kMaxRank,b.stealth_active) ||
-            !ReadInt(r["big"],0,2,b.big_weapon) || !ReadInt(r["ai"],0,3,b.ai)) return;
+            !ReadInt(r["big"],0,kMaxMainWeapon,b.big_weapon) || !ReadInt(r["ai"],0,3,b.ai)) return false;
         for (unsigned i = 0; i < b.armor.size(); ++i) {
             int value;
-            if (!ReadInt(r["armor"][i], 0, j["v"].asInt() == 1 ? ArmorProtection::Dog : ArmorProtection::Grey, value)) return;
+            if (!ReadInt(r["armor"][i], 0, j["v"].asInt() == 1 ? ArmorProtection::Dog : ArmorProtection::Grey, value)) return false;
             b.armor[i] = ArmorProtection::RestoredShopMaterial(i, value, j["v"].asInt() == 1);
         }
         a.weapons = r["weapons"].asUInt(); b.dagger = r["dagger"].asBool(); b.trained = r["trained"].asBool();
@@ -648,15 +762,16 @@ void Restore(const Json::Value& j) {
     }
     for (const auto& r : j["teams"]) {
         if (!r.isObject() || !r["team"].isInt() || r["team"].asInt() < 1 ||
-            !r["leader"].isUInt() || !r["recipient"].isUInt()) return;
+            !r["leader"].isUInt() || !r["recipient"].isUInt()) return false;
         auto& t = next.teams[r["team"].asInt()];
         if (!ReadWallet(r["w"],t.wallet) || !ReadInt(r["recruits"],0,100000,t.recruits) ||
             !ReadInt(r["health"],0,kMaxRank,t.health) || !ReadInt(r["damage"],0,kMaxRank,t.damage) ||
-            !ReadInt(r["speed"],0,kMaxRank,t.speed)) return;
+            !ReadInt(r["speed"],0,kMaxRank,t.speed)) return false;
         if (!ReadInt(r.get("stealth_passive",0),0,kMaxRank,t.stealth_passive) ||
-            !ReadInt(r.get("stealth_active",0),0,kMaxRank,t.stealth_active)) return;
+            !ReadInt(r.get("stealth_active",0),0,kMaxRank,t.stealth_active)) return false;
         t.leader = r["leader"].asUInt(); t.last_recipient = r["recipient"].asUInt();
     }
-    run = std::move(next);
+    if (!validate_only) run = std::move(next);
+    return true;
 }
 }

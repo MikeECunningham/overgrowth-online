@@ -183,4 +183,19 @@ template<> template<> void challenge_test::test<10>() {
     state.Wipe("rate-off", "fight", settings); PressureNear(state, 0.08);
     ensure_equals(state.Data().wipes.size(), size_t(2));
 }
+template<> template<> void challenge_test::test<11>() {
+    ChallengeScaling::Settings settings;
+    settings.time_rate = settings.round_rate = settings.performance_rate = ChallengeScaling::Nightmare;
+    settings.performance_mode = ChallengeScaling::Forced50;
+    ChallengeScaling::State state;
+    state.Advance(300,settings); PressureNear(state,.10);
+    state.Completion("level",settings); PressureNear(state,.26);
+    state.Wipe("wipe","fight",settings);
+    Near(ChallengeScaling::EffectivePressure(state.Data(),settings,"fight"),.21);
+    state.Win("fight",settings); PressureNear(state,.42);
+    ChallengeScaling::State migrated;
+    ensure("Nightmare awards survive migration validation",migrated.Restore(state.Capture()));
+    auto invalid = state.Capture(); invalid.encounters["fight"].win_award = .1601;
+    ensure("awards above the strongest supported rate are rejected",!migrated.Restore(invalid));
+}
 }

@@ -79,6 +79,10 @@ template<> template<> void equipment_test::test<5>() {
     ensure_equals(CampaignDifficulty::AIAmount(1, 0.6), 0.01f);
     ensure_equals(CampaignDifficulty::AIAmount(1, 1.1), 0.02f);
     ensure_equals(CampaignDifficulty::AIAmount(1, 1.5), 0.03f);
+    ensure_equals(CampaignDifficulty::AIAmount(1,1.5,0),0.f);
+    ensure_equals(CampaignDifficulty::AIAmount(1,1.5,1),0.015f);
+    ensure_equals(CampaignDifficulty::AIAmount(1,1.5,4),0.06f);
+    ensure("AI strength rises between Standard and Nightmare",CampaignDifficulty::AIAmount(1,1.5,3) > CampaignDifficulty::AIAmount(1,1.5,2));
     ensure_equals(CampaignDifficulty::AIAmount(4, 0), 0.01f);
 }
 template<> template<> void equipment_test::test<6>() {

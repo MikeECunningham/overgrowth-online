@@ -331,7 +331,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     float width = ImGui_GetContentRegionAvailWidth();
     ImGui_SetColumnWidth(0, max(130.0f, size.x * 0.45f));
     ImGui_SetColumnWidth(1, max(70.0f, size.x * 0.22f));
-    ImGui_TextColored(kLobbyDim, "Player");
+    ImGui_TextColored(kLobbyDim, "Slot / Player");
     ImGui_NextColumn();
     ImGui_TextColored(kLobbyDim, "Team");
     ImGui_NextColumn();
@@ -339,7 +339,9 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     ImGui_NextColumn();
     ImGui_Separator();
     array<string> teams;
-    for(uint i = 0; i < lobby_players.length(); ++i) {
+    int team_choices = int(lobby_players.length());
+    for(uint i = 0; i < lobby_players.length(); ++i) team_choices = max(team_choices, lobby_players[i].team);
+    for(int i = 0; i < team_choices; ++i) {
         teams.insertLast("" + (i + 1));
     }
     array<string> screens;
@@ -349,23 +351,46 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     for(uint i = 0; i < lobby_players.length(); ++i) {
         LobbyPlayer player = lobby_players[i];
         ImGui_PushID(int(player.id));
-        ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), LobbyShortName(player.name));
+        ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), player.slot_index + " / " + LobbyShortName(player.name));
         LobbyHint(player.bot ? "AI player with a name and team. No controller or screen required." :
             player.local ? "Local player. This computer's leader manages their name and screen." :
                            "Remote player. Their local leader manages their name and screens.");
         int info_lines = 2;
-        string association = player.bot ? "Bot" : (player.local ? "Couch P" : "Remote P") + (player.local_index + 1);
+        string association = player.placeholder ? "Available player slot" : player.bot ? "Bot" : (player.local ? "Couch P" : "Remote P") + (player.local_index + 1);
         if(player.host || player.leader) {
             association += "\n" + (player.host && player.leader ? "Host / Leader" : player.host ? "Host" : "Local leader");
             ++info_lines;
         }
-        if(!player.bot && !player.connected) {
+        if(!player.bot && !player.placeholder && !player.connected) {
             association += "\nDisconnected";
             ++info_lines;
         }
         ImGui_TextColored(kLobbyDim, association);
         LobbyHint("Host: match decisions. Local leader: this computer's screens, names, and players.");
-        if(player.local || player.bot) {
+        array<string> slot_types = {"Bot", "Player"};
+        int slot_type = player.bot ? 0 : 1;
+        ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy() || (!player.bot && !player.placeholder));
+        ImGui_PushItemWidth(-1.0f);
+        if(MPCombo("##slot_type", slot_type, slot_types)) LobbySetSlotPlayer(player.id, slot_type == 1);
+        ImGui_PopItemWidth();
+        ImGui_EndDisabled();
+        LobbyHint("A player placeholder waits for a joining human. The slot keeps its unit and upgrades.");
+        array<string> assign_names = {"Assign player..."};
+        array<uint> assign_ids;
+        for(uint who = 0; who < lobby_players.length(); ++who) {
+            if(!lobby_players[who].bot && !lobby_players[who].placeholder && lobby_players[who].id != player.id) {
+                assign_names.insertLast(LobbyShortName(lobby_players[who].name) + " / slot " + lobby_players[who].slot_index);
+                assign_ids.insertLast(lobby_players[who].id);
+            }
+        }
+        int assignment = 0;
+        ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy() || assign_ids.length() == 0);
+        ImGui_PushItemWidth(-1.0f);
+        if(MPCombo("##slot_player", assignment, assign_names) && assignment > 0) LobbySwapSlots(assign_ids[assignment - 1], player.id);
+        ImGui_PopItemWidth();
+        ImGui_EndDisabled();
+        LobbyHint("Move this human into the slot's upgraded unit. Occupants swap; unit upgrades stay with their slots.");
+        if(player.local || player.bot || player.placeholder) {
             ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanRenamePlayer(player.id));
             float action_width = ImGui_GetContentRegionAvailWidth();
             bool can_remove = !LobbyMigrationBusy() && LobbyCanRemovePlayer(player.id);
@@ -383,7 +408,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             ImGui_EndDisabled();
             if(can_remove) {
                 ImGui_SameLine(0.0f, 8.0f);
-                if(MPButton("Remove", vec2(-1.0f, 30.0f * scale))) {
+                if(MPButton(player.bot || player.placeholder ? "Remove slot" : "Remove", vec2(-1.0f, 30.0f * scale))) {
                     LobbyRemovePlayer(player.id);
                 }
                 LobbyHint(player.bot ? "Remove this bot. Host only." :
@@ -420,7 +445,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         ImGui_EndDisabled();
         ImGui_NextColumn();
         ImGui_Dummy(vec2(0.0f, float(info_lines) * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
-        if(player.bot) {
+        if(player.bot || player.placeholder) {
             ImGui_TextColored(kLobbyDim, "None");
             LobbyHint("Bots do not need screens.");
         } else if(player.local) {
@@ -467,16 +492,12 @@ bool LobbyModeIsCampaign() {
 
 void DrawModeRate(const string &in key, const string &in label, const string &in hint, bool enabled = true) {
     ImGui_TextColored(kLobbyTitle, label);
-    int rate = max(0, min(3, LobbyGetModeSetting(key)));
-    array<string> rates = {"Off", "Gentle", "Standard", "Brisk"};
+    int rate = max(0, min(4, LobbyGetModeSetting(key)));
     ImGui_BeginDisabled(!enabled);
-    ImGui_PushItemWidth(-1.0f);
-    if(MPCombo("##" + key, rate, rates) && !LobbySetModeSetting(key, rate)) {
-        notice = "That mode setting could not be changed.";
-    }
-    ImGui_PopItemWidth();
+    int selected = DifficultyRateButtons(key,rate);
+    if(selected >= 0 && !LobbySetModeSetting(key,selected)) notice = "That mode setting could not be changed.";
     ImGui_EndDisabled();
-    LobbyHint(hint + "\n\nOff disables it. Gentle: half the Standard rate. Brisk: 1.5x.");
+    LobbyHint(hint + "\n\nOff disables it. Gentle: 0.5x. Standard: 1x. Brisk: 1.5x. Nightmare: 2x.");
 }
 
 void DrawProgressionChoice(const string &in key, const string &in label, array<string> choices) {
@@ -534,6 +555,8 @@ void DrawLobbySessionActions(float scale, bool can_edit, bool compact = false) {
     LobbyHint("Start the selected mode and map with this roster. Resets difficulty progression.");
     ImGui_EndDisabled();
     if(compact) ImGui_SameLine(0.0f, 10.0f);
+    if(LobbyIsHost() && !LobbyMigrationBusy() && MPButton("Load game",vec2(compact ? half : -1.0f,36.0f*scale)))
+        this_ui.SendCallback("session_load_menu.as");
     bool can_leave = LobbyCanLeave();
     ImGui_BeginDisabled(!can_leave);
     if(MPButton(Online_IsHosting() ? "Close lobby" : "Leave lobby", vec2(compact ? half : -1.0f, (compact ? 40.0f : 36.0f) * scale))) {
@@ -558,8 +581,8 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     }
     bool can_edit = LobbyIsHost() && !LobbyMigrationBusy();
     ImGui_BeginDisabled(!can_edit);
-    if(MPButton("Add bot", vec2(-1.0f, 40.0f * scale))) { if(!LobbyAddBot()) notice = "Could not add a bot."; }
-    LobbyHint("Add an AI teammate. Bots have teams but do not need a controller or screen.");
+    if(MPButton("Add slot", vec2(-1.0f, 40.0f * scale))) { if(!LobbyAddSlot()) notice = "Could not add a slot."; }
+    LobbyHint("Add a unit slot. It starts as a bot and can be switched to a player placeholder.");
     ImGui_EndDisabled();
     ImGui_Separator();
     // The form itself scrolls. A nested child would be a separate controller
@@ -738,11 +761,19 @@ void DrawGUI() {
     ImGui_PopFont();
     if(sw >= 1000.0f) {
         ImGui_SameLine();
-        ImGui_TextColored(kLobbyDim, " / " + lobby_players.length() + " players / " + LocalPlayers() + " on this couch");
+        ImGui_TextColored(kLobbyDim, " / " + lobby_players.length() + " slots / " + LocalPlayers() + " on this couch");
         ImGui_TextColored(kLobbyDim, LobbyRoleSummary());
-    } else ImGui_TextColored(kLobbyDim, "" + lobby_players.length() + " players / " + LocalPlayers() + " local");
+    } else ImGui_TextColored(kLobbyDim, "" + lobby_players.length() + " slots / " + LocalPlayers() + " local");
     ImGui_NextColumn();
-    DrawLobbyDifficultyMode();
+    ImGui_TextColored(kLobbyDim, "Joining players");
+    int admission = LobbyGetAutoAdmission() ? 0 : 1;
+    array<string> admission_options = {"Auto add slots", "Designated slots"};
+    ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy());
+    ImGui_PushItemWidth(-1.0f);
+    if(MPCombo("##slot_admission", admission, admission_options)) LobbySetAutoAdmission(admission == 0);
+    ImGui_PopItemWidth();
+    ImGui_EndDisabled();
+    LobbyHint("Applies to online players and local controllers. Designated admission requires an available player placeholder for each person.");
     ImGui_Columns(1);
     LobbyEndForm();
 

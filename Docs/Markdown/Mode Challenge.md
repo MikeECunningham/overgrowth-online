@@ -1,11 +1,10 @@
 # Difficulty modes and progression
 
-Choose **Traditional** or **Scaling** at the top of the lobby, then open
-**Difficulty** to configure that mode. The same controls are under
+Open **Difficulty** in the lobby and choose **Traditional** or **Scaling**. The same controls are under
 **Settings → Game → Difficulty** during play. Traditional uses the original
 Casual, Hardcore and Expert presets. Scaling keeps the selected preset as its
 base and enables optional party, physical equipment, AI and progression factors.
-The old Nightmare choice is replaced by the independent **AI scaling** checkbox.
+Each scaling category has its own rate buttons, including **AI scaling**.
 
 The host owns shared difficulty choices. They are replicated to late joiners
 and preserved through a host handoff. Fresh installations start in Traditional;
@@ -15,8 +14,8 @@ No network listener is opened for that private session.
 
 ## Progression rules
 
-All optional progression drivers start Off. Gentle is half the Standard rate;
-Brisk is one and a half times Standard. Time counts active gameplay and excludes
+Time, completion and AI use Standard by default. Performance scaling starts Off.
+Gentle runs at half the Standard rate, Brisk at 1.5× and Nightmare at 2×. Time counts active gameplay and excludes
 loading, ready screens, upgrade shops, shared pauses, editor sessions and cinematics.
 
 | Rule | Standard behavior |
@@ -91,13 +90,13 @@ it as green XP. A reset clears the pending pool. In independent mode, living
 teammates share credit for hostile kills. A downed spectator keeps the XP
 already earned. The shop opens between chapters. At the last shop the host
 can choose to loop, carrying purchases, balances and difficulty into the first
-chapter. Closing the network session ends the run.
+chapter. The host can resume a saved run through Continue or Load game.
 
 **Arena.** Kill XP goes straight into the green balance. The optional **Combat**
 rule instead awards XP for actual damage dealt and deducts XP for damage taken,
 at 40% of the corresponding bounty rate. An exchange of equal damage against
 equal opponents leaves a small gain. The balance has a floor of zero. The shop
-opens between rounds.
+opens once a team wins the match and the match-win camera finishes. Earlier rounds and draws go straight into the next round after their winner camera. The next match starts when shopping finishes.
 
 **Independent upgrades** give each player a wallet and an individual shop on
 their screen. Use the target selector for self or friendly bots. **Shared
@@ -121,7 +120,7 @@ Infinite waits for everyone. Solo shops always wait.
 | Dog armor | 465–900 | Upgrades any Chitin slot |
 | Therium grey | 775–1,500 | Upgrades any Dog armor slot |
 | Dagger | 140 | Separate offhand toggle |
-| Sword or spear | 880 or 1,040 | Select one large weapon or choose None |
+| Staff, sword, spear or broadsword | 360, 880, 1,040 or 1,280 | Select one large weapon or choose None |
 | Recruit | 2,400 for the team's first | Starts at Casual AI. Subsequent recruits cost 2.25× the preceding price |
 | Train a bot | 1,800, 3,400, then 8,600 | Hardcore, Expert, then Nightmare. Nightmare earns XP and buys its lowest stat ranks at each shop |
 
@@ -132,9 +131,7 @@ An equipped large weapon replaces the campaign or Arena's supplied large
 weapon. An equipped dagger adds to one supplied dagger when no large weapon
 is selected. Selecting both a large weapon and a dagger gives exactly that pair.
 
-A supplied large weapon gives way to the selected sword or spear. A supplied
-dagger and a purchased dagger can be wielded together. Selecting both a large
-weapon and a dagger deploys that pair in campaign and Arena.
+The stats column shows each player’s armor. The green bar shows banked XP as a share of the projected final balance, which includes the estimated reward from remaining enemies. The purple bar shows pending XP against the estimated reward for the current encounter. Both bars display the actual balance for the player or shared team.
 
 All five stat cards keep their neutral Common appearance at every rank.
 Detection range is divided by `1 + 0.06 × stealth rank`, using active stealth

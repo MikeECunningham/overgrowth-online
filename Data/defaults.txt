@@ -82,7 +82,8 @@ game_difficulty:        1.0
 campaign_mp_scaling:    true
 campaign_mp_nightmare:  false
 difficulty_scaling:     false
-campaign_ai_scaling:    false
+campaign_ai_scaling:    true
+campaign_ai_scaling_rate: 2
 campaign_armor_scaling: true
 campaign_weapon_scaling: true
 armor_localized:        true

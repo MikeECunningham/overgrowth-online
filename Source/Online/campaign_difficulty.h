@@ -12,6 +12,7 @@ struct Sample {
     int humans = 0, bots = 0; // zero humans means the level has not sampled yet
     float pressure = 0, base = -1; // -1 uses the ordinary live base preset
     bool stats = false, ai = false, armor = false, weapons = false;
+    int ai_rate = 2;
 };
 
 enum Strength { Rat = 0, Rabbit = 1, CatOrDog = 2, BigDog = 3, Wolf = 4 };
@@ -45,8 +46,10 @@ inline AITweak TweakForUnit(uint32_t shared_id) {
 inline float HumanAIAmount(int participants) {
     return participants < 4 ? 0.0f : participants < 8 ? 0.01f : participants < 16 ? 0.02f : 0.03f;
 }
-inline float AIAmount(int humans, double pressure) {
-    return std::max(HumanAIAmount(humans), pressure < 0.6 ? 0.0f : pressure < 1.1 ? 0.01f : pressure < 1.5 ? 0.02f : 0.03f);
+inline float AIAmount(int humans, double pressure, int rate = 2) {
+    const float multipliers[] = {0, .5f, 1.f, 1.5f, 2.f};
+    return std::max(HumanAIAmount(humans), pressure < 0.6 ? 0.0f : pressure < 1.1 ? 0.01f : pressure < 1.5 ? 0.02f : 0.03f) *
+           multipliers[std::min(4, std::max(0, rate))];
 }
 
 inline float ExtraPlayers(int participants) {

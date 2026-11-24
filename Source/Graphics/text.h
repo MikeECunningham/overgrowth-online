@@ -81,6 +81,7 @@ class TextCanvasTexture {
     // (0,0) is the top-left corner of the text canvas
     // The pen position is at the bottom-left corner of the text
     void SetPenPosition(const vec2& point);
+    vec2 GetPenPosition() const;
     void SetPenColor(int r, int g, int b, int a);
     void SetPenRotation(float degrees);
     static void GetLetterPosXY(const char* str, const CanvasTextStyle& style, int letter, int coords[2]);

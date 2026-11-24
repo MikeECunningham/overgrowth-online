@@ -40,6 +40,7 @@
 #include <GUI/difficulty_hud.h>
 #include <GUI/progression_ui.h>
 #include <Online/friendly_progression.h>
+#include <Online/session_saves.h>
 #include <GUI/dimgui/dimgui.h>
 #include <GUI/dimgui/modmenu.h>
 #include <GUI/dimgui/imgui_impl_sdl_gl3.h>
@@ -1810,6 +1811,7 @@ const char* stress_levels[] = {
 
 // Update the simulation
 void Engine::Update() {
+    SessionSaves::Update();
     UpdateLocalLobbyInput();
     game_timer.UpdateWallTime();
 
@@ -2078,6 +2080,7 @@ void Engine::Update() {
                         Shaders::Instance()->create_program_warning = false;
                         break;
                     case kEngineScriptableUIState: {
+                        Input::Instance()->SetGrabMouse(false);
                         UIShowCursor(0);
                         scriptable_menu_ = new ScriptableUI((void*)this, &Engine::StaticScriptableUICallback);
                         ASData as_data;
@@ -4947,6 +4950,7 @@ void Engine::Draw() {
             PopGPUProfileRange();
         }
         CHECK_GL_ERROR();
+        SessionSaves::CaptureFrame();
         // Draw GUI layer
         ActiveCameras::Set(0);
         {
@@ -5750,6 +5754,7 @@ void Engine::LoadLevelData(const Path& level_path) {
 }
 
 void Engine::ClearLoadedLevel() {
+    SessionSaves::SceneClosed();
     if (player_menus_) player_menus_->Clear();
     tracked_level_focus_ = false;
     current_menu_player = -1;
@@ -6002,6 +6007,7 @@ void Engine::LoadLevel(Path queued_level) {
             Online::Instance()->edit_sync.Reset(scenegraph_);  // (Overgrowth Online: a level loaded: nothing edited)
             Online::Instance()->NoteLevelLoaded(scenegraph_);
             level_loaded_ = true;
+            SessionSaves::SceneLoaded();
             UIShowCursor(0);
             level_updated_ = 0;
 

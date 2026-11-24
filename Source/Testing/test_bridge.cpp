@@ -477,6 +477,18 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 o["players"].append(p);
             }
         }
+    } else if (cmd == "session_slots") {
+        const PlayerID actor = req.get("actor", LobbyAuthority::InvalidPlayer).asUInt();
+        const std::string action = req.get("action", "").asString();
+        if (action == "add") {
+            const PlayerID created = online->AddLobbyBot(req.get("name", "").asString(), actor);
+            out["created"] = created; out["submitted"] = created != LobbyAuthority::InvalidPlayer;
+        } else if (action == "admission") out["submitted"] = online->SetLobbyAutoAdmission(req.get("automatic", true).asBool(), actor);
+        else if (action == "kind") out["submitted"] = online->SetLobbySlotPlayer(req.get("slot", 0).asUInt(), req.get("player", false).asBool(), actor);
+        else if (action == "swap") out["submitted"] = online->SwapLobbySlots(req.get("first", 0).asUInt(), req.get("second", 0).asUInt(), actor);
+        else if (action == "validate") out["valid"] = online->ValidateLobbySlots(req["saved"]);
+        else if (action == "restore") out["submitted"] = online->RestoreLobbySlots(req["saved"]);
+        out["saved"] = online->SaveLobbySlots();
     } else if (cmd == "progression") {
         const PlayerID actor = req.get("actor", LobbyAuthority::InvalidPlayer).asUInt();
         const PlayerID target = req.get("target", actor).asUInt();

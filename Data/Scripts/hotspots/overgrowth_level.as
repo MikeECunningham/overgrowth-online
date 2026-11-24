@@ -31,6 +31,7 @@ float progress_sync_next = 0.0f;  // online host: the progress again now and the
 int coop_checkpoint_by = -1;       // online host: the character that reached a checkpoint last
 float coop_checkpoint_time = -100.0f;
 bool queued_goal_check = true;
+bool restoring_session = false;
 array<int> checkpoint_casualties, casualty_checkpoint;
 float next_encounter_check = 0.0f;
 
@@ -196,21 +197,22 @@ void Dispose() {
 enum GoalTriggerType {_sting_only, _all_but_sting};
 
 void TriggerGoalString(const string &in goal_str, GoalTriggerType type){
+    bool start_dialogues = !restoring_session && !SessionResumingGameplay();
     Log(info, "Triggering goal string: "+goal_str);
     TokenIterator token_iter;
     token_iter.Init();
     while(token_iter.FindNextToken(goal_str)){
-        if(token_iter.GetToken(goal_str) == "dialogue" && !EditorModeActive() && !Online_IsClient()){
+        if(token_iter.GetToken(goal_str) == "dialogue" && start_dialogues && !EditorModeActive() && !Online_IsClient()){
             if(token_iter.FindNextToken(goal_str) && type == _all_but_sting){
                 level.SendMessage("start_dialogue \""+token_iter.GetToken(goal_str)+"\"");
             }
         }
-        if(token_iter.GetToken(goal_str) == "dialogue_fade" && !EditorModeActive()){
+        if(token_iter.GetToken(goal_str) == "dialogue_fade" && start_dialogues && !EditorModeActive()){
             if(token_iter.FindNextToken(goal_str) && type == _all_but_sting){
                 level.SendMessage("start_dialogue_fade \""+token_iter.GetToken(goal_str)+"\"");
             }
         }
-        if(token_iter.GetToken(goal_str) == "dialogue_fade_if_not_hostile" && !EditorModeActive()){
+        if(token_iter.GetToken(goal_str) == "dialogue_fade_if_not_hostile" && start_dialogues && !EditorModeActive()){
             if(token_iter.FindNextToken(goal_str) && type == _all_but_sting){
                 int player_id = GetPlayerCharacterID();
                 if(player_id != -1 && ReadCharacter(player_id).QueryIntFunction("int CombatSong()") != 1){
@@ -314,6 +316,7 @@ void IncrementProgress() {
             if(i == progress && ObjectExists(id) && ReadObjectFromID(id).GetType() == _placeholder_object) {
                 Online_CaptureEnemyDifficulty();
                 ProgressionCheckpoint();
+                SessionAutosave();
             }
         }
     }
@@ -398,6 +401,13 @@ void SetEnabledCharacterAndItems(int id, bool enabled){
             ReadObjectFromID(item_id).SetEnabled(enabled);
         }
     }
+}
+
+string SessionCheckpointState() {
+    string saved = "" + progress;
+    for(uint i=0; i<checkpoint_casualties.length(); ++i)
+        saved += " " + checkpoint_casualties[i] + " " + casualty_checkpoint[i];
+    return saved;
 }
 
 void SendCheckpointState() {
@@ -584,7 +594,7 @@ void CheckReset() {
     TriggerGoalPre();
     // Bots reset at their creation points. Regroup the co-op roster only
     // after authored checkpoint placement and any starting dialogue is set up.
-    if(Online_IsHosting() && Online_CampaignPartySize() > 1) {
+    if(!restoring_session && Online_IsHosting() && Online_CampaignPartySize() > 1) {
         level.SendMessage("coop_checkpoint_regroup " + Online_ChallengeReferenceAvatar());
     }
     LeaveTelemetryZone();
@@ -712,6 +722,29 @@ void ReceiveMessage(string msg) {
     }
 
     string msg_start = token_iter.GetToken(msg);
+    if(msg_start == "session_restore" && !Online_IsClient() && token_iter.FindNextToken(msg)) {
+        int saved = atoi(token_iter.GetToken(msg));
+        if(saved < 0 || saved > 4096) return;
+        progress = saved;
+        checkpoint_casualties.resize(0);
+        casualty_checkpoint.resize(0);
+        while(token_iter.FindNextToken(msg)) {
+            int id = atoi(token_iter.GetToken(msg));
+            if(!token_iter.FindNextToken(msg)) break;
+            if(!MovementObjectExists(id)) continue;
+            checkpoint_casualties.insertLast(id);
+            casualty_checkpoint.insertLast(atoi(token_iter.GetToken(msg)));
+        }
+        // Apply the saved objective's switches. Its intro and party placement
+        // have already happened and the save supplies each unit's position.
+        restoring_session = true;
+        queued_goal_check = false;
+        CheckReset();
+        CoopFollowProgress(saved);
+        restoring_session = false;
+        if(Online_IsHosting()) SendCheckpointState();
+        return;
+    }
     if(msg_start == "coop_recheck_encounter") {
         // Native reinforcement allocation can release a held defeat goal
         // without another character being knocked out (for example when no

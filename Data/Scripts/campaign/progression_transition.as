@@ -4,8 +4,15 @@ bool progression_transition_pending = false;
 string progression_destination;
 
 void FinishProgressionTransition() {
+    if(Online_IsClient()) return;
+    string saved_destination;
+    if(SessionCampaignTransition(saved_destination)) {
+        progression_transition_pending = true;
+        progression_destination = saved_destination;
+    }
     if(!progression_transition_pending || ProgressionShopOpen()) return;
     progression_transition_pending = false;
+    SessionSetCampaignTransition(false, "");
     if(progression_destination != "") {
         LoadLevelID(progression_destination);
     } else if(ProgressionLoopChosen()) {
@@ -26,6 +33,7 @@ void AdvanceCampaign(const string &in next_level) {
     if(ProgressionBeginShop(next_level == "")) {
         progression_destination = next_level;
         progression_transition_pending = true;
+        SessionSetCampaignTransition(true, next_level);
     } else if(next_level != "") {
         LoadLevelID(next_level);
     } else {

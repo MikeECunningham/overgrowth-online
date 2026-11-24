@@ -25,6 +25,7 @@
 #include <chrono>
 #include "online.h"
 #include <Online/friendly_progression.h>
+#include <Online/session_saves.h>
 #include <Scripting/angelscript/ascontext.h>
 #include <algorithm>
 
@@ -946,6 +947,8 @@ void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
     }
 
     FriendlyProgression::NewSession();
+    lobby_slots_.clear();
+    lobby_auto_admission_ = true;
     online_session = new OnlineSession();
 
     host_started_level = false;
@@ -1067,6 +1070,7 @@ void Online::QueueStopMultiplayer(bool transport_lost) {
 }
 
 void Online::StopMultiplayer() {
+    SessionSaves::LeaveLobby();
     OnLobbySessionStopping();
     lobby_waiting_ = false;
     lobby_start_pending_ = false;
@@ -3501,6 +3505,7 @@ void Online::CloseConnectionImmediate(NetConnectionID conn_id, ConnectionClosedR
     vector<Peer>::iterator peer = GetPeerIt(conn_id);
     if (peer != online_session->connected_peers.end()) {
         const PeerID departed = peer->peer_id;
+        SyncLobbySlotDefinitions();
         std::vector<PlayerID> removed;
         for (const auto& entry : online_session->player_states) if (entry.second.peer_id == departed) removed.push_back(entry.first);
         SceneGraph* graph = Engine::Instance()->GetSceneGraph();
@@ -3524,7 +3529,7 @@ void Online::CloseConnectionImmediate(NetConnectionID conn_id, ConnectionClosedR
             ActiveCameras::Instance()->FreeVirtualCameraInstance(state.camera_id);
             online_session->player_inputs.erase(id);
             ReleaseMenuPause(id);
-            FriendlyProgression::ForgetPlayer(id);
+            // Keep the slot and its upgrades available for a replacement human.
             online_session->player_states.erase(id);
             Send<OnlineMessages::RemovePlayerState>(id);
         }
@@ -4454,6 +4459,13 @@ void Online::CoopUpdate(SceneGraph* sg) {
             }
             if (r.course_anchor >= 0 && sg->level) sg->level->Message("coop_course_rebase " + to_string(r.id) + " " + to_string(r.course_anchor));
             ReviveAvatar(mo, r.pos, r.facing);
+            if (r.vitals.knocked_out >= 0 && mo->ASHasVar("knocked_out")) {
+                if (r.vitals.knocked_out && mo->HasFunction("void Ragdoll(RagdollType)")) mo->Execute("Ragdoll(_RGDL_LIMP);");
+                mo->ASSetIntVar("knocked_out", r.vitals.knocked_out);
+                mo->ASSetFloatVar("temp_health", r.vitals.temp_health);
+                mo->ASSetFloatVar("blood_health", r.vitals.blood_health);
+                mo->ASSetFloatVar("permanent_health", r.vitals.permanent_health);
+            }
         } else if (OwnPlayerCharacter(r.id) && now_ms - r.queued_ms < 5000.0) {
             waiting.push_back(r);
         }
@@ -4799,9 +4811,13 @@ void Online::CoopSpectateUpdate(SceneGraph* sg) {
 void Online::CoopReviveRequest(const string& msg) {
     int cid = 0, anchor = -1;
     float x = 0.0f, y = 0.0f, z = 0.0f, fx = 0.0f, fz = 0.0f;
-    int n = sscanf(msg.c_str(), "ohg revive %d %f %f %f %f %f %d", &cid, &x, &y, &z, &fx, &fz, &anchor);
-    if (n == 4 || n == 6 || n == 7) {
-        pending_revives.push_back({GetObjectID(cid), vec3(x, y, z), vec3(fx, 0.0f, fz), OnlineClockMs(), anchor >= 0 ? GetObjectID(anchor) : -1});
+    SavedVitals vitals;
+    int n = sscanf(msg.c_str(), "ohg revive %d %f %f %f %f %f %d %d %f %f %f", &cid, &x, &y, &z, &fx, &fz, &anchor,
+                   &vitals.knocked_out, &vitals.temp_health, &vitals.blood_health, &vitals.permanent_health);
+    if (n == 11 && (vitals.knocked_out < 0 || vitals.knocked_out > 2 || !std::isfinite(vitals.temp_health) ||
+                    !std::isfinite(vitals.blood_health) || !std::isfinite(vitals.permanent_health))) return;
+    if (n == 4 || n == 6 || n == 7 || n == 11) {
+        pending_revives.push_back({GetObjectID(cid), vec3(x, y, z), vec3(fx, 0.0f, fz), OnlineClockMs(), anchor >= 0 ? GetObjectID(anchor) : -1, vitals});
     }
 }
 
@@ -4830,16 +4846,19 @@ static bool OwnPlayerCharacterOfAnyone(ObjectID id) {
 
 // Host: a player's character up at `pos` (facing `facing`, if any) on the
 // machine whose player it is (online arenas: round starts; co-op revives)
-void Online::PlaceAvatar(ObjectID id, const vec3& pos, const vec3& facing, ObjectID course_anchor) {
+void Online::PlaceAvatar(ObjectID id, const vec3& pos, const vec3& facing, ObjectID course_anchor, const SavedVitals* vitals) {
     if (!IsHosting()) {
         return;
     }
     if (OwnPlayerCharacter(id) || (IsLocalAvatar(id) && !OwnPlayerCharacterOfAnyone(id))) {
-        pending_revives.push_back({id, pos, facing, OnlineClockMs(), course_anchor});  // (CoopUpdate, outside the calling script)
+        pending_revives.push_back({id, pos, facing, OnlineClockMs(), course_anchor, vitals ? *vitals : SavedVitals{}});  // (CoopUpdate, outside the calling script)
     } else {
-        Send<OnlineMessages::SendLevelMessage>("ohg revive " + to_string((int)GetOriginalID(id)) + " " + to_string(pos.x()) + " " +
-                                               to_string(pos.y()) + " " + to_string(pos.z()) + " " + to_string(facing.x()) + " " +
-                                               to_string(facing.z()) + " " + to_string(course_anchor >= 0 ? (int)GetOriginalID(course_anchor) : -1));
+        std::string message = "ohg revive " + to_string((int)GetOriginalID(id)) + " " + to_string(pos.x()) + " " +
+                              to_string(pos.y()) + " " + to_string(pos.z()) + " " + to_string(facing.x()) + " " +
+                              to_string(facing.z()) + " " + to_string(course_anchor >= 0 ? (int)GetOriginalID(course_anchor) : -1);
+        if (vitals) message += " " + to_string(vitals->knocked_out) + " " + to_string(vitals->temp_health) +
+                               " " + to_string(vitals->blood_health) + " " + to_string(vitals->permanent_health);
+        Send<OnlineMessages::SendLevelMessage>(message);
     }
 }
 

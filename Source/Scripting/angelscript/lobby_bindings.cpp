@@ -3,6 +3,7 @@
 #include <Scripting/angelscript/ascontext.h>
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
 #include <Online/online.h>
+#include <Online/session_saves.h>
 #include <Online/online_utility.h>
 #include <Main/engine.h>
 #include <GUI/player_menu_context.h>
@@ -31,6 +32,9 @@ struct LobbyPlayer {
     int lobby_team = 1;
     int screen = 0;
     bool connected = true;
+    bool placeholder = false;
+    std::string slot_uid;
+    int slot_index = 0;
 };
 void ConstructPlayer(void* memory) { new (memory) LobbyPlayer(); }
 void CopyPlayer(const LobbyPlayer& source, void* memory) { new (memory) LobbyPlayer(source); }
@@ -62,11 +66,18 @@ bool BeginHost() {
     config.GetRef("controller_menu_owner") = 0;
     return true;
 }
+bool ManageSaves() { return !Online::Instance()->IsActive() || (Online::Instance()->IsHosting() && IsHost()); }
+bool SaveCard(int slot) { return ManageSaves() && SessionSaves::Save(slot); }
+bool LoadCard(int slot) { return ManageSaves() && SessionSaves::Load(slot); }
 bool AddLocal() {
     if (!CanManageLocal()) return false;
     return Online::Instance()->AddLocalLobbyPlayer("") != static_cast<PlayerID>(-1);
 }
 bool AddBot() { return Online::Instance()->AddLobbyBot("", MenuPlayerID()) != LobbyAuthority::InvalidPlayer; }
+bool AutoAdmission() { return Online::Instance()->LobbyAutoAdmission(); }
+bool SetAutoAdmission(bool automatic) { return Online::Instance()->SetLobbyAutoAdmission(automatic, MenuPlayerID()); }
+bool SetSlotPlayer(unsigned slot, bool player) { return Online::Instance()->SetLobbySlotPlayer(slot, player, MenuPlayerID()); }
+bool SwapSlots(unsigned first, unsigned second) { return Online::Instance()->SwapLobbySlots(first, second, MenuPlayerID()); }
 bool CanRename(unsigned id) { return Online::Instance()->CanRenameLobbyPlayer(id, MenuPlayerID()); }
 bool CanStart() {
     Online* online = Online::Instance();
@@ -180,17 +191,31 @@ std::vector<PlayerState> Players() {
 CScriptArray* PlayerArray() {
     asIScriptEngine* engine = asGetActiveContext()->GetEngine();
     CScriptArray* array = CScriptArray::Create(engine->GetTypeInfoByDecl("array<LobbyPlayer>"), static_cast<asUINT>(0));
-    for (const auto& player : Players()) {
+    Online* online = Online::Instance();
+    const auto players = Players();
+    auto slots = online->IsActive() ? online->GetLobbySlots() : std::vector<LobbySlot>{};
+    if (slots.empty()) for (const auto& player : players) {
+        LobbySlot slot; slot.id = player.player_id; slot.name = player.playername; slot.team = player.team;
+        slot.is_bot = player.is_bot; slot.order = static_cast<uint32_t>(slots.size() + 1); slots.push_back(slot);
+    }
+    for (const auto& slot : slots) {
         LobbyPlayer row;
-        row.id = player.player_id; row.name = player.playername; row.local_index = player.is_bot ? -1 : static_cast<int>(player.local_index);
-        row.bot = player.is_bot;
-        row.local = !player.is_bot && player.peer_id == Online::Instance()->LocalPeerID();
-        row.host = !player.is_bot && Online::Instance()->IsLobbyHost(player.player_id);
-        row.leader = !player.is_bot && Online::Instance()->IsLobbyLeader(player.player_id);
-        row.lobby_team = player.team;
-        const int assigned = Online::Instance()->AssignedModeTeam(player.object_id);
-        row.team = !Online::Instance()->LobbyWaiting() ? (assigned > 0 ? assigned : Online::Instance()->UsesLobbyTeams() ? player.team : 1) : player.team;
-        row.screen = row.local ? player.screen : 0; row.connected = player.connected;
+        row.id = slot.id; row.slot_uid = slot.uid; row.slot_index = static_cast<int>(slot.order);
+        row.name = slot.name; row.team = row.lobby_team = slot.team; row.bot = slot.is_bot;
+        const auto occupied = std::find_if(players.begin(), players.end(), [&slot](const PlayerState& p) { return p.player_id == slot.id; });
+        row.placeholder = occupied == players.end();
+        row.connected = !row.placeholder && occupied->connected;
+        row.local_index = -1;
+        if (!row.placeholder) {
+            const auto& player = *occupied;
+            row.name = player.playername; row.local_index = player.is_bot ? -1 : static_cast<int>(player.local_index);
+            row.local = !player.is_bot && player.peer_id == online->LocalPeerID();
+            row.host = !player.is_bot && online->IsLobbyHost(player.player_id);
+            row.leader = !player.is_bot && online->IsLobbyLeader(player.player_id);
+            const int assigned = online->AssignedModeTeam(player.object_id);
+            row.team = !online->LobbyWaiting() ? (assigned > 0 ? assigned : online->UsesLobbyTeams() ? player.team : 1) : player.team;
+            row.screen = row.local ? player.screen : 0;
+        }
         array->InsertLast(&row);
     }
     return array;
@@ -204,6 +229,8 @@ unsigned Revision() {
               << ':' << player.team << ':' << player.screen << ':' << player.connected << ':' << Online::Instance()->IsLobbyHost(player.player_id)
               << ':' << Online::Instance()->IsLobbyLeader(player.player_id) << ':' << Online::Instance()->AssignedModeTeam(player.object_id) << ':' << player.is_bot;
     }
+    state << '|' << Online::Instance()->LobbyAutoAdmission();
+    for (const auto& slot : Online::Instance()->GetLobbySlots()) state << '|' << slot.id << ':' << slot.uid << ':' << slot.name << ':' << slot.team << ':' << slot.is_bot;
     return static_cast<unsigned>(std::hash<std::string>()(state.str()));
 }
 
@@ -458,12 +485,25 @@ void AttachLobby(ASContext* context) {
     context->RegisterObjectProperty("LobbyPlayer", "int lobby_team", asOFFSET(LobbyPlayer, lobby_team));
     context->RegisterObjectProperty("LobbyPlayer", "int screen", asOFFSET(LobbyPlayer, screen));
     context->RegisterObjectProperty("LobbyPlayer", "bool connected", asOFFSET(LobbyPlayer, connected));
+    context->RegisterObjectProperty("LobbyPlayer", "bool placeholder", asOFFSET(LobbyPlayer, placeholder));
+    context->RegisterObjectProperty("LobbyPlayer", "string slot_uid", asOFFSET(LobbyPlayer, slot_uid));
+    context->RegisterObjectProperty("LobbyPlayer", "int slot_index", asOFFSET(LobbyPlayer, slot_index));
 #define LOBBY_FN(declaration, function) context->RegisterGlobalFunction(declaration, asFUNCTION(function), asCALL_CDECL)
+    LOBBY_FN("bool SessionCanManageSaves()", ManageSaves);
+    LOBBY_FN("bool SessionCanSave()", SessionSaves::CanWrite);
+    LOBBY_FN("bool SessionSaveExists(int)", SessionSaves::Exists);
+    LOBBY_FN("string SessionSaveCard(int,const string &in)", SessionSaves::Card);
+    LOBBY_FN("bool SessionSave(int)", SaveCard);
+    LOBBY_FN("bool SessionLoad(int)", LoadCard);
+    LOBBY_FN("string SessionSaveStatus()", SessionSaves::Status);
     LOBBY_FN("bool LobbyActive()", Active); LOBBY_FN("bool LobbyIsHost()", IsHost);
     LOBBY_FN("bool LobbyIsLocalOnly()", LocalOnly); LOBBY_FN("bool LobbyOpenToNetwork()", OpenToNetwork);
     LOBBY_FN("bool LobbyCanManageLocal()", CanManageLocal); LOBBY_FN("bool LobbyBeginHost()", BeginHost);
     LOBBY_FN("bool LobbyAddLocalPlayer()", AddLocal); LOBBY_FN("bool LobbyCanStart()", CanStart);
     LOBBY_FN("bool LobbyAddBot()", AddBot); LOBBY_FN("bool LobbyCanRenamePlayer(uint)", CanRename);
+    LOBBY_FN("bool LobbyAddSlot()", AddBot);
+    LOBBY_FN("bool LobbyGetAutoAdmission()", AutoAdmission); LOBBY_FN("bool LobbySetAutoAdmission(bool)", SetAutoAdmission);
+    LOBBY_FN("bool LobbySetSlotPlayer(uint, bool)", SetSlotPlayer); LOBBY_FN("bool LobbySwapSlots(uint, uint)", SwapSlots);
     LOBBY_FN("bool LobbyStart()", Start); LOBBY_FN("void LobbyLeave()", Leave);
     LOBBY_FN("bool LobbyCanLeave()", CanLeave); LOBBY_FN("bool LobbyTryLeave()", TryLeave);
     LOBBY_FN("int LobbyGetCurrentInputID()", CurrentInputID);

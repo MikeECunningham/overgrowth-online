@@ -49,7 +49,8 @@ enum ArenaPhase {
     kIntro,      // players placed, the announcements
     kFighting,
     kRoundOver,
-    kMatchOver
+    kMatchOver,
+    kShoppingNextMatch = 6  // saved match phases keep their numeric IDs
 }
 
 ArenaPhase phase = kWaiting;
@@ -110,6 +111,7 @@ string intro = "";
 int round_number = 0;
 int round_winner = -1;
 array<int> round_winners;  // all members of the winning team, including fallen allies
+bool resume_challenge_round = false;
 
 array<vec3> spots;           // where players stand at a round start, in order
 array<string> spot_weapons;  // what each spot's player holds ("" nothing)
@@ -139,11 +141,15 @@ array<int> marker_types;     // character_spawn game_type, -1 none
 string shown_text = "";
 float text_visible = 0.0f;
 int text_id = -1;
+const float kTextInkTop = 256.0f - 48.0f;
+float text_ink_height = 0.0f;
 int score_id = -1;
 array<int> score_ids;        // the scoreboard: characters here
 array<int> score_points;
 int score_max = 2;
 bool score_dirty = true;
+const int kScoreLineHeight = 40;
+const int kMaxScoreRows = 8;
 
 // The crowd: each machine from what it sees
 float audience_excitement = 0.0f;
@@ -188,22 +194,33 @@ bool HasFocus() {
 }
 
 void DrawGUI() {
-    {   // the announcement
-        HUDImage @image = hud.AddImage();
-        image.SetImageFromText(level.GetTextElement(text_id));
-        image.position.x = GetScreenWidth() / 2 - 256;
-        image.position.y = GetScreenHeight() - 500;
-        image.position.z = 4;
-        image.color = vec4(1, 1, 1, text_visible);
-    }
-
     if(score_ids.length() > 0) {  // the points
         HUDImage @image = hud.AddImage();
         image.SetImageFromText(level.GetTextElement(score_id));
-        image.position.x = 40;
-        image.position.y = GetScreenHeight() - 532;  // (bottom-left anchored: the canvas top 20 px down)
+        float top = 20.0f;
+        float left = 40.0f;
+        float height = (1 + min(int(score_ids.length()), kMaxScoreRows)) * kScoreLineHeight + 12;
+        vec2 placement = ProgressionLayoutArenaScore(left, top, 512.0f, height);
+        float scale = placement.y;
+        image.scale = vec3(scale, scale, 1.0f);
+        image.position.x = placement.x;
+        image.position.y = GetScreenHeight() - top - 512.0f * scale;
         image.position.z = 4;
         image.color = vec4(1, 1, 1, 0.9f);
+    }
+    if(text_visible > 0.0f) {
+        // Measure from the first line's top so changing scale keeps the
+        // original baseline and the position of wrapped announcements stable.
+        float original_top = 500.0f - 512.0f + kTextInkTop;
+        vec2 placement = ProgressionLayoutArenaAnnouncement(original_top, 512.0f, text_ink_height);
+        float scale = placement.y;
+        HUDImage @image = hud.AddImage();
+        image.SetImageFromText(level.GetTextElement(text_id));
+        image.scale = vec3(scale, scale, 1.0f);
+        image.position.x = (GetScreenWidth() - 512.0f * scale) / 2.0f;
+        image.position.y = GetScreenHeight() - placement.x - (512.0f - kTextInkTop) * scale;
+        image.position.z = 4;
+        image.color = vec4(1, 1, 1, text_visible);
     }
 }
 
@@ -314,21 +331,146 @@ void ReceiveMessage(string msg) {
 
 // ---- host: the match -------------------------------------------------------
 
+string ArenaSeatKey(int avatar) {
+    array<PlayerState>@ states = GetPlayerStates();
+    for(uint i = 0; i < states.length(); ++i)
+        if(states[i].avatar_id == avatar) return "seat" + states[i].id;
+    return "fill" + fill_bots.find(avatar);
+}
+
+JSONValue ArenaSavePos(vec3 position) {
+    JSONValue value(JSONarrayValue);
+    value.append(JSONValue(position.x)); value.append(JSONValue(position.y)); value.append(JSONValue(position.z));
+    return value;
+}
+
+vec3 ArenaLoadPos(JSONValue value) {
+    return vec3(value[0].asFloat(), value[1].asFloat(), value[2].asFloat());
+}
+
+// Save the selected battle itself: rerolling it on load changes points to win,
+// team assignments and starting weapons even when the score is retained.
+void PublishArenaState() {
+    if(Online_IsClient() || round_number < 1 || roster.length() == 0 ||
+       spots.length() == 0 || fighter_teams.length() != roster.length()) return;
+    JSON save;
+    JSONValue value;
+    value["version"] = JSONValue(1); value["round"] = JSONValue(round_number);
+    value["phase"] = JSONValue(int(phase)); value["max_points"] = JSONValue(max_points);
+    value["match_size"] = JSONValue(match_size); value["weapons"] = JSONValue(weapons_match);
+    value["ffa"] = JSONValue(template_ffa); value["battle"] = JSONValue(battle_name);
+    value["intro"] = JSONValue(intro);
+    value["challenge_match"] = JSONValue(challenge_arena_match_key);
+    value["challenge_round"] = JSONValue(challenge_arena_round_key);
+    value["challenge_serial"] = JSONValue(challenge_arena_round_serial);
+    value["spots"] = JSONValue(JSONarrayValue); value["weights"] = JSONValue(JSONarrayValue);
+    value["items"] = JSONValue(JSONarrayValue); value["fighters"] = JSONValue(JSONarrayValue);
+    for(uint i = 0; i < spots.length(); ++i) {
+        JSONValue row;
+        row["pos"] = ArenaSavePos(spots[i]);
+        row["weapon"] = JSONValue(i < spot_weapons.length() ? spot_weapons[i] : "");
+        row["team"] = JSONValue(i < spot_teams.length() ? spot_teams[i] : 0);
+        value["spots"].append(row);
+    }
+    for(uint i = 0; i < template_weights.length(); ++i) value["weights"].append(JSONValue(template_weights[i]));
+    for(uint i = 0; i < item_paths.length(); ++i) {
+        JSONValue row; row["path"] = JSONValue(item_paths[i]); row["pos"] = ArenaSavePos(item_spots[i]);
+        value["items"].append(row);
+    }
+    for(uint i = 0; i < roster.length(); ++i) {
+        JSONValue row;
+        row["key"] = JSONValue(ArenaSeatKey(roster[i])); row["points"] = JSONValue(points[i]);
+        row["team"] = JSONValue(fighter_teams[i]); row["spot"] = JSONValue(fighter_spots[i]);
+        row["winner"] = JSONValue(round_winners.find(roster[i]) >= 0);
+        value["fighters"].append(row);
+    }
+    save.getRoot() = value;
+    SessionArenaState(save.writeString());
+}
+
+bool RestoreArenaMatch() {
+    string state = SessionArenaRestore();
+    if(state == "") return false;
+    array<PlayerState>@ states = GetPlayerStates();
+    array<int> seats = RosterSeats();
+    if(seats.length() < states.length()) return true; // wait for native deployment
+    JSON save; if(!save.parseString(state)) return false;
+    JSONValue value = save.getRoot();
+    max_points = value["max_points"].asInt(); match_size = value["match_size"].asInt();
+    weapons_match = value["weapons"].asBool(); template_ffa = value["ffa"].asBool();
+    battle_name = value["battle"].asString(); last_battle_name = battle_name;
+    intro = value["intro"].asString(); setup_points = max_points;
+    challenge_arena_match_key = value["challenge_match"].asString();
+    challenge_arena_round_key = value["challenge_round"].asString();
+    challenge_arena_round_serial = value["challenge_serial"].asInt();
+    spots.resize(0); spot_weapons.resize(0); spot_teams.resize(0); template_weights.resize(0);
+    item_paths.resize(0); item_spots.resize(0); arena_center = vec3(0);
+    for(uint i = 0; i < value["spots"].size(); ++i) {
+        JSONValue row = value["spots"][i]; spots.insertLast(ArenaLoadPos(row["pos"]));
+        spot_weapons.insertLast(row["weapon"].asString()); spot_teams.insertLast(row["team"].asInt());
+        arena_center += spots[i];
+    }
+    arena_center /= float(spots.length());
+    for(uint i = 0; i < value["weights"].size(); ++i) template_weights.insertLast(value["weights"][i].asInt());
+    for(uint i = 0; i < value["items"].size(); ++i) {
+        item_paths.insertLast(value["items"][i]["path"].asString());
+        item_spots.insertLast(ArenaLoadPos(value["items"][i]["pos"]));
+    }
+    FillOpenSpots(int(seats.length())); SyncBots();
+    roster.resize(0); points.resize(0); fighter_teams.resize(0); fighter_spots.resize(0);
+    round_winners.resize(0); round_winner = -1;
+    array<int> fighters = Fighters();
+    // Match by durable unit slot, never by this world's transient object ID.
+    for(uint i = 0; i < value["fighters"].size(); ++i) {
+        JSONValue row = value["fighters"][i];
+        for(uint j = 0; j < fighters.length(); ++j) if(ArenaSeatKey(fighters[j]) == row["key"].asString()) {
+            int avatar = fighters[j]; roster.insertLast(avatar); points.insertLast(row["points"].asInt());
+            fighter_teams.insertLast(row["team"].asInt()); fighter_spots.insertLast(row["spot"].asInt());
+            if(row["winner"].asBool()) { round_winners.insertLast(avatar); round_winner = avatar; }
+        }
+    }
+    bool added = false;
+    for(uint i = 0; i < fighters.length(); ++i) if(roster.find(fighters[i]) < 0) {
+        roster.insertLast(fighters[i]); points.insertLast(0); added = true;
+    }
+    if(added) ConfigureMatchTeams();
+    else LobbyAssignModeTeams(roster, fighter_teams);
+    round_number = value["round"].asInt();
+    ArenaPhase saved_phase = ArenaPhase(value["phase"].asInt());
+    if(saved_phase == kIntro || saved_phase == kFighting || saved_phase == kWaiting) {
+        resume_challenge_round = saved_phase == kFighting;
+        --round_number;
+        StartRound(true); // redeploy this round, retaining the saved score/setup
+    } else {
+        // An awarded win stays awarded. Continue its delay/shop boundary and
+        // advance once, without calling challenge win/completion hooks again.
+        phase = saved_phase; phase_time = the_time; intro_step = 0;
+        SessionArenaRound(round_number);
+        PlaceFighters(); SendScore(); PublishArenaState();
+        Show(saved_phase == kShoppingNextMatch ? "Shopping" : "Round complete");
+    }
+    return true;
+}
+
 void SetPhase(ArenaPhase p) {
     if(p != phase) {
-        if(p == kFighting) ChallengeArenaRoundBegin();
+        if(p == kFighting) {
+            if(!resume_challenge_round) ChallengeArenaRoundBegin();
+            resume_challenge_round = false;
+        }
         else if(p == kRoundOver) {
             ChallengeArenaRoundWin(round_winner);
-            ProgressionBeginShop(false);
         }
         else if(p == kMatchOver) ChallengeArenaMatchComplete();
     }
     phase = p;
     phase_time = the_time;
     intro_step = 0;
+    PublishArenaState();
 }
 
 void HostUpdate() {
+    if(round_number == 0 && RestoreArenaMatch()) return;
     if(ProgressionShopOpen()) return;
     float t = the_time - phase_time;
     DropGonePlayers();
@@ -375,7 +517,7 @@ void HostUpdate() {
             ProgressionArenaLoadouts();
         }
         if(round_number == 1 && intro_step == 0 && t > 2.0f) {
-            Show(weapons_match ? "This is a fight to the death!" : "Two points to win!");
+            Show(max_points == 1 ? "This is a fight to the death!" : max_points + " points to win!");
             intro_step = 1;
         }
         float fight_at = round_number == 1 ? 4.0f : 2.0f;
@@ -433,10 +575,11 @@ void HostUpdate() {
                 StartRound();
             }
         }
-    } else if(phase == kMatchOver) {
-        if(t > 4.0f) {
-            NewMatch();
-        }
+    } else if(phase == kMatchOver && t > 4.0f) {
+        if(ProgressionBeginShop(false)) SetPhase(kShoppingNextMatch);
+        else NewMatch();
+    } else if(phase == kShoppingNextMatch) {
+        NewMatch();
     }
 
     // Late joiners see where things stand
@@ -456,7 +599,7 @@ void NewMatch() {
     StartRound();
 }
 
-void StartRound() {
+void StartRound(bool resume = false) {
     ++round_number;
     round_winner = -1;
     round_winners.resize(0);
@@ -483,9 +626,13 @@ void StartRound() {
             points.insertLast(0);
         }
     }
-    if(round_number == 1 || fighter_teams.length() != roster.length()) {
+    if((round_number == 1 && !resume) || fighter_teams.length() != roster.length()) {
         ConfigureMatchTeams();
     }
+
+    round_number = SessionArenaRound(round_number);
+    for(uint i=0; i<roster.length(); ++i) points[i] = SessionArenaPoints(roster[i],points[i]);
+    SessionAutosave();
 
     // Every weapon from before goes, in hands and on the ground (this round's
     // are made new). First every machine empties the hands and sheaths of the
@@ -1192,11 +1339,11 @@ void DrawScoreboard() {
     int own = GetPlayerCharacterID();
     int own_id = own != -1 ? ReadCharacter(own).GetID() : -1;
     int line = 0;
-    text.SetPenPosition(vec2(0, 40));
+    text.SetPenPosition(vec2(0, kScoreLineHeight));
     text.AddText(score_max == 1 ? "First to 1 point" : "First to " + score_max + " points", style, UINT32MAX);
-    for(uint k = 0; k < score_ids.length() && k < 8; ++k) {
+    for(uint k = 0; k < score_ids.length() && k < kMaxScoreRows; ++k) {
         ++line;
-        text.SetPenPosition(vec2(0, 40 + line * 40));
+        text.SetPenPosition(vec2(0, (1 + line) * kScoreLineHeight));
         int team = LobbyGetAssignedTeam(score_ids[k]);
         text.AddText((team > 0 ? "T" + team + " " : "") + PlayerName(score_ids[k]) + (score_ids[k] == own_id ? " (you)" : "") + ":  " + score_points[k], style, UINT32MAX);
     }
@@ -1220,6 +1367,7 @@ void DrawText(int id, const string &in str, int size) {
     text.SetPenColor(255, 255, 255, 255);
     text.SetPenRotation(0.0f);
     text.AddTextMultiline(str, style, UINT32MAX);
+    text_ink_height = min(512.0f, text.GetPenPosition().y + size * 0.25f) - kTextInkTop;
     text.UploadTextCanvasToTexture();
 }
 

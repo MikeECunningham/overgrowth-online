@@ -59,12 +59,17 @@ def mode_settings_lobby(ctx):
         inst.bridge.call("menu", script="multiplayer_lobby.as")
     _code(host, f'LobbySetSelection("{ARENA}","{ARENA}","{ARENA_MAP}",false);')
     wait(lambda: _probe(guest, 'LobbyGetMode()') == ARENA, "Arena selection replicated")
-    assert _settings(host) == _settings(guest) == (0, 0, 0, 2)
+    assert _settings(host) == _settings(guest) == (2, 2, 0, 2)
     _code(host, 'SetConfigValueBool("oo_arena_random",true);SaveConfig();')
     wait(lambda: _probe(guest, 'GetConfigValueBool("oo_arena_random")') == "true", "host Arena randomizer reaches guest UI")
     _code(guest, 'SetConfigValueBool("oo_arena_random",false);')
     assert _probe(guest, 'GetConfigValueBool("oo_arena_random")') == "true", "guest changed the host's Arena randomizer"
     assert _probe(host, 'GetConfigValueBool("oo_arena_random")') == "true"
+    assert _probe(host,'GetConfigValueInt("campaign_ai_scaling_rate")') == "2"
+    _code(host,'SetConfigValueInt("campaign_ai_scaling_rate",4);')
+    wait(lambda:_probe(guest,'GetConfigValueInt("campaign_ai_scaling_rate")') == "4","Nightmare AI rate reaches guest")
+    _code(guest,'SetConfigValueInt("campaign_ai_scaling_rate",1);')
+    assert _probe(guest,'GetConfigValueInt("campaign_ai_scaling_rate")') == "4","guest changed host AI strength"
     wait(lambda: _probe(guest, 'GetConfigValueBool("difficulty_scaling")') == "true", "Scaling master mode reaches the guest")
     _code(guest, 'SetConfigValueBool("difficulty_scaling",false);')
     assert _probe(guest, 'GetConfigValueBool("difficulty_scaling")') == "true", "guest changed global difficulty mode"
@@ -74,6 +79,10 @@ def mode_settings_lobby(ctx):
     assert _probe(guest, 'GetConfigValueBool("armor_localized")') == "false", "guest changed armor hit coverage"
     _code(host, 'SetConfigValueBool("armor_localized",true);')
     wait(lambda: _probe(guest, 'GetConfigValueBool("armor_localized")') == "true", "localized armor choice reaches the guest")
+    _set(host,time=4,round=4,performance=3,performance_rate=4)
+    wait(lambda:_settings(guest)==(4,4,3,4),"all Nightmare rates reach guest")
+    assert _probe(host,'LobbySetModeSetting("challenge_time",5)') == "false"
+    assert _probe(host,'LobbySetModeSetting("challenge_performance",4)') == "false"
     _set(host, time=2, round=1, performance=3, performance_rate=2)
     wait(lambda: _settings(guest) == (2, 1, 3, 2), "all mode settings reach the guest")
     assert _probe(guest, 'LobbySetModeSetting("challenge_time",3)') == "false"
@@ -107,11 +116,29 @@ def mode_settings_lobby(ctx):
     assert _probe(host, '""+GetConfigValueOptions("difficulty_preset").length()') == "3"
     ctx.shot(host, "arena_mode_settings_wide")
     ctx.shot(guest, "arena_mode_settings_narrow")
+    # The personal settings menu uses compact difficulty cards too. Click
+    # each real element and use its normal callback, rather than sending
+    # its message directly.
+    host.bridge.call("menu",script="main_menu_settings.as")
+    _code(host,'SwitchSettingsScreen("Difficulty");')
+    for rate in (1,4):
+        _code(host,'for(uint i=0;i<controller_items.length();++i){IMElement@ e=controller_items[i];'
+              f'if(e.getName()=="rate_campaign_ai_scaling_rate_{rate}")'+'{vec2 p=e.getScreenPosition();'
+              'SetConfigValueString("test_rate_box",""+(p.x+e.getSizeX()*screenMetrics.GUItoScreenXScale*.5f)+"|"+'
+              '(p.y+e.getSizeY()*screenMetrics.GUItoScreenYScale*.5f));break;}}')
+        x,y=map(float,_probe(host,'GetConfigValueString("test_rate_box")').split("|"))
+        for buttons in (0,1,0):
+            host.bridge.call("pointer",x=int(x),y=int(y),buttons=buttons);time.sleep(.15)
+        wait(lambda:_probe(host,'GetConfigValueInt("campaign_ai_scaling_rate")') == str(rate),"mouse selects AI rate card")
+        wait(lambda:_probe(guest,'GetConfigValueInt("campaign_ai_scaling_rate")') == str(rate),"card rate reaches read-only guest")
+    host.bridge.call("pointer",enabled=False)
+    ctx.shot(host,"difficulty_rate_cards_settings")
+    host.bridge.call("menu",script="multiplayer_lobby.as")
     for inst in (host, guest):
         _code(inst, 'lobby_difficulty_open=false;')
     _code(host, f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","{CAMPAIGN_LEVEL}",false);')
     wait(lambda: _probe(guest, 'LobbyGetMode()') == CAMPAIGN, "campaign selection replicated")
-    assert _settings(host) == _settings(guest) == (0, 0, 0, 2), "Arena preferences leaked into campaign"
+    assert _settings(host) == _settings(guest) == (2, 2, 0, 2), "Arena preferences leaked into campaign"
     _set(host, time=1, round=3, performance=2, performance_rate=1)
     wait(lambda: _settings(guest) == (1, 3, 2, 1), "campaign settings reach the guest")
     assert _probe(host, 'LobbyModeIsCampaign()') == "true"
@@ -124,7 +151,7 @@ def mode_settings_lobby(ctx):
     assert _probe(host, 'LobbySetModeSetting("challenge_win",2)') == "false"
     _code(host, f'LobbySetSelection("sandbox","","{SANDBOX_MAP}",false);')
     wait(lambda: _probe(guest, 'LobbyGetMode()') == "sandbox", "sandbox selection replicated")
-    assert _settings(host) == (0, 0, 0, 2)
+    assert _settings(host) == (2, 2, 0, 2)
     assert _probe(host, 'LobbySetModeSetting("challenge_round",2)') == "false"
     _set(host, time=3, performance=1, performance_rate=2)
     _code(host, 'LobbySetSelection("build","","Data/Levels/nothing.xml",true);')
@@ -531,6 +558,7 @@ def performance_solo(ctx):
          "direct solo Scaling adopts a private local session")
     _code(inst, 'for(int i=0;i<GetNumCharacters();++i){MovementObject@ c=ReadCharacter(i);'
           'c.static_char=true;c.Execute("combat_allowed=false;hostile=false;invincible=true;");}', "level")
+    assert _probe(inst, 'LobbySetModeSetting("challenge_time",0)', "level") == "true"
     assert _probe(inst, 'LobbySetModeSetting("challenge_performance",3)', "level") == "true"
     assert _probe(inst, 'LobbySetModeSetting("challenge_performance_rate",2)', "level") == "true"
     _code(inst, 'Online_ChallengeEncounterBegin("solo_retry");', "level")
@@ -589,13 +617,21 @@ def performance_solo(ctx):
              'SetConfigValueString("test_mode_setting_probe",names);SaveConfig();')
     labels = dict(line.split(": ", 1) for line in
                   (Path(inst.writedir) / "Data/config.txt").read_text().splitlines() if ": " in line)["test_mode_setting_probe"].split("|")
-    for label in ("Starting preset", "Localized armor protection", "Party stats and reinforcements", "Physical armor",
-                  "Weapons for extra enemies", "AI scaling", "Active time", "Performance scaling", "Performance strength"):
+    for label in ("Difficulty mode", "Starting preset", "Armor protection", "Party stats and reinforcements", "Physical armor",
+                  "Weapons for extra enemies", "Performance scaling"):
         assert label in labels, (label, labels)
-    personal('IMMessage m("option_changed");m.addString("AI scaling");m.addString("");imGUI.receiveMessage(m);')
-    wait(lambda: personal_probe('GetConfigValueBool("campaign_ai_scaling")') == "true", "actual AI checkbox updates live config")
-    personal('IMMessage m("option_changed");m.addString("AI scaling");m.addString("");imGUI.receiveMessage(m);')
-    wait(lambda: personal_probe('GetConfigValueBool("campaign_ai_scaling")') == "false", "AI checkbox restores independent preference")
+    personal('string names;for(uint i=0;i<controller_items.length();++i)names+=controller_items[i].getName()+"|";'
+             'SetConfigValueString("test_mode_setting_cards",names);')
+    cards=personal_probe('GetConfigValueString("test_mode_setting_cards")').split("|")
+    for key in ("campaign_ai_scaling_rate","challenge_time","challenge_performance_rate"):
+        for rate in range(5):
+            assert f"rate_{key}_{rate}" in cards, (key, rate, cards)
+    for rate in (4,0):
+        personal('IMMessage m("difficulty_rate");m.addString("campaign_ai_scaling_rate");'
+                 f'm.addInt({rate});imGUI.receiveMessage(m);')
+        wait(lambda: personal_probe('GetConfigValueInt("campaign_ai_scaling_rate")') == str(rate),
+             "actual AI card callback edits the live host rate")
+        assert personal_probe('GetConfigValueBool("campaign_ai_scaling")') == str(rate != 0).lower()
     personal('IMMessage m("option_changed");m.addString("Performance scaling");m.addString("On win");imGUI.receiveMessage(m);')
     wait(lambda: personal_probe('""+LobbyGetModeSetting("challenge_performance")') == "1", "actual performance dropdown edits live host rule")
     personal('IMMessage m("option_changed");m.addString("Performance scaling");m.addString("Forced-50");imGUI.receiveMessage(m);')

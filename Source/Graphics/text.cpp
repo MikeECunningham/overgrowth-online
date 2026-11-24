@@ -236,6 +236,10 @@ void TextCanvasTexture::SetPenPosition(const vec2& point) {
     impl_->pen.y = (FT_Pos)(-point[1] * 64);
 }
 
+vec2 TextCanvasTexture::GetPenPosition() const {
+    return vec2(impl_->pen.x / 64.0f, -impl_->pen.y / 64.0f);
+}
+
 void TextCanvasTexture::AddText(const char* str, int length, const CanvasTextStyle& style, uint32_t char_limit) {
     TextMetrics metrics;
     RenderText(str, length, style, metrics, TMF_DRAW, char_limit);
@@ -735,6 +739,7 @@ void AttachTextCanvasTextureToASContext(ASContext* ctx) {
     ctx->RegisterObjectMethod("TextCanvasTexture", "void AddTextMultiline(const string &in, const TextStyle &in, uint char_limit)", asFUNCTION(ASAddTextMultiline), asCALL_CDECL_OBJFIRST);
     ctx->RegisterObjectMethod("TextCanvasTexture", "void GetTextMetrics(const string &in, const TextStyle &in, TextMetrics &out, uint char_limit)", asFUNCTION(ASGetTextMetricsInfo), asCALL_CDECL_OBJFIRST);
     ctx->RegisterObjectMethod("TextCanvasTexture", "void SetPenPosition(const vec2 &in)", asMETHOD(TextCanvasTexture, SetPenPosition), asCALL_THISCALL);
+    ctx->RegisterObjectMethod("TextCanvasTexture", "vec2 GetPenPosition() const", asMETHOD(TextCanvasTexture, GetPenPosition), asCALL_THISCALL);
     ctx->RegisterObjectMethod("TextCanvasTexture", "void SetPenColor(int r, int g, int b, int a)", asMETHOD(TextCanvasTexture, SetPenColor), asCALL_THISCALL);
     ctx->RegisterObjectMethod("TextCanvasTexture", "void SetPenRotation(float rotation)", asMETHOD(TextCanvasTexture, SetPenRotation), asCALL_THISCALL);
     ctx->DocsCloseBrace();

@@ -34,7 +34,10 @@ const char* const keys[] = {"challenge_time", "challenge_round", "challenge_perf
 int MaxModeValue(const std::string& key) {
     if (key == "progression_timer") return 5;
     if (key == "progression" || key == "progression_shared" || key == "progression_combat") return 1;
-    return 3;
+    return key == "challenge_performance" ? 3 : 4;
+}
+int DefaultModeValue(const std::string& key) {
+    return key == "challenge_time" || key == "challenge_round" || key == "challenge_performance_rate" ? ChallengeScaling::Standard : 0;
 }
 bool Known(const std::string& key) { for (const char* candidate : keys) if (key == candidate) return true; return false; }
 bool CampaignMode(const Online* online) {
@@ -97,9 +100,9 @@ bool Attacking(MovementObject* actor, ObjectID target) {
 std::string Online::ModeSettingsKey() const { return lobby_build_ ? "build" : lobby_mode_; }
 int Online::ModeSetting(const std::string& key) const {
     const auto mode = mode_settings_.find(ModeSettingsKey());
-    if (mode == mode_settings_.end()) return key == "challenge_performance_rate" ? ChallengeScaling::Standard : 0;
+    if (mode == mode_settings_.end()) return DefaultModeValue(key);
     const auto setting = mode->second.find(key);
-    return setting == mode->second.end() ? (key == "challenge_performance_rate" ? ChallengeScaling::Standard : 0) : setting->second;
+    return setting == mode->second.end() ? DefaultModeValue(key) : setting->second;
 }
 bool Online::SetModeSetting(const std::string& key, int value, PlayerID actor) {
     actor = ResolveLobbyActor(actor);
@@ -151,6 +154,8 @@ void Online::CaptureEnemyDifficulty(bool new_match) {
         sample.pressure = new_match ? ModeChallengeGeneralPressure() : ModeChallengePressure();
         sample.stats = CoopCampaign() && config["campaign_mp_scaling"].toBool();
         sample.ai = config["campaign_ai_scaling"].toBool();
+        sample.ai_rate = std::max(0, std::min(4, config["campaign_ai_scaling_rate"].toNumber<int>()));
+        sample.ai = sample.ai && sample.ai_rate != 0;
         sample.armor = config["campaign_armor_scaling"].toBool();
         sample.weapons = config["campaign_weapon_scaling"].toBool();
     }
@@ -333,6 +338,7 @@ std::string Online::ModeChallengePayload() const {
             e["level"] = state.enemy_level; e["pressure"] = state.enemy.pressure; e["base"] = state.enemy.base;
             e["humans"] = state.enemy.humans; e["bots"] = state.enemy.bots;
             e["stats"] = state.enemy.stats; e["ai"] = state.enemy.ai;
+            e["ai_rate"] = state.enemy.ai_rate;
             e["armor"] = state.enemy.armor; e["weapons"] = state.enemy.weapons;
         }
         root["wipe_serial"] = Json::UInt64(state.wipe_serial); root["combat_serial"] = Json::UInt64(state.combat_serial);
@@ -353,34 +359,34 @@ std::string Online::ModeChallengePayload() const {
     }
     return Json::FastWriter().write(root);
 }
-void Online::ReceiveModeChallenge(const std::string& payload) {
-    if (payload.size() > 512 * 1024) return;
+bool Online::ReceiveModeChallenge(const std::string& payload, bool validate_only) {
+    if (payload.size() > 512 * 1024) return false;
     Json::Reader reader; Json::Value root;
-    if (!reader.parse(payload, root, false) || !root.isObject() || !root["version"].isInt() || root["version"].asInt() != 2) return;
+    if (!reader.parse(payload, root, false) || !root.isObject() || !root["version"].isInt() || root["version"].asInt() != 2) return false;
     std::map<std::string, std::map<std::string, int>> incoming;
-    if (!root["modes"].isObject() || root["modes"].size() > 128) return;
+    if (!root["modes"].isObject() || root["modes"].size() > 128) return false;
     for (const auto& mode : root["modes"].getMemberNames()) {
-        if (mode.size() > 256 || !root["modes"][mode].isObject()) return;
+        if (mode.size() > 256 || !root["modes"][mode].isObject()) return false;
         for (const char* key : keys) {
             const auto& value = root["modes"][mode][key];
             if (value.isNull()) continue;
-            if (!value.isInt() || value.asInt() < 0 || value.asInt() > MaxModeValue(key)) return;
+            if (!value.isInt() || value.asInt() < 0 || value.asInt() > MaxModeValue(key)) return false;
             incoming[mode][key] = value.asInt();
         }
     }
     // A lobby with no started challenge still carries per-mode preferences.
-    if (root["pressure"].isNull()) { mode_settings_ = incoming; return; }
+    if (root["pressure"].isNull()) { if (!validate_only) mode_settings_ = incoming; return true; }
     if (!root["pressure"].isNumeric() || !root["seconds"].isNumeric() || !root["completions"].isArray() ||
         !root["wipes"].isArray() || !root["encounters"].isObject() || !root["encounter"].isString() || !root["level"].isString() ||
         !root["wipe_latched"].isBool() || !root["wipe_serial"].isUInt64() || !root["combat_serial"].isUInt64() ||
-        !root["foes"].isArray() || root["foes"].size() > 8192 || root["encounter"].asString().size() > 1024 || root["level"].asString().size() > 1024) return;
+        !root["foes"].isArray() || root["foes"].size() > 8192 || root["encounter"].asString().size() > 1024 || root["level"].asString().size() > 1024) return false;
     ChallengeScaling::Snapshot data;
     data.pressure = root["pressure"].asDouble(); data.active_seconds = root["seconds"].asDouble();
-    for (const auto& id : root["completions"]) { if (!id.isString()) return; data.completions.insert(id.asString()); }
-    for (const auto& id : root["wipes"]) { if (!id.isString()) return; data.wipes.insert(id.asString()); }
+    for (const auto& id : root["completions"]) { if (!id.isString()) return false; data.completions.insert(id.asString()); }
+    for (const auto& id : root["wipes"]) { if (!id.isString()) return false; data.wipes.insert(id.asString()); }
     for (const auto& id : root["encounters"].getMemberNames()) {
         const auto& row = root["encounters"][id];
-        if (!row["wipes"].isUInt() || !row["won"].isBool() || !row["award"].isNumeric() || !row["relief"].isNumeric()) return;
+        if (!row["wipes"].isUInt() || !row["won"].isBool() || !row["award"].isNumeric() || !row["relief"].isNumeric()) return false;
         auto& record = data.encounters[id]; record.wipes = row["wipes"].asUInt(); record.won = row["won"].asBool();
         record.win_award = row["award"].asDouble(); record.relief = row["relief"].asDouble();
     }
@@ -393,12 +399,16 @@ void Online::ReceiveModeChallenge(const std::string& payload) {
             e["pressure"].asDouble() < -ChallengeScaling::kRetryReliefCap || e["pressure"].asDouble() > ChallengeScaling::kPressureCap ||
             !e["base"].isNumeric() || !std::isfinite(e["base"].asDouble()) ||
             (e["base"].asFloat() != -1 && (e["base"].asFloat() < 0 || e["base"].asFloat() > 1)) ||
-            !e["stats"].isBool() || !e["ai"].isBool() || !e["armor"].isBool() || !e["weapons"].isBool()) return;
+            !e["stats"].isBool() || !e["ai"].isBool() || !e["armor"].isBool() || !e["weapons"].isBool()) return false;
         enemy.humans = e["humans"].asInt(); enemy.bots = e["bots"].asInt(); enemy.pressure = e["pressure"].asFloat(); enemy.base = e["base"].asFloat();
         enemy.stats = e["stats"].asBool(); enemy.ai = e["ai"].asBool(); enemy.armor = e["armor"].asBool(); enemy.weapons = e["weapons"].asBool();
+        const auto rate = e.get("ai_rate", 2);
+        if (!rate.isInt() || rate.asInt() < 0 || rate.asInt() > 4) return false;
+        enemy.ai_rate = rate.asInt();
     }
     ChallengeScaling::State validated;
-    if (!validated.Restore(data) || root["wipe_serial"].asUInt64() < data.wipes.size()) return;
+    if (!validated.Restore(data) || root["wipe_serial"].asUInt64() < data.wipes.size()) return false;
+    if (validate_only) return true;
     if (!mode_challenge_state) ResetModeChallenge();
     auto& state = *mode_challenge_state;
     state.progress = validated; mode_settings_ = incoming;
@@ -409,4 +419,5 @@ void Online::ReceiveModeChallenge(const std::string& payload) {
     state.wipe_tracker.latched = root["wipe_latched"].asBool(); state.wipe_tracker.all_awake_since = 0;
     state.foes.clear(); state.restored_foes.clear();
     for (const auto& id : root["foes"]) if (id.isInt() && id.asInt() >= 0) state.restored_foes.insert(static_cast<CommonObjectID>(id.asInt()));
+    return true;
 }

@@ -17,10 +17,10 @@ typedef tg_localviewport::object localviewport;
 template <>
 template <>
 void localviewport::test<1>() {
-    set_test_name("the grid grows horizontally before vertically");
+    set_test_name("two players stack vertically; larger grids grow horizontally first");
     const int counts[] = {1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 16, 17, 20};
-    const int columns[] = {1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5};
-    const int rows[] = {1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4};
+    const int columns[] = {1, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5};
+    const int rows[] = {1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4};
     for (unsigned i = 0; i < sizeof(counts) / sizeof(counts[0]); ++i) {
         LocalViewports::Grid grid = LocalViewports::ForPlayers(counts[i]);
         ensure_equals("columns", grid.columns, columns[i]);
@@ -35,6 +35,10 @@ template <>
 template <>
 void localviewport::test<2>() {
     set_test_name("players run left to right from the top; spare cells are at the bottom right");
+    LocalViewports::Rect top = LocalViewports::ForPlayer(0, 2);
+    LocalViewports::Rect bottom = LocalViewports::ForPlayer(1, 2);
+    ensure("two-player P1 spans the top half", top.left == 0.0f && top.bottom == 0.5f && top.right == 1.0f && top.top == 1.0f);
+    ensure("two-player P2 spans the bottom half", bottom.left == 0.0f && bottom.bottom == 0.0f && bottom.right == 1.0f && bottom.top == 0.5f);
     LocalViewports::Rect p1 = LocalViewports::ForPlayer(0, 3);
     LocalViewports::Rect p2 = LocalViewports::ForPlayer(1, 3);
     LocalViewports::Rect p3 = LocalViewports::ForPlayer(2, 3);

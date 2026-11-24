@@ -613,7 +613,6 @@ void UpdateController() {
 		mouse_position = imGUI.guistate.mousePosition;
 		controller_active = true;
 		SaveControllerActive(true);
-		SetGrabMouse(true);
 
 		if(current_item_locked) {
 			UpdateCurrentItem();
