@@ -177,3 +177,83 @@ def coop_inventory(ctx):
     errors = [error for inst in machines for error in script_errors(inst)]
     assert not errors, errors[:6]
     return {"passed": True, "metrics": metrics, "notes": []}
+
+
+def purchased_checkpoint_inventory(ctx):
+    """Travel from the ship to Ice Cliffs, then retry with a thrown shop dagger."""
+    from .campaign_scaling_suite import RENDER_KEYS
+    from .newcampaign_local_suite import CAMPAIGN, _code, _join_pad, _probe, _ready, _rows, _skip
+
+    game = ctx.instance("ice_checkpoint_inventory", width=800, height=450,
+                        keys={**RENDER_KEYS, "mp_port": "28356", "tutorials": "false"})
+    bridge = game.bridge
+
+    def wait(predicate, label):
+        return bridge.wait(predicate, 48, step=.12, what=label)
+
+    ship = "og_story/07_Beach_Boat_Assault.xml"
+    ice = "og_story/08_Ice_Cliff_Landing.xml"
+    _code(game, 'LobbyBeginHost();'
+          f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{ship}",false);'
+          'LobbySetModeSetting("progression",1);LobbyStart();', "menu")
+    _ready(game, ship)
+    _skip(game)
+    seat = _rows(game)[0]["id"]
+    # Compress the earning phase, then use the authored win and shop.
+    hero = bridge.me()["id"]
+    for _ in range(3):
+        _code(game, f'MovementObject@ p=ReadCharacterID({hero});'
+              'for(int i=0;i<GetNumCharacters();++i){MovementObject@ e=ReadCharacter(i);'
+              'if(!e.OnSameTeam(p))ProgressionReportHit(e.GetID(),p.GetID(),0,true);}'
+              'ProgressionCheckpoint();ProgressionResetAttempt();')
+    _code(game, 'SendGlobalMessage("levelwin");')
+    wait(lambda: bridge.call("progression", actor=seat)["view"].get("shop_open"), "ship shop")
+    for action, key in (("buy", "dagger"), ("ready", "")):
+        assert bridge.call("progression", actor=seat, action=action, key=key)["submitted"]
+    _ready(game, ice)
+    _skip(game)
+    hero = bridge.me()["id"]
+
+    def gear(avatar):
+        world = bridge.call("state")
+        return sorted((item["file"].split("/")[-1].lower(), item["id"])
+                      for item in world["items"] if item["held_by"] == avatar)
+
+    def both():
+        return [name for name, _ in gear(hero)] == ["dogsword.xml", "rabbit_knife.xml"]
+
+    wait(both, "hero has authored sword and purchased dagger")
+    starting = gear(hero)
+    # Drawing a starting weapon during the co-op sampling window used to
+    # register a second copy in its hand slot for every late join.
+    _code(game, 'coop_level_start=the_time;CoopStoryUpdate();')
+    _code(game, 'UnSheathe(_held_right,_sheathed_right);', hero)
+    _code(game, 'CoopStoryUpdate();')
+    _code(game, 'Sheathe(_held_right,_sheathed_right);', hero)
+    assert int(_probe(game, 'coop_start_files.length()')) == 1
+    dagger = dict(starting)["rabbit_knife.xml"]
+    slot = bridge.me()["weapon_slots"].index(dagger)
+    assert slot in (2, 3), slot
+    _code(game, f'UnSheathe(_held_right,{slot});ThrowWeapon(_held_right);', hero)
+    wait(lambda: "rabbit_knife.xml" not in dict(gear(hero)), "thrown dagger left the player")
+    bridge.call("level_messages", prefix="post_reset")
+    _code(game, 'SetKnockedOut(_dead);Ragdoll(_RGDL_LIMP);', hero)
+    def retry():
+        if "post_reset" in bridge.call("level_messages", prefix="post_reset")["messages"]:
+            return True
+        bridge.call("input", controller=0, hold={"attack": 1}, steps=8)
+        time.sleep(.18)
+        return False
+    wait(retry, "human death restarts the checkpoint")
+    wait(both, "both weapons restored")
+    assert gear(hero) == starting, (starting, gear(hero))
+    assert int(_probe(game, 'coop_start_files.find("Data/Items/rabbit_weapons/rabbit_knife.xml")')) == -1
+    _join_pad(game, 0, 2)
+    second = next(r for r in _rows(game) if r["id"] != seat)
+    wait(lambda: any(r["id"] == second["id"] and r["avatar_id"] >= 0 for r in _rows(game)), "second avatar")
+    avatar = next(r["avatar_id"] for r in _rows(game) if r["id"] == second["id"])
+    wait(lambda: "dogsword.xml" in dict(gear(avatar)), "second human gets campaign loadout")
+    assert [name for name, _ in gear(avatar)] == ["dogsword.xml"], gear(avatar)
+    errors = script_errors(game)
+    assert not errors, errors[:6]
+    return {"passed": True, "metrics": {"restored_items": starting, "second_player": gear(avatar)}, "notes": []}

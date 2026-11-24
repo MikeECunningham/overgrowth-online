@@ -479,6 +479,14 @@ void DrawModeRate(const string &in key, const string &in label, const string &in
     LobbyHint(hint + "\n\nOff disables it. Gentle: half the Standard rate. Brisk: 1.5x.");
 }
 
+void DrawProgressionChoice(const string &in key, const string &in label, array<string> choices) {
+    int choice = LobbyGetModeSetting(key);
+    ImGui_TextColored(kLobbyDim, label);
+    ImGui_PushItemWidth(-1.0f);
+    if(MPCombo("##" + key, choice, choices)) LobbySetModeSetting(key, choice);
+    ImGui_PopItemWidth();
+}
+
 void DrawModeSettingsForm(const vec2 &in position, const vec2 &in size, float scale) {
     LobbyForm("Mode settings", position, size, scale);
     if(focus_lobby_form && LobbyInitialForm() == "Mode settings") { ImGui_SetWindowFocus(); focus_lobby_form = false; }
@@ -494,6 +502,18 @@ void DrawModeSettingsForm(const vec2 &in position, const vec2 &in size, float sc
         lobby_difficulty_focus = true;
     }
     LobbyHint("Choose the starting preset and configure all optional difficulty scaling in one place. The host edits these settings.");
+    if(LobbyModeIsArena() || LobbyModeIsCampaign()) {
+        ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy());
+        bool progression = LobbyGetModeSetting("progression") != 0;
+        if(MPCheckbox("Progression", progression)) LobbySetModeSetting("progression", progression ? 1 : 0);
+        LobbyHint("Earn XP for upgrades between campaign levels or Arena rounds.");
+        if(progression) {
+            DrawProgressionChoice("progression_shared", "Upgrades", {"Independent", "Shared by team"});
+            if(LobbyModeIsArena()) DrawProgressionChoice("progression_combat", "Arena XP", {"Kills", "Combat damage"});
+            DrawProgressionChoice("progression_timer", "Multiplayer shop timer", {"Infinite", "10 seconds", "15 seconds", "30 seconds", "60 seconds", "120 seconds"});
+        }
+        ImGui_EndDisabled();
+    }
     if(LobbyModeIsArena()) {
         ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy());
         bool random = ConfigHasKey("oo_arena_random") && GetConfigValueBool("oo_arena_random");
@@ -546,12 +566,17 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     // navigation scope, trapping focus between its options and Start/Close.
     ImGui_PushTextWrapPos(0.0f);
     ImGui_BeginDisabled(!can_edit);
-    bool localized_armor = GetConfigValueBool("armor_localized");
-    if(MPCheckbox("Localized armor protection", localized_armor)) {
-        SetConfigValueBool("armor_localized", localized_armor);
+    int armor_rule = GetConfigValueInt("armor_localized");
+    int choice = armor_rule == 2 ? 1 : armor_rule == 1 ? 2 : 0;
+    array<string> armor_rules = {"Legacy", "Weighted", "Localized"};
+    ImGui_TextColored(kLobbyDim, "Armor protection");
+    ImGui_PushItemWidth(-1.0f);
+    if(MPCombo("##armor_model", choice, armor_rules)) {
+        SetConfigValueInt("armor_localized", choice == 1 ? 2 : choice == 2 ? 1 : 0);
         SaveConfig();
     }
-    LobbyHint("On: armor protects the body regions its pieces cover. Off: use the old whole-body metal-armor protection. Host only.");
+    ImGui_PopItemWidth();
+    LobbyHint("Legacy uses whole-body metal armor. Weighted adds protection by material and body region. Localized checks the point of impact.");
     ImGui_Spacing();
     bool all_pause = LobbyGetAllowAllPause();
     if(MPCheckbox("Everyone may pause", all_pause)) {

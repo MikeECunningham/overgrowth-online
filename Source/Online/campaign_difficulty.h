@@ -7,6 +7,13 @@
 #include <limits>
 
 namespace CampaignDifficulty {
+// Sampled by the host at a level, checkpoint or Arena match boundary.
+struct Sample {
+    int humans = 0, bots = 0; // zero humans means the level has not sampled yet
+    float pressure = 0, base = -1; // -1 uses the ordinary live base preset
+    bool stats = false, ai = false, armor = false, weapons = false;
+};
+
 enum Strength { Rat = 0, Rabbit = 1, CatOrDog = 2, BigDog = 3, Wolf = 4 };
 
 constexpr int kRegularExtraCap = 6;

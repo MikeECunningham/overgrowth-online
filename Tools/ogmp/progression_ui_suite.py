@@ -1,0 +1,128 @@
+"""Two couch seats browse separately, bank XP, buy upgrades and equip in the shared shop."""
+import time
+from pathlib import Path
+
+from .campaign_scaling_suite import CAMPAIGN, RENDER_KEYS
+from .newcampaign_local_suite import FIRST, _join_pad, _ready, _skip
+from .scenarios import script_errors
+
+
+def progression_ui(ctx):
+    host = ctx.instance("progression_shop_ui", width=1280, height=720,
+                        keys={**RENDER_KEYS, "mp_port": "28119", "player_invincible": "true",
+                              "tutorials": "false", "auto_ledge_grab": "false"})
+    bridge = host.bridge
+
+    def script(code, target="level", **args):
+        return bridge.call("exec", target=target, code=code, **args)
+
+    def rows():
+        return sorted(bridge.status().get("progression_ui", []), key=lambda r: r["screen"])
+
+    def wait(fn, what):
+        return bridge.wait(fn, 30, step=0.06, what=what)
+
+    def pad(button):
+        bridge.call("virtual_pad", action="button", slot=0, button=button, down=True)
+        time.sleep(.12)
+        bridge.call("virtual_pad", action="button", slot=0, button=button, down=False)
+        time.sleep(.1)
+
+    def stick(value):
+        bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=value)
+
+    def settings_offset():
+        script('SetConfigValueInt("test_progression_scroll",show_keybinds_offset);SaveConfig();',
+               "player_menu", local_player=1)
+        for line in (Path(host.writedir)/"Data/config.txt").read_text().splitlines():
+            if line.startswith("test_progression_scroll: "):
+                return int(line.split(": ",1)[1])
+        return 0
+
+    def host_form():
+        return next((w for w in bridge.call("ui_state")["windows"] if w["name"] == "Hosting options"), {})
+
+    def press(seat, key):
+        bridge.call("input", controller=seat, hold={key: 1}, steps=8)
+        time.sleep(.18)
+
+    try:
+        script("LobbyBeginHost();", "menu")
+        _join_pad(host, 0, 2)
+        script('LobbyAddBot();'
+               f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
+               'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",0);'
+               'LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
+        _ready(host, FIRST)
+        _skip(host)
+        wait(lambda: len(rows()) == 2, "both seat XP readouts")
+        pad(4)
+        wait(lambda: bridge.status()["open_menu_players"] == [1], "P2 pause menu")
+        script('OpenPersonalSettings();', "player_menu", local_player=1)
+        stick(30000)
+        wait(lambda: settings_offset() >= 2, "P2 right stick scrolls gamepad bindings")
+        stick(-30000)
+        wait(lambda: settings_offset() == 0, "P2 scrolls bindings back up")
+        stick(0)
+        script('this_ui.SendCallback("close");', "player_menu", local_player=1)
+        wait(lambda: not bridge.status()["open_menu_players"], "settings closed")
+        # Drive the public encounter reward event; normal purchases and input
+        # go through the same director and per-seat dispatch used in play.
+        script('for(int i=0;i<GetNumCharacters();++i){MovementObject@ c=ReadCharacter(i);'
+               'if(!c.OnSameTeam(ReadCharacterID(0)))ProgressionReportHit(c.GetID(),0,0,true);}')
+        wait(lambda: rows()[0]["display_pooled"] >= 1, "campaign kills fill purple pool")
+        script("ProgressionBeginShop(false);")
+        wait(lambda: all(r.get("shop") and r.get("focus") for r in rows()), "both independent shops open")
+        wait(lambda: rows()[0]["display_held"] > 0 and rows()[0]["display_pooled"] < .01, "commit animation transfers XP")
+        baseline = rows()
+        before = baseline[1]["display_held"]
+        assert baseline[0]["focus"] == baseline[1]["focus"] == "health", baseline
+        # Test the actual SDL right-stick map, independent of the camera binding.
+        bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=29000)
+        wait(lambda: rows()[1]["scroll"] > 3, "P2 right stick scrolls their own shop")
+        bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=-29000)
+        wait(lambda: rows()[1]["scroll"] < 1, "P2 reverse scroll reaches top")
+        bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
+        assert rows()[0]["scroll"] == 0
+        pad(14)
+        wait(lambda: rows()[1]["focus"] == "damage", "P2 browses independently")
+        assert rows()[0]["focus"] == "health"
+        pad(0)
+        wait(lambda: rows()[1]["display_held"] < before, "controller purchase debits only P2")
+        assert rows()[0]["display_held"] >= before
+        ctx.shot(host, "independent_upgrade_cards")
+        bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=32500)
+        wait(lambda: rows()[1]["scroll"] > 315, "P2 reaches wooden guard previews")
+        bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
+        ctx.shot(host, "stock_armor_catalog")
+        bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=29000)
+        wait(lambda: rows()[1]["scroll"] > 775, "P2 reaches weapon previews")
+        time.sleep(.4)
+        bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
+        ctx.shot(host, "equipment_rarities")
+        for i in (0,1):
+            press(i,"menu_cancel")
+            press(i,"menu_return")
+        wait(lambda: all(not r["shop"] for r in rows()), "ready seats leave shop")
+        script("LobbyEndGame();")
+        wait(lambda: bridge.status()["online"]["lobby_waiting"] and not bridge.status()["level_loaded"], "back in lobby")
+        bridge.call("menu", script="multiplayer_lobby.as")
+        wait(lambda: host_form().get("max_scroll_y",0) > 0, "native lobby form overflows")
+        script('ImGui_SetWindowFocus("Hosting options");', "menu")
+        stick(30000)
+        wait(lambda: host_form().get("scroll_y",0) > 4, "right stick scrolls focused lobby form")
+        stick(-30000)
+        wait(lambda: host_form()["scroll_y"] < 1, "right stick reverses native lobby scroll")
+        stick(0)
+        script('SetControllerPlayer(0);for(uint i=0;i<LobbyPlayers().length();++i)LobbySetPlayerTeam(LobbyPlayers()[i].id,1);'
+               'LobbySetModeSetting("progression_shared",1);LobbyStart();', "menu")
+        _ready(host,FIRST)
+        _skip(host)
+        script("ProgressionBeginShop(true);")
+        wait(lambda: len(rows()) == 2 and all(r["shop"] for r in rows()), "shared shop")
+        assert [r["page"] for r in rows()] == ["shop","equipment"], rows()
+        ctx.shot(host, "team_leader_and_personal_equipment")
+        assert not script_errors(host), script_errors(host)
+        return {"passed": True, "metrics": {"independent": baseline, "shared": rows()}, "notes": []}
+    finally:
+        host.stop()

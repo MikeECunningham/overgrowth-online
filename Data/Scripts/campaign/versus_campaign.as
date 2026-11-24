@@ -1,7 +1,10 @@
+#include "campaign/progression_transition.as"
+
 void Dispose() {
 }
 
 void Update() {
+    FinishProgressionTransition();
 }
 
 void EnterCampaign() {
@@ -15,6 +18,7 @@ void EnterLevel() {
 }
 
 void LeaveLevel() {
+    progression_transition_pending = false;
     Log(info, "Left level"+ GetCurrLevelName());
 }
 
@@ -54,7 +58,7 @@ void ReceiveMessage(string msg) {
         }
 	
         if(level_ids.size() > 0) {
-            LoadLevelID(level_ids[rand() % level_ids.size()]);
+            AdvanceCampaign(level_ids[rand() % level_ids.size()]);
         }
     }
 }

@@ -159,6 +159,40 @@ float camera_shake = 0.0f;
 float plant_rustle_delay = 0.0f;
 float in_plant = 0.0f;
 
+// Delayed wounds may outlive a newer attack from a different fighter.
+class ProgressionWound {
+    int attacker;
+    float remaining;
+    float applied;
+}
+array<ProgressionWound> progression_wounds;
+int progression_bleed_defeater = -1;
+
+void FlushWoundXP(ProgressionWound@ wound) {
+    if(wound.applied > 0.0f) {
+        ProgressionReportHit(this_mo.GetID(), wound.attacker, wound.applied, false);
+        wound.applied = 0.0f;
+    }
+}
+
+void RecordBleeding(float damage, float available_health) {
+    while(damage > 0.0f && progression_wounds.size() > 0) {
+        ProgressionWound@ wound = progression_wounds[0];
+        float taken = min(damage, wound.remaining);
+        float applied = min(taken, available_health);
+        wound.remaining -= taken;
+        damage -= taken;
+        available_health -= applied;
+        if(knocked_out == _awake && applied > 0.0f) {
+            wound.applied += applied;
+            if(available_health <= 0.0f) progression_bleed_defeater = wound.attacker;
+        }
+        // Send a single hit for small wounds, including the final fraction.
+        if(wound.remaining <= 0.00001f || wound.applied >= 0.1f || available_health <= 0.0f) FlushWoundXP(wound);
+        if(wound.remaining <= 0.00001f) progression_wounds.removeAt(0);
+    }
+}
+
 float blood_damage = 0.0f;  // How much blood damage remains to be dealt
 float blood_health = 1.0f;  // How much blood remaining before passing out
 float block_health = 1.0f;  // How strong is auto-block? Similar to ssb shield
@@ -206,13 +240,27 @@ float p_ear_size;
 // Campaign scaling stays separate from authored stats. Health remains in its
 // normal 0..1 range; vitality changes damage received without healing an actor
 // when another player joins, or when difficulty is changed during a fight.
+int progression_health = 0, progression_damage = 0, progression_speed = 0;
+int progression_stealth_passive = 0, progression_stealth_active = 0;
+int progression_ai = -1;
+int progression_armor_regions = 0;
+bool coop_story_loadout_ready = false;
+float equipped_damage_factor = 1.0f;
+
+float ArmorImpactFactor() {
+    if(GetConfigValueInt("armor_localized") != 2) return 1.0f;
+    return 1.0f / (1.0f + Online_WornArmorRating(this_mo.GetID()));
+}
+
 float campaign_vitality_mult = 1.0f;
 float campaign_damage_mult = 1.0f;
+float campaign_perception_mult = 1.0f;
 float campaign_armor_mult = 1.0f;
 int campaign_armor_regions = 0;  // generated physical gear coverage, replicated by host
-int campaign_authored_armor_regions = -1;  // positive results cached per actor/reset
+int campaign_authored_armor_regions = -1;  // refreshed from worn gear
 float campaign_authored_armor_check_time = -1.0f;
 float campaign_ai_bonus = 0.0f;
+float campaign_base_difficulty = -1.0f;
 int campaign_ai_tweak = 0;  // 0: authored AI, 1/2/3: one small offensive variation
 bool campaign_authored_valid = false;
 float campaign_authored_resistance = 1.0f;
@@ -1181,6 +1229,13 @@ int CanPlayDialogue() {
 }
 
 void HitByItem(string material, vec3 point, int id, int type) {
+    float previous = equipped_damage_factor;
+    equipped_damage_factor = ArmorImpactFactor();
+    ResolveItemImpact(material, point, id, type);
+    equipped_damage_factor = previous;
+}
+
+void ResolveItemImpact(string material, vec3 point, int id, int type) {
     // Native thrown collisions ask before stabbing/sticking. Keep direct and
     // replicated impact callbacks consistent with that same actual hit point.
     if(!Online_IsClient() && CampaignArmorDeflectItem(id, point)) return;
@@ -2719,7 +2774,7 @@ void Update(int num_frames) {
 
     updated++;
     UpdateMovementDebugSettings();
-    game_difficulty = GetConfigValueFloat("game_difficulty");
+    game_difficulty = ActorBaseDifficulty();
 
     EnterTelemetryZone("A");
 
@@ -3318,6 +3373,9 @@ void RecoverHealth() {
     blood_health = 1.0f;
     block_health = 1.0f;
     blood_damage = 0.0f;
+    if(progression_wounds.size() > 0) FlushWoundXP(progression_wounds[0]);
+    progression_wounds.resize(0);
+    progression_bleed_defeater = -1;
     temp_health = 1.0f;
     permanent_health = 1.0f;
     SetOnFire(false);
@@ -4217,11 +4275,11 @@ void HandleTethering(const Timestep &in ts) {
 
         if(weap_id == -1 || ReadItemID(weap_id).GetLabel() == "staff") {
             ko_shield = 0;
-            TakeDamage(ts.step() * mix(0.7f, 0.3f, game_difficulty));
-
-            if(species == _rat) {
-                TakeDamage(ts.step() * 0.4f);
-            }
+            // The victim's durability is applied by TakeDamage; the holder's
+            // attack damage supplies the opposing side of the choke contest.
+            float choke_rate = mix(0.7f, 0.3f, game_difficulty) + (species == _rat ? 0.4f : 0.0f);
+            float strength = char.HasVar("p_attack_damage_mult") ? char.GetFloatVar("p_attack_damage_mult") : 1.0f;
+            TakeDamage(ts.step() * choke_rate * strength);
 
             if(knocked_out != _awake) {
                 this_mo.MaterialEvent("choke_fall", this_mo.position);
@@ -4892,6 +4950,7 @@ void RegenerateHealth(const Timestep &in ts) {
     if(blood_damage > 0.0f) {
         float damage = min(time_step, blood_damage);
         blood_damage -= damage;
+        if(progression_wounds.size() > 0) RecordBleeding(damage, max(0.0f, blood_health));
         blood_health -= damage;
 
         if(blood_health <= 0.0f && knocked_out == _awake) {
@@ -5713,11 +5772,11 @@ void CampaignArmorNearest(const vec3 &in point, const vec3 &in a, const vec3 &in
 }
 
 bool CampaignArmorProtectsAt(const vec3 &in point) {
-    // Zero is retried: a late join may receive its authored attachments later.
-    if(campaign_authored_armor_regions <= 0) campaign_authored_armor_regions = Online_AuthoredArmorRegions(this_mo.GetID());
-    if(!GetConfigValueBool("armor_localized")) return g_wearing_metal_armor || campaign_armor_regions != 0;
+    if(GetConfigValueInt("armor_localized") == 2) return false;
+    if(!GetConfigValueBool("armor_localized")) return g_wearing_metal_armor || campaign_armor_regions != 0 || progression_armor_regions != 0;
+    campaign_authored_armor_regions = Online_AuthoredArmorRegions(this_mo.GetID());
     if(g_wearing_metal_armor && campaign_authored_armor_regions == 0) return true;
-    int armor_regions = campaign_armor_regions | max(0, campaign_authored_armor_regions);
+    int armor_regions = campaign_armor_regions | progression_armor_regions | max(0, campaign_authored_armor_regions);
     if(armor_regions == 0) return false;
     float scale = max(0.1f, this_mo.rigged_object().GetCharScale());
     float best = 1.0f;
@@ -5790,6 +5849,14 @@ void MakeMetalSparks(vec3 pos) {
 }
 
 int HitByAttack(const vec3 &in dir, const vec3 &in pos, int attacker_id, float attack_damage_mult, float attack_knockback_mult) {
+    float previous = equipped_damage_factor;
+    equipped_damage_factor = ArmorImpactFactor();
+    int result = ResolveAttackImpact(dir, pos, attacker_id, attack_damage_mult, attack_knockback_mult);
+    equipped_damage_factor = previous;
+    return result;
+}
+
+int ResolveAttackImpact(const vec3 &in dir, const vec3 &in pos, int attacker_id, float attack_damage_mult, float attack_knockback_mult) {
     const bool armor_at_hit = CampaignArmorProtectsAt(pos);
     bool was_unaware = (IsUnaware() == 1);
 
@@ -6421,6 +6488,10 @@ void AchievementEventFloat(string event_str, float val) {
 
 void SetKnockedOut(int val) {
     if(val != _awake && knocked_out == _awake) {
+        if(progression_wounds.size() > 0) FlushWoundXP(progression_wounds[0]);
+        int attacker = progression_bleed_defeater >= 0 ? progression_bleed_defeater : attacked_by_id;
+        ProgressionReportHit(this_mo.GetID(), attacker, 0.0f, true);
+        progression_bleed_defeater = -1;
         knocked_out_time = the_time;
     }
 
@@ -6844,6 +6915,9 @@ void SendDamageToPeer() {
 }
 
 void CharacterDefeated() {
+    // This scan only triggers cinematic slow motion. Network sessions disable
+    // that effect, including local-only hosts and opponents run by a peer.
+    if(Online_IsActive() || zone_killed != 0) return;
     array<int> player_ids = GetPlayerCharacterIDs();
 
     if(player_ids.size() != 0) {
@@ -6868,10 +6942,8 @@ void CharacterDefeated() {
         Log(info, "Num_threats: " + num_threats);
         const float kDistanceThreshold = 10.0 * 10.0;
 
-        if(zone_killed == 0) {
-            if(this_mo.controlled || (IsAggro() == 1 && num_threats == 0 && distance_squared(this_mo.position, player_char.position) < kDistanceThreshold)) {
-                TimedSlowMotion(0.1f, 0.7f, 0.05f);
-            }
+        if(this_mo.controlled || (IsAggro() == 1 && num_threats == 0 && distance_squared(this_mo.position, player_char.position) < kDistanceThreshold)) {
+            TimedSlowMotion(0.1f, 0.7f, 0.05f);
         }
     }
 }
@@ -6892,14 +6964,17 @@ void TakeDamage(float how_much) {
     const float _permananent_damage_mult = 0.4f;
 
     if(invincible == false) {
-        how_much *= p_damage_multiplier;
+        how_much *= p_damage_multiplier * equipped_damage_factor;
 
         if(ko_shield > 0) {
             how_much = 0.0;
         }
 
+        float effective_damage = min(max(0.0f, temp_health), max(0.0f, how_much));
         temp_health -= how_much;
         permanent_health -= how_much * _permananent_damage_mult;
+        if(knocked_out == _awake && effective_damage > 0.0f)
+            ProgressionReportHit(this_mo.GetID(), attacked_by_id, effective_damage, false);
     }
 
     if(temp_health <= 0.0f && knocked_out == _awake) {
@@ -6931,10 +7006,13 @@ void TakeBloodDamage(float how_much) {
     }
 
     HandleAIEvent(_damaged);
-    how_much *= p_damage_multiplier;
+    how_much *= p_damage_multiplier * equipped_damage_factor;
 
     if(invincible == false) {
+        float effective_damage = min(max(0.0f, blood_health), max(0.0f, how_much));
         blood_health -= how_much;
+        if(knocked_out == _awake && effective_damage > 0.0f)
+            ProgressionReportHit(this_mo.GetID(), attacked_by_id, effective_damage, false);
 
         if(permanent_health > blood_health) {
             permanent_health -= how_much * 0.5f;
@@ -6950,8 +7028,19 @@ void TakeBloodDamage(float how_much) {
 }
 
 void TakeDelayedBloodDamage(float how_much) {
-    how_much *= p_damage_multiplier;
+    how_much *= p_damage_multiplier * equipped_damage_factor;
     blood_damage += how_much;
+    if(how_much > 0.0f && ProgressionEnabled()) {
+        uint count = progression_wounds.size();
+        if(count > 0 && progression_wounds[count - 1].attacker == attacked_by_id) {
+            progression_wounds[count - 1].remaining += how_much;
+        } else {
+            ProgressionWound wound;
+            wound.attacker = attacked_by_id;
+            wound.remaining = how_much;
+            progression_wounds.insertLast(wound);
+        }
+    }
 }
 
 // Animation events are created by the animation files themselves. For example, when the run animation is played, it calls HandleAnimationEvent( "leftrunstep", left_foot_pos ) when the left foot hits the ground.
@@ -7243,10 +7332,12 @@ void HandleAnimationMiscEvent(const string &in event, const vec3 &in world_pos) 
 }
 
 void AISound(vec3 pos, float max_range, SoundType type) {
+    max_range *= StealthRangeMultiplier(this_mo);
     // DebugDrawWireSphere(pos, max_range, vec3(1.0f), _fade);
     string msg = "nearby_sound " + pos.x + " " + pos.y + " " + pos.z + " " + max_range + " " + this_mo.getID() + " " + type;
     array<int> nearby_characters;
-    GetCharactersInSphere(pos, max_range * 2.0, nearby_characters);
+    // Rabbits hear twice as far, and sampled perception can add up to 50%.
+    GetCharactersInSphere(pos, max_range * 3.0f, nearby_characters);
     int num_chars = nearby_characters.size();
 
     for(int i = 0; i < num_chars; ++i) {
@@ -8219,7 +8310,14 @@ void SetOnGround(bool _on_ground) {
 float GetVisionDistance(const vec3 &in target_pos) {
     float direct_vision = dot(this_mo.GetFacing(), normalize(target_pos - this_mo.position));
     direct_vision = max(0.0f, direct_vision);
-    return direct_vision * vision_threshold;
+    return direct_vision * vision_threshold * campaign_perception_mult;
+}
+
+float StealthRangeMultiplier(MovementObject@ character) {
+    bool crouched = character.HasVar("duck_amount") && character.GetFloatVar("duck_amount") >= 0.5f;
+    string stat = crouched ? "progression_stealth_active" : "progression_stealth_passive";
+    int rank = character.HasVar(stat) ? character.GetIntVar(stat) : 0;
+    return 1.0f / (1.0f + 0.06f * max(0, rank));
 }
 
 void GetMatchingCharactersInArray(array<int> &in characters, array<int> &out matching_characters, uint16 flags) {
@@ -8438,7 +8536,7 @@ void GetVisibleCharacters(uint16 flags, array<int> &visible_characters) {
         GetFOVMesh(fov_peripheral[0], fov_peripheral[1], points);
 
         for(int i = 0, len = points.size(); i < len; ++i) {
-            points[i] *= fov_peripheral[2];
+            points[i] *= fov_peripheral[2] * campaign_perception_mult;
         }
 
         CreateCustomHull(fov_path, points);
@@ -8458,7 +8556,7 @@ void GetVisibleCharacters(uint16 flags, array<int> &visible_characters) {
         GetFOVMesh(fov_focus[0], fov_focus[1], points);
 
         for(int i = 0, len = points.size(); i < len; ++i) {
-            points[i] *= fov_focus[2];
+            points[i] *= fov_focus[2] * campaign_perception_mult;
         }
 
         CreateCustomHull(fov_path, points);
@@ -8505,11 +8603,20 @@ void GetVisibleCharacters(uint16 flags, array<int> &visible_characters) {
     vec3 head_pos = this_mo.rigged_object().GetAvgIKChainPos(head_string);
 
     for(uint i = 0; i < nearby_characters.size(); ++i) {
-        if(this_mo.getID() != nearby_characters[i] &&
-                !ReadCharacterID(nearby_characters[i]).static_char &&
-                VisibilityCheck(head_pos, ReadCharacterID(nearby_characters[i]))) {
-            visible_characters.push_back(nearby_characters[i]);
+        int id = nearby_characters[i];
+        if(this_mo.getID() == id) continue;
+        MovementObject@ candidate = ReadCharacterID(id);
+        if(candidate.static_char) continue;
+        float concealment = this_mo.OnSameTeam(candidate) ? 1.0f : StealthRangeMultiplier(candidate);
+        if(concealment < 1.0f) {
+            // Preserve the authored focus/peripheral angles and walls. A
+            // target's stance reduces only the ranges of cones containing it.
+            float range = nearby_characters_peripheral.find(id) >= 0 ? fov_peripheral[2] : 0.0f;
+            if(nearby_characters_focus.find(id) >= 0) range = max(range, fov_focus[2]);
+            range *= campaign_perception_mult * concealment;
+            if(distance_squared(head_pos, candidate.position) > range * range) continue;
         }
+        if(VisibilityCheck(head_pos, candidate)) visible_characters.push_back(id);
     }
 
     LeaveTelemetryZone();  // GetVisibleCharacters
@@ -10783,8 +10890,8 @@ bool CanGrabWeaponFromBody(ItemObject@ item_obj) {
 
 void HandlePickUp() {
     // Authored partial armor also catches thrown blades before its first melee
-    // hit. Retry missing attachments at a bounded rate for late joiners.
-    if(campaign_authored_armor_regions <= 0 && time >= campaign_authored_armor_check_time) {
+    // hit. Recheck at a bounded rate as equipment is attached or removed.
+    if(time >= campaign_authored_armor_check_time) {
         campaign_authored_armor_regions = Online_AuthoredArmorRegions(this_mo.GetID());
         campaign_authored_armor_check_time = time + 1.0f;
     }
@@ -10815,7 +10922,7 @@ void HandlePickUp() {
             }
         }
 
-        if(g_wearing_metal_armor || campaign_armor_regions != 0 || campaign_authored_armor_regions > 0) {
+        if(g_wearing_metal_armor || campaign_armor_regions != 0 || progression_armor_regions != 0 || campaign_authored_armor_regions > 0) {
             int nearest_thrown_id = GetNearestThrownWeapon(this_mo.position, 2.0f);
 
             if(nearest_thrown_id != -1) {
@@ -15614,8 +15721,10 @@ void CampaignRememberAuthoredParameters() {
 
 void CampaignApplyAuthoredScaling() {
     if(!campaign_authored_valid) CampaignRememberAuthoredParameters();
-    p_damage_multiplier = campaign_authored_resistance / campaign_vitality_mult;
-    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult;
+    p_damage_multiplier = campaign_authored_resistance / (campaign_vitality_mult * (1.0f + 0.08f * progression_health));
+    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult * (1.0f + 0.06f * progression_damage);
+    run_speed = _base_run_speed * p_speed_mult * (1.0f + 0.03f * progression_speed);
+    true_max_speed = _base_true_max_speed * p_speed_mult * (1.0f + 0.03f * progression_speed);
     // Restore all authored values first. AI scaling does not stack defense,
     // counters, catching and faster animations across the entire encounter.
     p_aggression = campaign_authored_aggression;
@@ -15643,9 +15752,20 @@ void CampaignApplyAuthoredScaling() {
     }
 }
 
+float ActorBaseDifficulty() {
+    if(progression_ai >= 0) return min(1.0f, progression_ai * 0.5f);
+    if(campaign_base_difficulty >= 0.0f) return campaign_base_difficulty;
+    return GetConfigValueFloat("game_difficulty");
+}
+
 void SetCampaignScaling(float vitality, float damage, float armor, float ai) {
+    game_difficulty = ActorBaseDifficulty();
     campaign_vitality_mult = max(0.75f, min(6.0f, vitality));
     campaign_damage_mult = max(0.9625f, min(2.0f, damage));
+    float perception = max(0.9f, min(1.5f, 1.0f + 0.10f * (campaign_vitality_mult - 1.0f) +
+                                                      0.25f * (campaign_damage_mult - 1.0f)));
+    if(perception != campaign_perception_mult) fov_hulls_calculated = false;
+    campaign_perception_mult = perception;
     campaign_armor_mult = 1.0f;  // defense follows actual equipped regions
     campaign_ai_bonus = max(0.0f, min(0.03f, ai));
     CampaignApplyAuthoredScaling();

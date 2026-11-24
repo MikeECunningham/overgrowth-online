@@ -53,6 +53,7 @@
 #include <GUI/IMUI/imui_script.h>
 #include <Logging/logdata.h>
 #include <Online/online.h>
+#include <Online/friendly_progression.h>
 #include <Testing/test_bridge.h>
 
 extern std::string script_dir_path;
@@ -583,7 +584,13 @@ void Level::Message(const std::string& msg) {
         return;  // Overgrowth Online: a request for the host
     }
 
-    if (msg == "reset") online->ResetCampaignDifficulty();
+    if (msg == "reset") {
+        online->ResetCampaignDifficulty();
+        if (FriendlyProgression::Enabled()) FriendlyProgression::ResetAttempt();
+    } else if (msg == "post_reset") {
+        // The scene has detached runtime items and restored authored slots.
+        online->RefreshProgressionLoadouts(false);
+    }
 
     TestBridge::Instance()->NoteLevelMessage(msg);
 

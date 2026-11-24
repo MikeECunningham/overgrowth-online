@@ -37,6 +37,11 @@
 #include <Graphics/camera.h>
 #include <Graphics/frame_timers.h>
 #include <GUI/difficulty_hud.h>
+#include <GUI/progression_ui.h>
+#include <Online/friendly_progression.h>
+#include <Online/armor_protection.h>
+#include <Online/campaign_equipment.h>
+#include <Asset/Asset/attachmentasset.h>
 #include <Testing/sampler.h>
 #include <Threading/job_system.h>
 #include <Threading/sdl_wrapper.h>
@@ -370,6 +375,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         Json::Reader difficulty_reader;
         difficulty_reader.parse(online->DifficultyHUDSnapshot(), out["difficulty_hud"], false);
         out["difficulty_hud_layout"] = DifficultyHUD::Inspect();
+        out["progression_ui"] = ProgressionUI::Inspect();
         if (UseVulkan()) {
             out["vk_problems"] = VkBackend::ValidationProblems();  // validation layer warnings and errors ("vk_validation")
             out["vk_frames"] = (Json::UInt64)VkBackend::FramesPresented();
@@ -471,6 +477,13 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 o["players"].append(p);
             }
         }
+    } else if (cmd == "progression") {
+        const PlayerID actor = req.get("actor", LobbyAuthority::InvalidPlayer).asUInt();
+        const PlayerID target = req.get("target", actor).asUInt();
+        if (req["action"].isString())
+            out["submitted"] = FriendlyProgression::Act(actor, target, req["action"].asString(), req.get("key", "").asString());
+        out["view"] = FriendlyProgression::View(actor, target);
+        out["ledger"] = FriendlyProgression::Snapshot();
     } else if (cmd == "state") {
         out["characters"] = Json::Value(Json::arrayValue);
         out["my_avatar"] = loaded ? MyAvatar(engine) : -1;
@@ -521,8 +534,13 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                     entry["id"] = child->GetID();
                     entry["common_id"] = static_cast<int>(online->GetOriginalID(child->GetID()));
                     entry["path"] = child->obj_file;
+                    entry["enabled"] = child->enabled_;
                     entry["region"] = child->GetScriptParams()->HasParam("Campaign Armor Region") ?
-                        child->GetScriptParams()->ASGetInt("Campaign Armor Region") : 0;
+                        child->GetScriptParams()->ASGetInt("Campaign Armor Region") :
+                        child->GetScriptParams()->HasParam("Progression Armor Region") ?
+                        child->GetScriptParams()->ASGetInt("Progression Armor Region") : 0;
+                    entry["material"] = child->GetScriptParams()->HasParam("Armor Material Tier") ?
+                        child->GetScriptParams()->ASGetInt("Armor Material Tier") : 0;
                     entry["pos"] = Vec(child->GetTranslation());
                     entry["scale"] = Vec(child->GetScale());
                     entry["parent"] = child->parent ? static_cast<int>(online->GetOriginalID(child->parent->GetID())) : -1;
@@ -558,6 +576,14 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                     valid = valid && std::isfinite(fit);
                     entry["fit_valid"] = valid;
                     entry["fit_error"] = valid ? Json::Value(fit) : Json::Value();
+                    if (valid && child->obj_file.find("large_wood_plate.xml") != std::string::npos) {
+                        const auto& bone = attached.bone_connects[0];
+                        const mat4 physical = rig->display_bone_transforms[bone.bone_id].GetMat4() *
+                                              rig->skeleton_.physics_bones[bone.bone_id].initial_rotation;
+                        const vec3 limb_axis = normalize(physical.GetRotatedvec3(vec3(0,0,1)));
+                        const vec3 plate_axis = child->GetRotation() * vec3(0,1,0);
+                        entry["long_axis_alignment"] = std::fabs(dot(limb_axis, plate_axis));
+                    }
                     if (valid) entry["expected_pos"] = Vec(expected.GetTranslationPart());
                     c["armor_attachments"].append(entry);
                 }
@@ -643,13 +669,14 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 for (const char* name : {"p_damage_multiplier", "p_attack_damage_mult", "p_attack_knockback_mult",
                                          "p_attack_speed_mult", "p_speed_mult", "p_aggression", "p_ground_aggression",
                                          "p_block_skill", "p_block_followup", "g_weapon_catch_skill", "g_throw_counter_probability", "game_difficulty",
-                                         "campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus",
+                                         "campaign_vitality_mult", "campaign_damage_mult", "campaign_perception_mult", "campaign_armor_mult", "campaign_ai_bonus", "campaign_base_difficulty",
                                          "campaign_authored_resistance", "campaign_authored_damage", "campaign_authored_aggression",
                                          "campaign_authored_ground_aggression", "campaign_authored_block_skill", "campaign_authored_block_followup",
                                          "campaign_authored_attack_speed", "campaign_authored_throw_counter", "campaign_authored_weapon_catch"}) {
                     if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetFloatVar(name);
                 }
-                for (const char* name : {"species", "ko_shield", "max_ko_shield", "campaign_ai_tweak", "campaign_armor_regions"}) {
+                for (const char* name : {"species", "ko_shield", "max_ko_shield", "campaign_ai_tweak", "campaign_armor_regions",
+                                         "progression_health", "progression_damage", "progression_speed", "progression_stealth_passive", "progression_stealth_active"}) {
                     if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetIntVar(name);
                 }
                 if (mo->ASHasVar("g_wearing_metal_armor"))
@@ -666,6 +693,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 ItemObject* io = static_cast<ItemObject*>(obj);
                 Json::Value it;
                 it["id"] = io->GetID();
+                it["enabled"] = io->enabled_;
                 it["state"] = static_cast<int>(io->state());
                 it["parent_id"] = io->parent ? io->parent->GetID() : -1;
                 it["common_id"] = online->GetOriginalID(io->GetID());
@@ -1299,6 +1327,70 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 mo->HitByItem(item->GetID(), at, "flesh", 2);
             }
         }
+    } else if (cmd == "armor_fixture") {
+        // Opt-in integration fixtures: attach an exact stock wearable socket,
+        // or reproduce a duplicated runtime mesh without bypassing reconciliation.
+        MovementObject* actor = loaded ? FindCharacter(sg, req.get("char", -1).asInt()) : nullptr;
+        if (!actor) throw std::runtime_error("armor_fixture needs a character");
+        const std::string op = req.get("op", "").asString();
+        if (op == "wear") {
+            if (online->IsClient()) throw std::runtime_error("armor wearable needs host authority");
+            Object* object = sg->GetObjectFromID(req.get("item", -1).asInt());
+            const auto socket = engine->GetAssetManager()->LoadSync<Attachment>(req["slot"].asString());
+            if (!object || object->GetType() != _item_object || !socket.valid())
+                throw std::runtime_error("armor_fixture needs an item and valid socket");
+            actor->AttachItemToSlotEditor(object->GetID(), _at_attachment, req.get("mirrored", false).asBool(), socket, false);
+        } else if (op == "detach") {
+            if (online->IsClient()) throw std::runtime_error("armor detach needs host authority");
+            const int item = req.get("item", -1).asInt();
+            actor->NetworkDetachItem(item); // retain the editor restoration link
+            online->Send<OnlineMessages::AttachToMessage>(actor->GetID(), item, 0, false, false, nullptr, vec3(1), 0, true);
+        } else if (op == "duplicate") {
+            if (online->IsClient()) throw std::runtime_error("armor duplicate needs host authority");
+            auto* rig = actor->rigged_object();
+            const ObjectID source = req.get("piece", -1).asInt();
+            auto found = std::find_if(rig->children.begin(), rig->children.end(), [source](const AttachedEnvObject& a) {
+                return a.direct_ptr && a.direct_ptr->GetID() == source;
+            });
+            if (found == rig->children.end()) throw std::runtime_error("armor fixture source is not attached");
+            const AttachedEnvObject original = *found;
+            Object* piece = original.direct_ptr;
+            const int region = piece->GetScriptParams()->HasParam("Campaign Armor Region") ?
+                piece->GetScriptParams()->ASGetInt("Campaign Armor Region") : req.get("region", 0).asInt();
+            if (region <= 0 || region > CampaignEquipment::kAllRegions || (region & (region - 1)))
+                throw std::runtime_error("armor fixture needs a single armor region");
+            const std::string path = req.get("path", piece->obj_file).asString();
+            const ObjectID copy_id = sg->map_editor->CreateObject(path);
+            Object* copy = sg->GetObjectFromID(copy_id);
+            if (!copy || copy->GetType() != _env_object) throw std::runtime_error("armor fixture failed to duplicate mesh");
+            for (const auto& param : piece->GetScriptParams()->GetParameterMap()) copy->GetScriptParams()->InsertScriptParam(param.first, param.second);
+            const bool authored = req.get("authored", false).asBool();
+            if (authored) {
+                copy->GetScriptParams()->ASRemove("Campaign Armor Region");
+                copy->GetScriptParams()->ASRemove("Progression Armor Region");
+                copy->GetScriptParams()->ASRemove("Armor Material Tier");
+                copy->GetScriptParams()->ASRemove("Armor Slot Suppressed");
+            }
+            copy->exclude_from_save = copy->exclude_from_undo = true;
+            copy->SetTranslation(piece->GetTranslation()); copy->SetRotation(piece->GetRotation()); copy->SetScale(piece->GetScale());
+            copy->SetEnabled(true);
+            copy->SetParent(actor); copy->SetCollisionEnabled(false);
+            auto duplicate = original;
+            duplicate.direct_ptr = copy; duplicate.legacy_obj_id = copy_id;
+            rig->children.push_back(duplicate);
+            online->Send<OnlineMessages::CreateEntity>(copy->obj_file, copy->GetTranslation(), copy_id);
+            online->Send<OnlineMessages::AttachToMessage>(actor->GetID(), copy_id, 0, true, false, &duplicate,
+                                                          copy->GetScale(), authored ? 0 : region);
+            out["copy"] = copy_id;
+            out["region"] = region;
+            int copies = 0;
+            for (const auto& child : rig->children)
+                if (child.direct_ptr && child.direct_ptr->GetScriptParams()->HasParam("Campaign Armor Region") &&
+                    child.direct_ptr->GetScriptParams()->ASGetInt("Campaign Armor Region") == region) ++copies;
+            out["generated_copies"] = copies;
+        } else if (op != "inspect") throw std::runtime_error("unknown armor fixture operation");
+        out["authored_regions"] = online->AuthoredArmorRegions(actor->GetID());
+        out["rating"] = online->WornArmorRating(actor->GetID());
     } else if (cmd == "spawn") {
         // Host (or offline): a character from an object file, replicated to
         // the clients the way the engine adds a hot-joining player

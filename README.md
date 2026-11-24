@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.11** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.14** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -45,6 +45,9 @@ and the remaining Steam friends/relay checks.
   bots count toward scaling and spread their escorts across teammates.
 - Mode-specific challenge settings for active time, level/match progression, encounter wins,
   complete-party losses and Forced-50 retry relief. See [Mode challenge settings](Docs/Markdown/Mode%20Challenge.md).
+- Optional **Progression** gives campaign and Arena players XP, equipment,
+  recruits and between-fight shops. Campaigns can loop with their upgrades.
+  See [XP, shops and equipment](Docs/Markdown/Mode%20Challenge.md#player-progression).
 - A readable host-view difficulty readout shows encounter modifiers, reinforcements,
   progression conditions and an estimated threat relative to the unscaled encounter.
 - Optional campaign party scaling with logarithmic same-species reinforcements, stronger bosses,
@@ -97,7 +100,7 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 | Who may change what | Any connected player could delete, spawn or move any object and rewrite player states and settings | The host checks every message: a player can only affect their own character; hits and grabs must be in reach |
 | Malformed packets | Could crash the game | Dropped unread; tested with forged attacks |
 
-See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **11** requires matching updated binaries on every computer.
+See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **15** requires matching updated binaries on every computer.
 
 ## Multiplayer lobby
 
@@ -122,17 +125,20 @@ The host's P1 starts as Turner. Other players start with their team's fur and cl
 The host can choose **Add bot** in the lobby or pause menu. Bots appear in the
 same roster, with host-managed names, teams and removal, but have no controller
 or screen. They stay with the party between levels and when returning to the
-lobby. Arena uses these explicit bot entries instead of a separate autofill
-setting; new bots enter the next round. Elsewhere, bots use the existing combat
+lobby. In automatic Arena matches, players and lobby bots get first choice of
+the two to four battle slots. Temporary opponents fill open slots for that match.
+Larger parties play together. With **Force lobby teams** enabled, Arena waits
+for two opposing teams from the lobby. New seats enter at the next round.
+Elsewhere, bots use the existing combat
 AI and idle allies follow a living teammate using the game's navigation. This
 does not add new parkour or pathfinding abilities. Party bots are hidden and
 held during campaign dialogue alongside extra human players.
 
-Run `python3 Tools/ogmp.py run lobby_bots roster_bots_arena bot_migration` for
+Run `python3 Tools/ogmp.py run lobby_bots roster_bots_arena arena_autofill bot_migration` for
 bot permissions, live spawning, screen/input ownership, Arena rounds and server
 handoff checks.
 
-During multiplayer, Start opens a menu inside the requesting player's screen without stopping the world. Multiple players can open their own menus and settings simultaneously; navigating or closing one does not affect the others. Their controls, camera inversion and sensitivity belong to that local player; the local leader also controls the client's shared graphics and audio settings. Open settings pages refresh when those shared values change. By default only the designated host can explicitly pause the shared world. The host can allow all players to pause. Single-player still pauses when opening the menu. Reconnecting a controller restores its player and settings for that client session. New controllers can also join during play through the same roster used by the lobby.
+During multiplayer, Start opens a menu inside the requesting player's screen without stopping the world. Multiple players can open their own menus and settings simultaneously; navigating or closing one does not affect the others. Their controls, camera inversion and sensitivity belong to that local player; the local leader also controls the client's shared graphics and audio settings. Open settings pages refresh when those shared values change. By default only the designated host can explicitly pause the shared world. The host can allow all players to pause. Escape or Start pauses automatically when the host is the only human, including in a lobby with bots. With multiple humans, an unbound P opens the keyboard player’s menu and pauses if that player has permission. Closing the shortcut menu releases its pause. A separately requested world pause stays in effect. Reconnecting a controller restores its player and settings for that client session. New controllers can also join during play through the same roster used by the lobby.
 
 Adding a player to an existing single-player level creates a local party without
 restarting the world or opening an online listener. Names, teams, device profiles,

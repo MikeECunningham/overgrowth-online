@@ -17,7 +17,7 @@ class LocalPlayerMenus {
     explicit LocalPlayerMenus(Engine& engine);
     ~LocalPlayerMenus();
 
-    bool Toggle(int input_id);
+    bool Toggle(int input_id, bool pause_with_menu = false);
     bool IsOpen(int input_id) const;
     bool AnyOpen() const;
     bool PausesWorld() const;

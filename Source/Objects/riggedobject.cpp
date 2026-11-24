@@ -44,6 +44,7 @@
 #include <Internal/collisiondetection.h>
 
 #include <Objects/group.h>
+#include <Objects/attachment_pose.h>
 #include <Objects/movementobject.h>
 #include <Objects/itemobject.h>
 #include <Objects/envobject.h>
@@ -1339,6 +1340,7 @@ void UpdateAttachedItemRagdoll(AttachedItem& stuck_item, const Skeleton& skeleto
         // type = _at_sheathe;
     }
     int bone_id = stuck_item.bone_id;
+    if (unsigned(bone_id) >= skeleton.physics_bones.size() || !skeleton.physics_bones[bone_id].bullet_object) return;
     mat4 bone_mat = skeleton.physics_bones[bone_id].bullet_object->GetTransform();
     mat4 the_weap_mat = bone_mat * weapon_offset.find(item->GetID())->second;
     mat4 temp_weap_mat = the_weap_mat;
@@ -2084,6 +2086,7 @@ void RiggedObject::InvalidatedItem(ItemObjectScriptReader* invalidated) {
 
 mat4 LoadAttachPose(const std::string& anim_path, const std::string& ik_attach, const Skeleton& skeleton, int* bone_id_ptr, bool mirror, bool blade_orient, int chain_depth) {
     int& bone_id = *bone_id_ptr;
+    bone_id = -1;
     // AnimationRef anim_ref = Animations::Instance()->ReturnRef(anim_path);
     AnimationRef anim_ref = Engine::Instance()->GetAssetManager()->LoadSync<Animation>(anim_path);
     if (anim_ref.valid()) {
@@ -2092,6 +2095,7 @@ mat4 LoadAttachPose(const std::string& anim_path, const std::string& ik_attach, 
         AnimInput anim_input(blend_map, NULL);
         anim_ref->GetMatrices(0.0f, anim_output, anim_input);
 
+        if (anim_output.weapon_matrices.empty()) return mat4(1.0f);
         BoneTransform weapon_bt = anim_output.weapon_matrices[0];
         weapon_bt.origin += anim_output.center_offset;
 
@@ -2103,6 +2107,10 @@ mat4 LoadAttachPose(const std::string& anim_path, const std::string& ik_attach, 
             bone_id = skeleton.skeleton_asset_ref->GetData().symmetry[bone_id];
             anim_input.mirrored = mirror;
             anim_ref->GetMatrices(0.0f, anim_output, anim_input);
+        }
+        if (unsigned(bone_id) >= anim_output.matrices.size()) {
+            bone_id = -1;
+            return mat4(1.0f);
         }
         BoneTransform hand_bt = anim_output.matrices[bone_id];
         hand_bt.origin += anim_output.center_offset;
@@ -2165,7 +2173,7 @@ void RiggedObject::SetWeaponOffset(AttachedItem& stuck_item, AttachmentType type
     mat4& wo = weapon_offset[item->GetID()];
     mat4& wor = weapon_offset_retarget[item->GetID()];
 
-    int bone_id;
+    int bone_id = -1;
     const ItemRef& ir = item.GetAttached()->item_ref();
     std::string ir_attachanimpath = ir->GetAttachAnimPath(type);
     if (ir_attachanimpath.empty() == false) {
@@ -3370,6 +3378,7 @@ void RiggedObject::MPCutPlane(const vec3& normal, const vec3& pos, const vec3& d
 void UpdateAttachedItem(AttachedItem& attached_item, const Skeleton& skeleton, float char_scale, const std::map<int, mat4> weapon_offset, const WeapAnimInfoMap& weap_anim_info_map, const std::map<int, mat4>& weapon_offset_retarget) {
     ItemObjectScriptReader& item = attached_item.item;
     int bone = attached_item.bone_id;
+    if (unsigned(bone) >= skeleton.physics_bones.size() || !skeleton.physics_bones[bone].bullet_object) return;
     mat4 bone_mat = skeleton.physics_bones[bone].bullet_object->GetTransform();
     mat4 weap_mat = weapon_offset.find(item->GetID())->second;
     weap_mat.SetTranslationPart(weap_mat.GetTranslationPart() * char_scale);
@@ -3401,6 +3410,7 @@ void UpdateAttachedItem(AttachedItem& attached_item, const Skeleton& skeleton, f
 
 void UpdateStuckItem(AttachedItem& stuck_item, const Skeleton& skeleton, bool animated) {
     int bone = stuck_item.bone_id;
+    if (unsigned(bone) >= skeleton.physics_bones.size() || !skeleton.physics_bones[bone].bullet_object) return;
     mat4 bone_mat = skeleton.physics_bones[bone].bullet_object->GetTransform();
     mat4 the_weap_mat = bone_mat * stuck_item.rel_mat;
     const mat4& temp_weap_mat = the_weap_mat;
@@ -4817,6 +4827,7 @@ void RiggedObject::SetPrimaryWeaponID(int id) {
 void DrawAvailableAttachmentSlot(const ItemRef& item_ref, AttachmentType type, const Skeleton& skeleton, bool mirrored, std::list<AttachmentSlot>* list) {
     int bone_id;
     mat4 rel_mat = LoadAttachPose(item_ref->GetAttachAnimPath(type), item_ref->GetIKAttach(type), skeleton, &bone_id, mirrored, true, 0);
+    if (unsigned(bone_id) >= skeleton.physics_bones.size() || !skeleton.physics_bones[bone_id].bullet_object) return;
     mat4 bone_mat = skeleton.physics_bones[bone_id].bullet_object->GetTransform();
     mat4 world_mat = bone_mat * rel_mat;
 
@@ -4830,6 +4841,7 @@ void DrawAvailableAttachmentSlot(const ItemRef& item_ref, AttachmentType type, c
 void DrawAvailableAttachment(const AttachmentRef attachment_ref, const Skeleton& skeleton, bool mirrored, AttachmentSlotList* list) {
     int bone_id;
     mat4 rel_mat = LoadAttachPose(attachment_ref->anim, attachment_ref->ik_chain_label, skeleton, &bone_id, mirrored, false, attachment_ref->ik_chain_bone);
+    if (unsigned(bone_id) >= skeleton.physics_bones.size() || !skeleton.physics_bones[bone_id].bullet_object) return;
     mat4 bone_mat = skeleton.physics_bones[bone_id].bullet_object->GetTransform();
     mat4 world_mat = bone_mat * rel_mat;
 
@@ -4874,6 +4886,8 @@ void RiggedObject::AttachItemToSlot(ItemObject* item_object, AttachmentType type
     ItemObjectScriptReader& item = stuck_item.item;
     item.char_id = char_id;
     item.holding = true;
+    item.attachment_type = type;
+    item.attachment_mirror = mirrored;
     if (attachment_ref) {
         item.attachment_ref = *attachment_ref;
     }

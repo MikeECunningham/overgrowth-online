@@ -36,6 +36,7 @@
 
 #include <Scripting/angelscript/asfuncs.h>
 #include <Scripting/angelscript/ascontext.h>
+#include <Online/friendly_progression.h>
 #include <Scripting/angelscript/lobby_bindings.h>
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
 
@@ -5977,6 +5978,10 @@ int AS_Online_CoopRosterSize() { return Online::Instance()->CoopRosterSize(); }
 bool AS_Online_CampaignIsMainCharacter(int avatar) { return Online::Instance()->CampaignCharacterOnMainTeam(avatar); }
 std::string AS_Online_CampaignWaitingText() { return Online::Instance()->CampaignWaitingText(); }
 void AS_Online_ChallengeEncounterBegin(const std::string& key) { Online::Instance()->ChallengeEncounterBegin(key); }
+void AS_CaptureEnemyDifficulty(bool new_match) { Online::Instance()->CaptureEnemyDifficulty(new_match); }
+void AS_ProgressionCampaignLoop() { Online::Instance()->BeginChallengeCampaignLoop(); }
+void AS_ProgressionArenaLoadouts() { Online::Instance()->RefreshProgressionLoadouts(true); }
+float AS_WornArmorRating(int id) { return Online::Instance()->WornArmorRating(id); }
 void AS_Online_ChallengeEncounterWin(const std::string& key) { Online::Instance()->ChallengeEncounterWin(key); }
 void AS_Online_ChallengeCompletion(const std::string& key) { Online::Instance()->ChallengeCompletion(key); }
 int AS_Online_ChallengeReferenceAvatar() { return Online::Instance()->ChallengeReferenceAvatar(); }
@@ -6232,6 +6237,13 @@ static void AS_Online_StopListening(const std::string& channel) {
 }
 
 void AttachOnline(ASContext* context) {
+    context->RegisterGlobalFunction("bool ProgressionEnabled()", asFUNCTION(FriendlyProgression::Enabled), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool ProgressionShopOpen()", asFUNCTION(FriendlyProgression::ShopOpen), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool ProgressionLoopChosen()", asFUNCTION(FriendlyProgression::LoopChosen), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool ProgressionBeginShop(bool final_level = false)", asFUNCTION(FriendlyProgression::BeginShop), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionCheckpoint()", asFUNCTION(FriendlyProgression::Checkpoint), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionResetAttempt()", asFUNCTION(FriendlyProgression::ResetAttempt), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionReportHit(int victim, int attacker, float damage, bool defeat)", asFUNCTION(FriendlyProgression::ReportHit), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_Connect(string ip)", asFUNCTION(AS_Online_Connect), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_Host()", asFUNCTION(AS_Online_Host), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_BuildOnLoad()", asFUNCTION(AS_Online_BuildOnLoad), asCALL_CDECL);
@@ -6245,6 +6257,10 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("bool Online_CampaignIsMainCharacter(int avatar)", asFUNCTION(AS_Online_CampaignIsMainCharacter), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_CampaignWaitingText()", asFUNCTION(AS_Online_CampaignWaitingText), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_ChallengeEncounterBegin(const string &in key)", asFUNCTION(AS_Online_ChallengeEncounterBegin), asCALL_CDECL);
+    context->RegisterGlobalFunction("void Online_CaptureEnemyDifficulty(bool new_match = false)", asFUNCTION(AS_CaptureEnemyDifficulty), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionCampaignLoop()", asFUNCTION(AS_ProgressionCampaignLoop), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionArenaLoadouts()", asFUNCTION(AS_ProgressionArenaLoadouts), asCALL_CDECL);
+    context->RegisterGlobalFunction("float Online_WornArmorRating(int)", asFUNCTION(AS_WornArmorRating), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_ChallengeEncounterWin(const string &in key)", asFUNCTION(AS_Online_ChallengeEncounterWin), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_ChallengeCompletion(const string &in key)", asFUNCTION(AS_Online_ChallengeCompletion), asCALL_CDECL);
     context->RegisterGlobalFunction("int Online_ChallengeReferenceAvatar()", asFUNCTION(AS_Online_ChallengeReferenceAvatar), asCALL_CDECL);

@@ -26,6 +26,13 @@ inline double Intensity(double effective_pressure, float weighted_allies) {
     return std::max(0.0, effective_pressure + 0.10 * std::max(0.0f, weighted_allies));
 }
 inline double ArmoredFraction(double intensity) { return Ease(intensity, 0.30, 0.65); }
+// Material ranks follow the same frozen encounter intensity as coverage. Use a
+// separate deterministic draw per slot so mixed suits are possible.
+inline int ArmorTier(uint32_t seed, unsigned slot, double intensity) {
+    const int lowest = slot < 3 ? 2 : 1;  // Wood has no chest, back or head mesh.
+    const double strength = .65 * ArmoredFraction(intensity) + .35 * Roll(seed, 60 + slot);
+    return std::min(4, lowest + int(strength * (5 - lowest)));
+}
 inline double ArmedFraction(double intensity) { return Ease(intensity, 0.10, 0.45); }
 // Attach matrices include inverse bind translation but no character scale.
 // Retarget offsets around the reference bone anchor, not around model origin.

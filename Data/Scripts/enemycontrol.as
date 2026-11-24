@@ -1232,6 +1232,7 @@ void MindReceiveMessage(string msg) {
         if(params.HasParam("Hearing Modifier")) {
             max_range *= params.GetFloat("Hearing Modifier");
         }
+        max_range *= campaign_perception_mult;
 
         if(distance(this_mo.position, pos) < max_range) {
             NotifySound(id, pos, type);

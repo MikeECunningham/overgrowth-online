@@ -229,6 +229,9 @@ def mode_challenge(ctx):
     def enemy_factors(inst):
         c = next(c for c in inst.bridge.state() if c["common_id"] == enemy)
         return tuple(c["combat_stats"].get(k, -1) for k in FACTORS)
+    time.sleep(.8)
+    assert all(enemy_factors(i)[0] == 1 for i in (host, guest)), "a victory buffed living enemies mid-fight"
+    _code(host, 'Online_CaptureEnemyDifficulty();', "level")
     wait(lambda: all(math.isclose(enemy_factors(i)[0], 1.04, abs_tol=1e-5) for i in (host, guest)), "NPC health multiplier reaches both peers")
     wait(lambda: all(math.isclose(actor(enemy_bot, i)["combat_stats"][FACTORS[0]], 1.04, abs_tol=1e-5)
                      for i in (host, guest)), "enemy roster bot receives progression on both peers")
@@ -290,7 +293,8 @@ def mode_challenge(ctx):
     expected(0, "Forced50 ignores individual teammate defeats")
     knock(host_human, host)
     expected(-0.025, "Forced50 immediately eases this encounter's next attempt")
-    # The applied enemy state, not only the JSON counter, must cross below
+    _code(host, 'level.SendMessage("reset");', "level")
+    # The applied enemy state after a retry must cross below
     # baseline on both peers. Humans and friendly lobby bots remain unchanged.
     wait(lambda: all(math.isclose(actor(enemy_bot, i)["combat_stats"][FACTORS[0]], 0.975, abs_tol=1e-5)
                      for i in (host, guest)), "signed retry relief reaches enemy bot on both peers")
@@ -381,6 +385,8 @@ def mode_challenge(ctx):
     knock(guest_human, guest)
     wait(lambda: pressure() >= 0.1199, "real Arena round win and completed match award", 25)
     expected(0.12, "Arena completion and win each apply exactly once")
+    wait(lambda: math.isclose(host.bridge.status()["online"]["challenge"]["enemy_difficulty"]["pressure"], .12, abs_tol=.0002),
+         "new Arena match captures the completed match award", 35)
     metrics["arena"] = pressure()
     end()
 

@@ -21,14 +21,20 @@
 //
 //-----------------------------------------------------------------------------
 #include "attach_to_message.h"
+#include <Online/armor_protection.h>
 
 #include <Main/engine.h>
 #include <Online/online.h>
 #include <Utility/binn_util.h>
 
 namespace OnlineMessages {
+AttachToMessage::AttachToMessage(ObjectID parent_id, ObjectID child_id, bool mirrored, const std::string& socket)
+    : AttachToMessage(parent_id, child_id, _at_attachment, true, mirrored) {
+    wearable_socket = socket;
+}
+
 AttachToMessage::AttachToMessage(ObjectID parent_id, ObjectID child_id, uint32_t bone_id, bool attach, bool mirrored,
-                               const AttachedEnvObject* exact_attachment, const vec3& scale, int armor_region, bool runtime_item) : OnlineMessageBase(OnlineMessageCategory::LEVEL_PERSISTENT),
+                               const AttachedEnvObject* exact_attachment, const vec3& scale, int armor_region, bool runtime_item, int material_tier) : OnlineMessageBase(OnlineMessageCategory::LEVEL_PERSISTENT),
                                                                                                                         bone_id(bone_id),
                                                                                                                         attach(attach),
                                                                                                                         mirrored(mirrored) {
@@ -37,6 +43,7 @@ AttachToMessage::AttachToMessage(ObjectID parent_id, ObjectID child_id, uint32_t
     exact_env = exact_attachment != nullptr;
     env_scale = scale;
     env_region = armor_region;
+    this->material_tier = material_tier;
     this->runtime_item = runtime_item;
     if (exact_attachment) std::copy(std::begin(exact_attachment->bone_connects), std::end(exact_attachment->bone_connects), env_bones.begin());
 }
@@ -51,9 +58,11 @@ binn* AttachToMessage::Serialize(void* object) {
     binn_object_set_bool(l, "attach", t->attach);
     binn_object_set_bool(l, "mirrored", t->mirrored);
     if (t->runtime_item) binn_object_set_bool(l, "runtime_item", true);
+    if (!t->wearable_socket.empty()) binn_object_set_str(l, "wearable_socket", t->wearable_socket.data());
     if (t->exact_env) {
         binn_object_set_vec3(l, "env_scale", t->env_scale);
         binn_object_set_int32(l, "env_region", t->env_region);
+        if (t->material_tier) binn_object_set_int32(l, "material_tier", t->material_tier);
         for (unsigned i = 0; i < kMaxBoneConnects; ++i) {
             const std::string key = "env" + std::to_string(i);
             binn_object_set_int32(l, (key + "b").c_str(), t->env_bones[i].bone_id);
@@ -80,8 +89,12 @@ void AttachToMessage::Deserialize(void* object, binn* l) {
     BOOL runtime = false;
     binn_object_get_bool(l, "runtime_item", &runtime);
     t->runtime_item = runtime;
+    char* socket = nullptr;
+    t->wearable_socket = binn_object_get_str(l, "wearable_socket", &socket) && socket ? socket : "";
     t->exact_env = binn_object_get_vec3(l, "env_scale", &t->env_scale);
     t->env_region = 0;
+    t->material_tier = 0;
+    if (t->exact_env) binn_object_get_int32(l, "material_tier", &t->material_tier);
     if (t->exact_env) binn_object_get_int32(l, "env_region", &t->env_region);
     if (t->exact_env) for (unsigned i = 0; i < kMaxBoneConnects; ++i) {
         const std::string key = "env" + std::to_string(i);
@@ -118,7 +131,20 @@ void AttachToMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID 
         Peer* peer = online->GetPeerFromID(from);
         if (holder != -1 && holder != parent_object_id && peer != nullptr) {
             online->SendTo<OnlineMessages::AttachToMessage>(peer->conn_id, parent_object_id, child_object_id, 0, false, false);
-            online->SendTo<OnlineMessages::AttachToMessage>(peer->conn_id, holder, child_object_id, t->bone_id, true, t->mirrored);
+            Object* owner = graph->GetObjectFromID(holder);
+            if (owner && owner->GetType() == _movement_object) {
+                for (const auto& attachment : static_cast<MovementObject*>(owner)->rigged_object()->attached_items.items) {
+                    const auto& worn = attachment.item;
+                    if (!worn.holding || worn.GetAttached() != child) continue;
+                    if (worn.attachment_type == _at_attachment && worn.attachment_ref.valid())
+                        online->SendTo<OnlineMessages::AttachToMessage>(peer->conn_id, holder, child_object_id,
+                                                                       worn.attachment_mirror, worn.attachment_ref->path_);
+                    else
+                        online->SendTo<OnlineMessages::AttachToMessage>(peer->conn_id, holder, child_object_id,
+                                                                       worn.attachment_type, true, worn.attachment_mirror);
+                    break;
+                }
+            }
             return;
         }
     }
@@ -142,7 +168,7 @@ void AttachToMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID 
             if (parent->GetType() != _movement_object || child->GetType() != _env_object || online->IsHosting()) return;
             auto* rigged = static_cast<MovementObject*>(parent)->rigged_object();
             int connections = 0;
-            if (t->env_region < 0 || t->env_region > 511) return;
+            if (t->env_region < 0 || t->env_region > 511 || t->material_tier < 0 || t->material_tier > ArmorProtection::Grey) return;
             for (int k = 0; k < 3; ++k) if (!std::isfinite(t->env_scale[k]) || std::fabs(t->env_scale[k]) < 0.001f || std::fabs(t->env_scale[k]) > 10) return;
             for (const auto& bone : t->env_bones) {
                 if (bone.num_connections < 0 || bone.num_connections > 16 ||
@@ -156,7 +182,8 @@ void AttachToMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID 
             found->direct_ptr = child; found->legacy_obj_id = child->GetID(); found->bone_connection_dirty = false;
             std::copy(t->env_bones.begin(), t->env_bones.end(), std::begin(found->bone_connects));
             child->SetScale(t->env_scale); child->SetParent(parent); child->SetCollisionEnabled(false);
-            if (t->env_region) { ScriptParam provenance; provenance.SetInt(t->env_region); child->GetScriptParams()->InsertScriptParam("Campaign Armor Region", provenance); }
+            if (t->env_region) { ScriptParam provenance; provenance.SetInt(t->env_region); child->GetScriptParams()->InsertScriptParam(t->material_tier ? "Progression Armor Region" : "Campaign Armor Region", provenance); }
+            if (t->env_region) ArmorProtection::ApplyMaterial(*child, t->material_tier ? t->material_tier : ArmorProtection::MaterialTier(child->obj_file));
             child->exclude_from_save = true; child->exclude_from_undo = true;
             return;
         }
@@ -178,6 +205,9 @@ void AttachToMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID 
                 movement_object->rigged_object()->AvailableItemSlots(item_object->item_ref(), &attachment_slots);
                 for (auto& slot : attachment_slots) {
                     if (slot.type == (AttachmentType)t->bone_id && slot.mirrored == t->mirrored) {
+                        // Multiple wearable sockets have the same type and side.
+                        if (slot.type == _at_attachment && (!slot.attachment_ref.valid() ||
+                            slot.attachment_ref->path_ != t->wearable_socket)) continue;
                         movement_object->AttachItemToSlotEditor(item_object->GetID(), slot.type, slot.mirrored, slot.attachment_ref, true);
                         break;
                     }
@@ -198,7 +228,18 @@ void AttachToMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID 
             }
         } else {
             if (child->GetType() == EntityType::_item_object) {
-                parent->Disconnect(*child, true, false);
+                if (t->runtime_item && parent->GetType() == _movement_object) {
+                    // A shop loadout can temporarily replace an authored
+                    // starter. Preserve its editor link for checkpoint resets.
+                    auto* actor = static_cast<MovementObject*>(parent);
+                    actor->NetworkDetachItem(child->GetID());
+                    actor->Execute("NotifyItemDetach(" + std::to_string(child->GetID()) + ");");
+                    if (child->parent == parent) child->SetParent(nullptr);
+                    auto* item = static_cast<ItemObject*>(child);
+                    item->SetPhysicsTransform(item->GetPhysicsTransform());
+                } else {
+                    parent->Disconnect(*child, true, false);
+                }
             } else {
                 parent->ChildLost(child);
             }

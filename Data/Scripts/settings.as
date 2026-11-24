@@ -635,7 +635,9 @@ void AddDifficultyScreen() {
     AddSlider("Game Difficulty", settings_content, "game_difficulty", 1.0f);
     AddCheckBox("Tutorials", settings_content, "tutorials");
     AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab");
-    AddCheckBox("Localized armor protection", settings_content, "armor_localized");
+    array<int> armor_values = {0, 2, 1};
+    array<string> armor_labels = {"Legacy", "Weighted", "Localized"};
+    AddDropDown("Armor protection", settings_content, DropdownConfiguration(armor_values, armor_labels, "armor_localized"));
     if(GetConfigValueBool("difficulty_scaling")) {
         AddSection("Scaling factors", settings_content);
         AddCheckBox("Party stats and reinforcements", settings_content, "campaign_mp_scaling");

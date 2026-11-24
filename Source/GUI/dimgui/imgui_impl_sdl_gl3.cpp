@@ -359,7 +359,7 @@ static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
         static std::map<int, bool> was_active;
         static const char* actions[] = {"menu_return", "menu_cancel", "menu_input", "menu_window",
             "menu_left", "menu_right", "menu_up", "menu_down", "menu_prev_tab", "menu_next_tab",
-            "left", "right", "up", "down"};
+            "left", "right", "up", "down", "menu_scroll_up", "menu_scroll_down"};
         for (unsigned local = 0; local < devices->GetNumLocalPlayers(); ++local) {
             const int candidate = devices->GetLocalPlayerInputID(local);
             const PlayerInput* player = devices->GetController(candidate);
@@ -375,6 +375,16 @@ static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
     g_KeyboardLobbyClaim = false;
     const PlayerInput* input = devices->GetController(actual);
     if (ignore_input || input == nullptr || !input->enabled || input->remote_controlled) return;
+    // Scroll the focused form (or its enclosing scroll area) even when the
+    // mouse is parked on another pane. Stock script menus scroll their own lists.
+    ImGuiContext* context = ImGui::GetCurrentContext();
+    const float scroll = MenuInputDepth(*input, "menu_scroll_down") - MenuInputDepth(*input, "menu_scroll_up");
+    if (context && scroll != 0.0f && (online->LobbyWaiting() || !devices->GetGrabMouse())) {
+        ImGuiWindow* window = context->NavWindow;
+        while (window && window->ScrollMax.y <= 0.0f) window = window->ParentWindow;
+        if (window && window->WasActive && !(window->Flags & ImGuiWindowFlags_NoInputs))
+            ImGui::SetScrollY(window, window->Scroll.y + scroll * std::min(io.DeltaTime, 0.1f) * 640.0f);
+    }
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.NavInputs[ImGuiNavInput_Activate] = MenuInputDepth(*input, "menu_return");
     io.NavInputs[ImGuiNavInput_Cancel] = MenuInputDepth(*input, "menu_cancel");

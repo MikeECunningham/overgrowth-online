@@ -223,8 +223,10 @@ extern OnlineMessageHandler message_handler;
 extern std::string g_launch_lobby;
 
 struct CampaignDifficultyState;
+struct ProgressionEquipmentState;
 struct CampaignFactionState;
 struct ChallengeRuntimeState;
+namespace CampaignDifficulty { struct Sample; }
 struct DifficultyHUDState;
 namespace Json { class Value; }
 
@@ -457,6 +459,7 @@ class Online {
     std::map<PeerID, std::pair<double, int>> script_api_rate;
     int script_api_dropped = 0;
     // (building together: the state, the guests caught up with the edits, the editor's last state here)
+    std::set<PlayerID> menu_pausers_;  // Menus opened with P that currently hold the shared pause.
     bool time_frozen_ = false;  // (the host's Freeze time: paused for everyone)
     std::vector<int> builders_;
     bool build_state_dirty_ = false;
@@ -722,7 +725,14 @@ class Online {
     std::string ModeChallengePayload() const;
     void ReceiveModeChallenge(const std::string& payload);
     void ResetModeChallenge();
+    CampaignDifficulty::Sample EnemyDifficulty() const;
+    void CaptureEnemyDifficulty(bool new_match = false);
     void ChallengeSceneChanged();
+    void BeginChallengeCampaignLoop();
+    float WornArmorRating(ObjectID avatar) const;
+    std::shared_ptr<ProgressionEquipmentState> progression_equipment;
+    void ApplyProgressionEquipment(SceneGraph* graph);
+    void RefreshProgressionLoadouts(bool arena_round);
     void UpdateModeChallenge(SceneGraph* graph);
     bool DifficultyScalingEnabled() const;
     float ModeChallengeGeneralPressure() const;
@@ -738,7 +748,7 @@ class Online {
     bool CampaignCharacterOnMainTeam(ObjectID avatar);
     std::string CampaignWaitingText();
     bool CampaignEncounterDefeated(ObjectID hotspot, int goal) const;
-    void ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions = -1);
+    void ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions = -1, float base = -1);
     int AuthoredArmorRegions(ObjectID actor) const;
     bool CoopCampaign();                            // the level belongs to a linear (story) campaign
     vector<ObjectID> PlayerAvatarIDs();             // every player's character here
@@ -905,6 +915,7 @@ class Online {
     std::vector<PlayerState> GetLocalPlayerStates() const;
     PeerID LocalPeerID() const;
     unsigned LocalLobbyPlayerCount() const;
+    bool HasMultipleLobbyHumans() const;
     bool BeginLobby();
     bool EnsureLocalSession();
     bool IsLocalOnlySession() const { return local_only_session_ && IsHosting(); }
@@ -973,7 +984,8 @@ class Online {
     int AssignedModeTeam(ObjectID avatar) const;
     bool AssignModeTeams(const std::vector<std::pair<ObjectID, int>>& assignments);
     void ApplyAssignedTeam(ObjectID avatar);
-    bool RequestPause(unsigned local_index, bool paused);
+    bool RequestPause(unsigned local_index, bool paused, bool from_menu = false);
+    void ReleaseMenuPause(PlayerID player);
     bool LobbyAllowAllPause() const { return lobby_allow_all_pause_; }
     const std::string& LobbyMode() const { return lobby_mode_; }
     const std::string& LobbyCampaign() const { return lobby_campaign_; }

@@ -136,11 +136,18 @@ def campaign_scaling(ctx):
     metrics["regular_encounter"] = regular_encounter
     metrics["solo"] = {"boss": baseline_boss, "regular": baseline_regular}
 
+    # The cost curve below compares successive checkpoint samples in one scene.
+    def checkpoint_sample():
+        code(host, 'Online_CaptureEnemyDifficulty();')
+
     # Equal headcounts must not imply equal difficulty: AI allies provide only
     # a quarter of an additional human's scaling contribution.
     code(host, "for(int i=0;i<3;++i)LobbyAddBot();")
     wait(lambda: len(rows(host)) == 4 and len([p for p in rows(host) if p.get("bot")]) == 3,
          "one human with three friendly bots")
+    time.sleep(.8)
+    assert factors(host, regular)[0] == 1, "joining allies buffed a living enemy mid-fight"
+    checkpoint_sample()
     wait(lambda: math.isclose(factors(host, regular)[0], 1.1918875, abs_tol=1e-5) and
          math.isclose(factors(host, boss)[0], 1.865725, abs_tol=1e-5), "bot-heavy party uses lighter stat growth")
     bot_heavy_boss, bot_heavy_regular = factors(host, boss), factors(host, regular)
@@ -160,13 +167,18 @@ def campaign_scaling(ctx):
          'ReadObjectFromID(item).SetTranslation(vec3(0,1000,0));level.SendMessage("scaling_stale_item "+item);')
     stale_item = int(host.bridge.call("level_messages", prefix="scaling_stale_item")["messages"][-1].split()[1])
     code(host, "".join(f'LobbyRemovePlayer({p["id"]});' for p in rows(host) if p.get("bot")))
+    checkpoint_sample()
     wait(lambda: len(rows(host)) == 1 and all(factors(host, n) == (1.0, 1.0, 1.0, 0.0) for n in (boss, regular)),
          "removing temporary bots restores solo difficulty")
     assert probe(host, f'!MovementObjectExists({departed_owner})&&ObjectExists({stale_item})') == "true"
     host.bridge.call("level_messages", prefix="scaling_stale_hit")
+    # This guard fixture declares full-body metal armor for separate tests.
+    # Exercise an unarmored impact here so a valid deflection cannot hide the
+    # behavior of an item that outlived its owner.
     code(host, f'ItemObject@ item=ReadItemID({stale_item});item.SetLinearVelocity(vec3(6,0,0));'
+         'bool was_armored=g_wearing_metal_armor;g_wearing_metal_armor=false;'
          'this_mo.velocity=vec3(0);float old_temp=temp_health;float old_blood=blood_health;'
-         f'HitByItem("metal",this_mo.position,{stale_item},1);'
+         f'HitByItem("metal",this_mo.position,{stale_item},1);g_wearing_metal_armor=was_armored;'
          'level.SendMessage("scaling_stale_hit "+attacked_by_id+"|"+(length(this_mo.velocity)>0.0f)+"|"+'
          '(temp_health<old_temp||blood_health<old_blood));', regular)
     stale_hit = host.bridge.call("level_messages", prefix="scaling_stale_hit")["messages"][-1].split(" ", 1)[1]
@@ -176,6 +188,7 @@ def campaign_scaling(ctx):
                                            "invalid_attacker_cleared": True, "impulse_and_damage_preserved": True}
 
     code(host, "LobbyAddLocalPlayer();")
+    checkpoint_sample()
     wait(lambda: len(rows(host)) == 2 and all(factors(host, n)[0] > 1 for n in (boss, regular)), "two-local-human scaling")
     two_boss, two_regular = factors(host, boss), factors(host, regular)
     assert math.isclose(two_regular[0], 1.25585, abs_tol=1e-5), two_regular
@@ -198,12 +211,14 @@ def campaign_scaling(ctx):
     _ready(guest)
     wait(lambda: len(rows(host)) == len(rows(guest)) == 3, "late guest campaign roster")
     wait(lambda: settings(guest) == settings(host), "authoritative host difficulty reaches the late guest")
+    checkpoint_sample()
     wait(lambda: math.isclose(factors(host, regular)[0], 1.5117, abs_tol=1e-5) and
          math.isclose(factors(host, boss)[0], 3.3086, abs_tol=1e-5), "three-human difficulty reacts")
     assert {c["common_id"] for c in world(host) if c.get("campaign_scaling_source", -1) in regulars} == early_additions, \
         "two additional humans retain the encounter's two existing reinforcements"
     code(guest, "LobbyAddLocalPlayer();")
     wait(lambda: len(rows(host)) == len(rows(guest)) == 4, "guest's second local human")
+    checkpoint_sample()
     wait(lambda: math.isclose(factors(host, boss)[0], 4.3766945, abs_tol=1e-5) and
          math.isclose(factors(host, regular)[0], 1.7484426, abs_tol=1e-5), "four-human difficulty reacts")
     wait(lambda: all(factors(host, n) == factors(guest, n) for n in (boss, regular)), "late guest receives current actor scaling")
@@ -229,7 +244,7 @@ def campaign_scaling(ctx):
     # Changing party size and difficulty must not heal an injured boss or
     # refill its spent knockout protection.
     code(host, 'ReadCharacterID(67).Execute("permanent_health=0.4f;temp_health=0.4f;blood_health=0.4f;ko_shield=1;");')
-    code(host, 'SetConfigValueBool("campaign_mp_scaling",false);')
+    code(host, 'SetConfigValueBool("campaign_mp_scaling",false);Online_CaptureEnemyDifficulty();')
     wait(lambda: all(factors(host, n) == (1.0, 1.0, 1.0, 0.0) for n in (boss, regular)), "stat scaling checkbox disables both encounters")
     wait(lambda: settings(guest)[:3] == ["Expert", "false", "false"], "checkbox is shared with the guest")
     no_ai_change(boss, baseline_boss)
@@ -237,7 +252,7 @@ def campaign_scaling(ctx):
     assert actor(host, boss)["permanent_health"] <= 0.4001 and stats(host, boss)["ko_shield"] == 1
 
     ai_baselines = {n: stats(host, n).copy() for n in [boss] + regulars}
-    code(host, 'SetConfigValueBool("campaign_ai_scaling",true);')
+    code(host, 'SetConfigValueBool("campaign_ai_scaling",true);Online_CaptureEnemyDifficulty();')
     wait(lambda: all(math.isclose(factors(host, n)[3], 0.01 if ai_trait(n) else 0.0, abs_tol=1e-5)
                      for n in [boss] + regulars), "AI scaling applies sparse one-percent offensive variation")
     assert factors(host, boss)[:3] == (1.0, 1.0, 1.0), factors(host, boss)
@@ -258,13 +273,14 @@ def campaign_scaling(ctx):
     assert tweaked, "selected ordinary AI fixture should have one small offensive change"
     wait(lambda: settings(guest)[:3] == ["Expert", "false", "true"], "AI scaling preference is shared independently of base difficulty")
     metrics["ai_scaling"] = {"boss": stats(host, boss), "regular": stats(host, regular), "tweaked_ids": tweaked}
-    code(host, 'SetConfigValueString("difficulty_preset","Expert");SetConfigValueBool("campaign_ai_scaling",false);SetConfigValueBool("campaign_mp_scaling",true);')
+    code(host, 'SetConfigValueString("difficulty_preset","Expert");SetConfigValueBool("campaign_ai_scaling",false);SetConfigValueBool("campaign_mp_scaling",true);Online_CaptureEnemyDifficulty();')
     wait(lambda: factors(host, boss) == four_boss and factors(host, regular) == four_regular, "restoring Expert does not compound stat multipliers")
     no_ai_change(boss, baseline_boss)
     no_ai_change(regular, baseline_regular)
 
     code(host, "LobbyAddBot();")
     wait(lambda: any(p.get("bot") for p in rows(host)), "friendly lobby bot")
+    checkpoint_sample()
     wait(lambda: factors(host, boss)[0] > four_boss[0] and factors(host, regular)[0] > four_regular[0],
          "friendly bot contributes one party member to encounter difficulty")
     party_boss, party_regular = factors(host, boss), factors(host, regular)
@@ -285,6 +301,7 @@ def campaign_scaling(ctx):
     if len([p for p in rows(host) if not p.get("bot")]) == 3:
         code(guest, "LobbyAddLocalPlayer();")
     wait(lambda: len([p for p in rows(host) if not p.get("bot")]) == 4, "human rejoins")
+    checkpoint_sample()
     wait(lambda: factors(host, boss) == party_boss and factors(host, regular) == party_regular, "same human-and-bot party restores the same factors")
     assert actor(host, boss)["permanent_health"] <= 0.4001 and stats(host, boss)["ko_shield"] == 1
 
@@ -297,7 +314,8 @@ def campaign_scaling(ctx):
         assert original and addition["char_path"] == original["char_path"], ("reinforcement character changed", addition, original)
         assert addition["combat_stats"]["species"] == original["combat_stats"]["species"]
         if original["common_id"] in regulars:
-            assert addition["combat_stats"]["metal_armor"] == original["combat_stats"]["metal_armor"] is True
+            assert original["combat_stats"]["metal_armor"] and not addition["combat_stats"]["metal_armor"], \
+                "reinforcement inherited whole-body armor despite its independent equipment plan"
             for key in ("campaign_authored_aggression", "campaign_authored_block_skill", "campaign_authored_throw_counter",
                         "campaign_authored_weapon_catch", "campaign_authored_damage", "campaign_authored_resistance"):
                 assert math.isclose(addition["combat_stats"][key], original["combat_stats"][key], abs_tol=1e-5), (key, addition, original)
@@ -311,6 +329,7 @@ def campaign_scaling(ctx):
     # views. The encounter cannot finish while its guard is awake.
     original_bot_ids = {p["id"] for p in rows(host) if p.get("bot")}
     code(host, "LobbyAddBot();LobbyAddBot();")
+    checkpoint_sample()
     wait(lambda: len([p for p in rows(host) if p.get("bot")]) == 3, "weighted party for boss bodyguard coverage")
     temporary_bots = [p["id"] for p in rows(host) if p.get("bot") and p["id"] not in original_bot_ids]
     wait(lambda: math.isclose(factors(host, boss)[0], 4.71025, abs_tol=1e-5),
@@ -335,6 +354,7 @@ def campaign_scaling(ctx):
     wait(lambda: probe(host, gate) == "true", "boss encounter finishes after its bodyguard")
     metrics["boss_bodyguard"] = {"encounter": boss_encounter, "boss": boss_dog, "guard": guards[0]["common_id"]}
     code(host, "".join(f"LobbyRemovePlayer({ident});" for ident in temporary_bots))
+    checkpoint_sample()
     wait(lambda: len([p for p in rows(host) if p.get("bot")]) == 1 and
          factors(host, boss) == party_boss and factors(host, regular) == party_regular,
          "temporary bot removal restores the original four-human one-bot party")
@@ -380,7 +400,7 @@ def campaign_scaling(ctx):
                 # No new KO event occurs after this change. Cancelling the
                 # reserved third must recheck the already-defeated real goal.
                 code(host, f'ReadObjectFromID({encounter[0]}).GetScriptParams().SetString("goal_{encounter[1] + 1}","reach 999999");'
-                     'SetConfigValueBool("campaign_mp_scaling",false);')
+                     'SetConfigValueBool("campaign_mp_scaling",false);Online_CaptureEnemyDifficulty();')
 
                 def wave_progress():
                     host.bridge.call("level_messages", prefix="scaling_recheck_progress")
@@ -411,7 +431,7 @@ def campaign_scaling(ctx):
     assert len(chapter_additions) >= 9, ("encounters still share the old lifetime budget", chapter_additions)
     metrics["later_waves"] = later_waves
     metrics["chapter_reinforcement_births"] = len(chapter_additions)
-    code(host, 'SetConfigValueBool("campaign_mp_scaling",true);')
+    code(host, 'SetConfigValueBool("campaign_mp_scaling",true);Online_CaptureEnemyDifficulty();')
     wait(lambda: factors(host, boss) == party_boss and factors(host, regular) == party_regular,
          "reenabling difficulty after pending-wave cancellation restores party factors")
 

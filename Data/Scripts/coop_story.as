@@ -15,6 +15,7 @@ const float kCoopStartRead = 2.0f;  // the level's first seconds: what the host'
 
 int coop_host_char = -1;            // the host's character (the level's player)
 float coop_level_start = -1.0f;
+array<int> coop_start_items;        // drawing a starting weapon during sampling must count it only once
 array<string> coop_start_files;     // its starting weapons: file
 array<int> coop_start_slots;        //   and aschar.as weapon slot (_held_left .. _sheathed_right)
 
@@ -43,9 +44,14 @@ void CoopStoryUpdate() {
         MovementObject@ host = ReadCharacterID(coop_host_char);
         for(int slot = 0; slot < 4; ++slot) {
             int item = host.GetArrayIntVar("weapon_slots", slot);
-            if(item != -1 && ObjectExists(item) && coop_start_slots.find(slot) < 0) {
+            if(item != -1 && ObjectExists(item) && coop_start_slots.find(slot) < 0 && coop_start_items.find(item) < 0) {
+                // A player's shop unlock is personal, even when it was
+                // equipped before we sampled the story's starting loadout.
+                Object@ object = ReadObjectFromID(item);
+                if(object.GetType() != _item_object || object.GetScriptParams().HasParam("Progression Issued Weapon")) continue;
                 string file = Online_ObjectFile(item);
                 if(file != "") {
+                    coop_start_items.insertLast(item);
                     coop_start_files.insertLast(file);
                     coop_start_slots.insertLast(slot);
                     Log(info, "Overgrowth Online: the host starts with " + file + " (slot " + slot + ")");
@@ -54,6 +60,7 @@ void CoopStoryUpdate() {
         }
         return;
     }
+    ReadCharacterID(coop_host_char).SetBoolVar("coop_story_loadout_ready", true);
     // Each guest, a moment after their character appears
     array<PlayerState>@ states = GetPlayerStates();
     for(uint k = 0; k < states.length(); ++k) {
@@ -73,6 +80,7 @@ void CoopStoryUpdate() {
         coop_armed_ids.insertLast(id);
         if(!states[k].is_bot) CoopShield(id);  // bots keep their authored durability
         CoopArm(id);
+        ReadCharacterID(id).SetBoolVar("coop_story_loadout_ready", true);
     }
 }
 

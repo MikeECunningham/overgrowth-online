@@ -10,6 +10,7 @@
 #include <Main/engine.h>
 #include <Objects/movementobject.h>
 #include <Online/online.h>
+#include <Online/friendly_progression.h>
 #include <Online/online_utility.h>
 #include <Logging/logdata.h>
 #include <UserInput/input.h>
@@ -20,6 +21,7 @@ struct LocalPlayerMenus::Menu {
     LocalPlayerMenus* manager;
     unsigned local_index;
     std::unique_ptr<ScriptableUI> ui;
+    bool shortcut_pause = false;
 };
 
 LocalPlayerMenus::LocalPlayerMenus(Engine& engine) : engine_(engine) {}
@@ -60,7 +62,7 @@ PlayerMenuUI::Context LocalPlayerMenus::ContextFor(unsigned local_index) const {
     return result;
 }
 
-bool LocalPlayerMenus::Toggle(int input_id) {
+bool LocalPlayerMenus::Toggle(int input_id, bool pause_with_menu) {
     Input* input = Input::Instance();
     const int logical = input->LocalPlayerIndexForInputID(input_id);
     if (logical < 0 || !engine_.IsLevelLoaded()) return false;
@@ -95,6 +97,7 @@ bool LocalPlayerMenus::Toggle(int input_id) {
         return false;
     }
     const unsigned local_index = menu->local_index;
+    if (pause_with_menu) menu->shortcut_pause = Online::Instance()->RequestPause(local_index, true, true);
     menus_.emplace(local_index, std::move(menu));
     RefreshPause();
     ResolveCursor();
@@ -110,7 +113,7 @@ bool LocalPlayerMenus::AnyOpen() const { return !menus_.empty(); }
 
 bool LocalPlayerMenus::PausesWorld() const {
     const Online* online = Online::Instance();
-    return AnyOpen() && (!online->IsActive() || online->IsLocalOnlySession()) &&
+    return AnyOpen() && (!online->IsActive() || (online->IsHosting() && !online->HasMultipleLobbyHumans())) &&
         Input::Instance()->GetNumLocalPlayers() <= 1;
 }
 
@@ -134,6 +137,7 @@ void LocalPlayerMenus::Close(unsigned local_index) {
         PlayerMenuUI::Scope scope(ContextFor(local_index));
         found->second->ui.reset();
     }
+    if (found->second->shortcut_pause) Online::Instance()->RequestPause(local_index, false, true);
     menus_.erase(found);
     resume_checks_[local_index] = 0.0;
     next_resume_check_ms_ = 0.0;
@@ -327,7 +331,7 @@ void LocalPlayerMenus::ResolveCursor() {
     const int keyboard = Input::Instance()->LocalKeyboardPlayerIndex();
     const bool keyboard_menu = keyboard >= 0 && menus_.count(static_cast<unsigned>(keyboard)) != 0;
     const bool level_ui = scene != nullptr && scene->level != nullptr && scene->level->HasScriptFocus();
-    if (keyboard_menu || level_ui) {
+    if (keyboard_menu || level_ui || FriendlyProgression::ShopOpen()) {
         Input::Instance()->SetGrabMouse(false);
     } else if (engine_.IsLevelLoaded()) {
         Input::Instance()->SetGrabMouse(true);

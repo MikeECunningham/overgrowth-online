@@ -7,10 +7,10 @@ namespace OnlineMessages {
 class CampaignScale : public OnlineMessageBase {
 public:
     CommonObjectID character = -1;
-    float vitality = 1, damage = 1, armor = 1, ai = 0;
+    float vitality = 1, damage = 1, armor = 1, ai = 0, base = -1;
     int armor_regions = -1;
     CampaignScale();
-    CampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions = -1);
+    CampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions = -1, float base = -1);
     static binn* Serialize(void* object);
     static void Deserialize(void* object, binn* data);
     static void Execute(const OnlineMessageRef& ref, void* object, PeerID peer);

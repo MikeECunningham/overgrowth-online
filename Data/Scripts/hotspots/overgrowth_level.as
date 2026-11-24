@@ -31,6 +31,8 @@ float progress_sync_next = 0.0f;  // online host: the progress again now and the
 int coop_checkpoint_by = -1;       // online host: the character that reached a checkpoint last
 float coop_checkpoint_time = -100.0f;
 bool queued_goal_check = true;
+array<int> checkpoint_casualties, casualty_checkpoint;
+float next_encounter_check = 0.0f;
 
 float blackout_amount = 0.0;
 float ko_time = -1.0;
@@ -302,10 +304,23 @@ void IncrementProgress() {
     Log(info, "IncrementProgress: "+progress+" to "+(progress+1));
     TriggerGoalPost(_all_but_sting);
     ++progress;
+    RememberCheckpointCasualties();
+    if(!Online_IsClient() && params.HasParam("player_spawn")) {
+        TokenIterator markers;
+        string spawns = params.GetString("player_spawn");
+        markers.Init();
+        for(int i = 1; i <= progress && markers.FindNextToken(spawns); ++i) {
+            int id = atoi(markers.GetToken(spawns));
+            if(i == progress && ObjectExists(id) && ReadObjectFromID(id).GetType() == _placeholder_object) {
+                Online_CaptureEnemyDifficulty();
+                ProgressionCheckpoint();
+            }
+        }
+    }
     win_time = -1.0;
 
     if(Online_IsHosting()){
-        level.SendMessage("ohl og_progress "+progress);  // clients follow
+        SendCheckpointState();
         // the engine gets downed players up (beside who reached it: the goal comes a little later)
         level.SendMessage("coop_checkpoint "+progress+" "+(the_time - coop_checkpoint_time < 10.0f ? coop_checkpoint_by : -1));
         coop_checkpoint_by = -1;
@@ -385,6 +400,69 @@ void SetEnabledCharacterAndItems(int id, bool enabled){
     }
 }
 
+void SendCheckpointState() {
+    string message = "ohl og_progress " + progress;
+    for(uint i = 0; i < checkpoint_casualties.length(); ++i) {
+        int id = checkpoint_casualties[i];
+        if(!MovementObjectExists(id)) continue;
+        message += " #" + id + " " + casualty_checkpoint[i] + (ReadObjectFromID(id).GetEnabled() ? " 0" : " 1");
+    }
+    level.SendMessage(message);
+}
+
+array<int> DefeatTargets(const string &in goal) {
+    array<int> targets;
+    TokenIterator tokens;
+    tokens.Init();
+    if(!tokens.FindNextToken(goal)) return targets;
+    string kind = tokens.GetToken(goal);
+    if(kind != "defeat" && kind != "spawn_defeat" && kind != "defeat_optional") return targets;
+    while(tokens.FindNextToken(goal)) {
+        string entry = tokens.GetToken(goal);
+        if(entry != "" && entry != "no_delay") targets.insertLast(atoi(entry));
+    }
+    return targets;
+}
+
+// Authored objectives reset their own actors below. Also save incidental
+// enemies defeated on the route to this checkpoint, e.g. the dock villagers.
+void RememberCheckpointCasualties() {
+    int player = GetPlayerCharacterID();
+    if(player < 0 || Online_IsClient() || EditorModeActive()) return;
+    array<int> future;
+    for(int i = progress; params.HasParam("goal_"+i); ++i) {
+        array<int> ids = DefeatTargets(params.GetString("goal_"+i));
+        for(uint j = 0; j < ids.length(); ++j) future.insertLast(ids[j]);
+    }
+    MovementObject@ hero = ReadCharacter(player);
+    for(int i = 0; i < GetNumCharacters(); ++i) {
+        MovementObject@ npc = ReadCharacter(i);
+        int id = npc.GetID();
+        Object@ obj = ReadObjectFromID(id);
+        if(!obj.GetEnabled() || obj.IsExcludedFromSave() || npc.controlled || Online_IsPlayerCharacter(id) ||
+           !npc.HasVar("knocked_out") || npc.GetIntVar("knocked_out") == _awake || hero.OnSameTeam(npc) ||
+           future.find(id) >= 0 || checkpoint_casualties.find(id) >= 0) continue;
+        checkpoint_casualties.insertLast(id);
+        casualty_checkpoint.insertLast(progress);
+    }
+}
+
+// A KO may arrive before its replicated actor state or while no human is up.
+// Verify the active objective from its authored roster after those transitions.
+void CheckEncounterState() {
+    if(Online_IsClient() || EditorModeActive() || queued_goal_check || win_time != -1.0 ||
+       the_time < next_encounter_check || !params.HasParam("goal_"+progress)) return;
+    next_encounter_check = the_time + 1.0f;
+    if(GetPlayerCharacterID() < 0 || AllPlayersDown() || level.DialogueCameraControl()) return;
+    string goal = params.GetString("goal_"+progress);
+    array<int> ids = DefeatTargets(goal);
+    if(ids.length() == 0) return;
+    for(uint i = 0; i < ids.length(); ++i) {
+        if(MovementObjectExists(ids[i]) && ReadCharacterID(ids[i]).GetIntVar("knocked_out") == _awake) return;
+    }
+    if(Online_CampaignEncounterDefeated(hotspot.GetID(), progress)) PossibleWinEvent("character_defeated", -1, progress);
+}
+
 void CheckReset() {
     EnterTelemetryZone("CheckReset()");
     // Count valid player spawn points, and set their preview viz
@@ -411,10 +489,18 @@ void CheckReset() {
         progress = num_player_spawn;
     }
 
+    for(int i = int(checkpoint_casualties.length()) - 1; i >= 0; --i) {
+        if(casualty_checkpoint[i] > progress) {
+            checkpoint_casualties.removeAt(i);
+            casualty_checkpoint.removeAt(i);
+        }
+    }
+
     // Re-enable all characters
     int num_characters = GetNumCharacters();
     for(int i=0; i<num_characters; ++i){
-        SetEnabledCharacterAndItems(ReadCharacter(i).GetID(), true);
+        int id = ReadCharacter(i).GetID();
+        SetEnabledCharacterAndItems(id, checkpoint_casualties.find(id) < 0);
     }
 
     // Disable all defeated characters
@@ -565,7 +651,7 @@ void PossibleWinEvent(const string &in event, int val, int goal_check, int recur
                         } else {
                             Log(info, "Looking at token \""+token_iter.GetToken(goal_str)+"\"");
                             int id = atoi(token_iter.GetToken(goal_str));
-                            if(ObjectExists(id) && ReadObjectFromID(id).GetType() == _movement_object && ReadCharacterID(id).GetIntVar("knocked_out") == _awake){
+                            if(MovementObjectExists(id) && ReadCharacterID(id).GetIntVar("knocked_out") == _awake){
                                 success = false;
                                 Log(info, "Conditions failed, "+id+" is awake");
                             }
@@ -636,6 +722,7 @@ void ReceiveMessage(string msg) {
         return;
     }
     if(msg_start == "reset"){
+        next_encounter_check = 0.0f;
         CoopCourseReset();
         progress_sync_next = 0.0f;
         queued_goal_check = true;
@@ -666,6 +753,20 @@ void ReceiveMessage(string msg) {
             string what = token_iter.GetToken(msg);
             if(what == "og_progress" && token_iter.FindNextToken(msg)){
                 CoopFollowProgress(atoi(token_iter.GetToken(msg)));
+                checkpoint_casualties.resize(0);
+                casualty_checkpoint.resize(0);
+                while(token_iter.FindNextToken(msg)) {
+                    string actor = token_iter.GetToken(msg);
+                    if(actor.substr(0, 1) != "#" || !token_iter.FindNextToken(msg)) break;
+                    int id = atoi(actor.substr(1));
+                    int saved = atoi(token_iter.GetToken(msg));
+                    if(!token_iter.FindNextToken(msg)) break;
+                    if(!MovementObjectExists(id)) continue;
+                    checkpoint_casualties.insertLast(id);
+                    casualty_checkpoint.insertLast(saved);
+                    if(atoi(token_iter.GetToken(msg)) != 0 && ReadObjectFromID(id).GetEnabled())
+                        SetEnabledCharacterAndItems(id, false);
+                }
             } else if(what == "og_heal"){
                 CoopHealOwnPlayers();
             } else if(what == "og_course_seed" && token_iter.FindNextToken(msg)) {
@@ -842,6 +943,7 @@ void SetMusicLayer(int layer){
 }
 
 void Update() {
+    CheckEncounterState();
     // Initial goal setup can run while the native session is still loading.
     if(params.HasParam("goal_"+progress)) {
         ChallengeCampaignGoalPoll(hotspot.GetID(), progress, params.GetString("goal_"+progress));
@@ -851,7 +953,7 @@ void Update() {
 
     if(Online_IsHosting() && the_time >= progress_sync_next){
         progress_sync_next = the_time + 5.0f;
-        level.SendMessage("ohl og_progress "+progress);
+        SendCheckpointState();
     }
 
     if(DebugKeysEnabled() && GetInputPressed(0, "k")){  // (a debug key: it changed progress on any machine)

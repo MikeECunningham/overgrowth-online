@@ -1,5 +1,6 @@
 // Session roster and pre-game lobby control. Apache-2.0.
 #include <Online/online.h>
+#include <Online/friendly_progression.h>
 #include <Online/online_utility.h>
 #include <Main/engine.h>
 #include <Main/scenegraph.h>
@@ -42,6 +43,8 @@ bool NormalizeCampaignMatchSetting(const std::string& key, const std::string& va
     if (key == "difficulty_preset") {
         const auto presets = config.GetDifficultyPresets();
         if (std::find(presets.begin(), presets.end(), value) == presets.end()) return false;
+        *normalized = value;
+    } else if (key == "armor_localized" && value == "2") {
         *normalized = value;
     } else if (key == "game_difficulty" || key == "global_time_scale_mult") {
         std::istringstream input(value);
@@ -188,6 +191,15 @@ std::vector<int> Online::LocalLobbyScreens() const {
     for (const auto& profile : local_lobby_profiles_) screens.push_back(profile.screen);
     if (screens.empty()) screens.push_back(1);
     return screens;
+}
+
+bool Online::HasMultipleLobbyHumans() const {
+    if (!online_session) return false;
+    int humans = 0;
+    for (const auto& entry : online_session->player_states) {
+        if (entry.second.connected && !entry.second.is_bot && ++humans > 1) return true;
+    }
+    return false;
 }
 
 unsigned Online::LocalLobbyPlayerCount() const {
@@ -467,6 +479,7 @@ std::string Online::LobbyPayload() const {
     message["force_teams"] = lobby_force_teams_;
     Json::Reader challenge_reader;
     challenge_reader.parse(ModeChallengePayload(), message["mode_challenge"], false);
+    message["progression"] = FriendlyProgression::Snapshot();
     message["host_controls_teams"] = lobby_host_controls_teams_;
     message["match_settings"] = Json::Value(Json::objectValue);
     for (const char* key : campaign_match_settings) message["match_settings"][key] = config[key].str();
@@ -575,6 +588,7 @@ bool Online::RestoreLobbyForMigration(const std::string& payload, PeerID origin_
     lobby_force_teams_ = message.get("force_teams", false).asBool();
     lobby_host_controls_teams_ = message.get("host_controls_teams", true).asBool();
     ReceiveModeChallenge(Encode(message["mode_challenge"]));
+    FriendlyProgression::Restore(message["progression"]);
     const Json::Value& settings = message["match_settings"];
     if (settings.isObject()) {
         for (const char* key : migration_match_settings)
@@ -725,6 +739,7 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
         SceneGraph* graph = Engine::Instance()->GetSceneGraph();
         Object* object = graph && removed.object_id != static_cast<ObjectID>(-1) ? graph->GetObjectFromID(removed.object_id) : nullptr;
         if (object) graph->map_editor->RemoveObject(object, graph);
+        FriendlyProgression::ForgetPlayer(id);
         online_session->player_states.erase(id);
         online_session->player_inputs.erase(id);
         Send<OnlineMessages::RemovePlayerState>(id);
@@ -743,6 +758,7 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
         }
         return false;
     }
+    ReleaseMenuPause(id);
     if (removed.peer_id == LocalPeerID()) RemoveLocalLobbyProfile(removed.local_index);
     if (removed.peer_id != LocalPeerID()) {
         if (PlayerInput* input = Input::Instance()->GetController(removed.controller_id)) {
@@ -750,6 +766,7 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
         }
         ActiveCameras::Instance()->FreeVirtualCameraInstance(removed.camera_id);
     }
+    FriendlyProgression::ForgetPlayer(id);
     online_session->player_states.erase(id);
     online_session->player_inputs.erase(id);
     for (auto& entry : online_session->player_states) if (!entry.second.is_bot && entry.second.peer_id == removed.peer_id) {
@@ -768,6 +785,7 @@ bool Online::RemoveLobbyPlayer(PlayerID id, PlayerID actor) {
 void Online::PrepareReturnToLobby() {
     host_started_level = false;
     lobby_waiting_ = true; lobby_start_pending_ = false;
+    menu_pausers_.clear();
     loading = false; time_frozen_ = false; build_session_ = false; build_on_load_ = false;
     preloaded_level.clear(); preload_loaded = false;
     level_name.clear(); campaign_id.clear();
@@ -1045,12 +1063,12 @@ bool Online::AssignModeTeams(const std::vector<std::pair<ObjectID, int>>& assign
     return true;
 }
 
-bool Online::RequestPause(unsigned local_index, bool paused) {
+bool Online::RequestPause(unsigned local_index, bool paused, bool from_menu) {
     if (!IsActive()) return false;
     const auto states = GetLocalPlayerStates();
     auto player = std::find_if(states.begin(), states.end(), [local_index](const PlayerState& p) { return p.local_index == local_index; });
     if (player == states.end() || (!lobby_allow_all_pause_ && !IsLobbyHost(player->player_id))) return false;
-    Json::Value request; request["action"] = "pause"; request["id"] = player->player_id; request["paused"] = paused;
+    Json::Value request; request["action"] = from_menu ? "menu_pause" : "pause"; request["id"] = player->player_id; request["paused"] = paused;
     SubmitLobbyRequest(Encode(request)); return true;
 }
 
@@ -1101,6 +1119,10 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     const std::string action = message.get("action", "").asString();
     if (LobbyMigrationBusy() && action != "snapshot" && action != "device") return;
     if (IsClient()) {
+        if (from == 0 && action == "progress_snapshot") {
+            FriendlyProgression::Restore(message["progression"]);
+            return;
+        }
         if (from != 0 || action != "snapshot" || !message["players"].isArray()) return;
         const bool returning = !lobby_waiting_ && message.get("waiting", false).asBool();
         if (returning) PrepareReturnToLobby();
@@ -1119,6 +1141,7 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         lobby_force_teams_ = message.get("force_teams", false).asBool();
         lobby_host_controls_teams_ = message.get("host_controls_teams", true).asBool();
         ReceiveModeChallenge(Encode(message["mode_challenge"]));
+        FriendlyProgression::Restore(message["progression"]);
         ApplyCampaignMatchSnapshot(message["match_settings"]);
         lobby_authority_.host = message.get("decision_host", 255).asUInt();
         remote_cutscene_active_ = message.get("cutscene", false).asBool();
@@ -1207,17 +1230,37 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     // A reliable control message may act only for a logical player owned by
     // its sending machine. No role grant or fabricated ID bypasses this gate.
     const bool valid_actor = acting_player != online_session->player_states.end() && !acting_player->second.is_bot && acting_player->second.peer_id == from;
+    if (action == "progress_hit") { FriendlyProgression::ReceiveEvent(from, message); return; }
+    if (action == "progress_action") {
+        if (valid_actor) FriendlyProgression::ReceiveAction(actor, message);
+        return;
+    }
     if (action == "match_setting") {
         if (valid_actor && message["key"].isString() && message["value"].isString())
             SetCampaignMatchSetting(message["key"].asString(), message["value"].asString(), actor);
         return;
     }
-    if (action == "pause") {
+    if (action == "pause" || action == "menu_pause") {
         const PlayerID id = message.get("id", static_cast<Json::UInt>(-1)).asUInt();
         auto player = online_session->player_states.find(id);
         if (player == online_session->player_states.end() || player->second.is_bot || player->second.peer_id != from ||
             (!lobby_allow_all_pause_ && !IsLobbyHost(id))) return;
-        SetTimeFrozen(message.get("paused", false).asBool());
+        const bool pause = message.get("paused", false).asBool();
+        if (action == "menu_pause") {
+            if (lobby_waiting_ || !host_started_level) return;
+            if (pause) {
+                // A menu may join another shortcut pause. Explicit freezes
+                // belong to the host and survive the closing of every menu.
+                if (!time_frozen_ || !menu_pausers_.empty()) {
+                    if (!time_frozen_) SetTimeFrozen(true);
+                    menu_pausers_.insert(id);
+                }
+            } else {
+                ReleaseMenuPause(id);
+            }
+        } else {
+            SetTimeFrozen(pause);
+        }
         BroadcastLobby();
         return;
     }

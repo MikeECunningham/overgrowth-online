@@ -153,6 +153,7 @@ unsigned MenuLocalPlayer() {
     return static_cast<unsigned>(std::max(0, std::min(count - 1, config["controller_menu_owner"].toNumber<int>())));
 }
 int CurrentInputID() { return Input::Instance()->GetLocalPlayerInputID(MenuLocalPlayer()); }
+bool MultipleHumans() { return Online::Instance()->HasMultipleLobbyHumans(); }
 bool CanPause() {
     const unsigned local = MenuLocalPlayer();
     Online* online = Online::Instance();
@@ -492,6 +493,7 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("bool LobbyEndGame()", EndGame); LOBBY_FN("void LobbySetJoinInputEnabled(bool)", SetJoinInputEnabled);
     LOBBY_FN("vec3 LobbyTeamColor(int)", Online::LobbyTeamColor);
     LOBBY_FN("uint GetLocalPlayerCount()", LocalCount); LOBBY_FN("int GetLocalPlayerIndexForInputID(int)", LocalIndex);
+    LOBBY_FN("bool LobbyHasMultipleHumans()", MultipleHumans);
     LOBBY_FN("bool LobbyCanPause()", CanPause); LOBBY_FN("bool LobbySetPaused(bool)", SetPaused);
 #undef LOBBY_FN
 }

@@ -719,9 +719,11 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
             if (selected < 0) { selected = static_cast<int>(choices.size()); choices.push_back("Custom"); }
             if (ImGui::Combo("Starting preset", &selected, choices.data(), static_cast<int>(choices.size())) && selected < static_cast<int>(presets.size()))
                 SetMatchSetting("difficulty_preset", presets[selected]);
-            bool localized_armor = config["armor_localized"].toBool();
-            if (ImGui::Checkbox("Localized armor protection", &localized_armor))
-                SetMatchSetting("armor_localized", localized_armor ? "true" : "false");
+            const char* models[] = {"Legacy", "Weighted", "Localized"};
+            const int rule = config["armor_localized"].toNumber<int>();
+            int armor_choice = rule == 2 ? 1 : rule == 1 ? 2 : 0;
+            if (ImGui::Combo("Armor protection", &armor_choice, models, 3))
+                SetMatchSetting("armor_localized", armor_choice == 1 ? "2" : armor_choice == 2 ? "1" : "0");
             if (config["difficulty_scaling"].toBool()) {
                 auto factor = [](const char* label, const char* key) {
                     bool enabled = config[key].toBool();

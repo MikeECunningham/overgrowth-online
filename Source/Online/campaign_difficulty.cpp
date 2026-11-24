@@ -2,6 +2,8 @@
 #include <Online/campaign_difficulty.h>
 #include <Online/challenge_scaling.h>
 #include <Online/campaign_equipment.h>
+#include <Online/armor_protection.h>
+#include <Online/friendly_progression.h>
 #include <Online/online.h>
 #include <Online/online_utility.h>
 #include <AI/navmesh.h>
@@ -17,6 +19,8 @@
 #include <Objects/movementobject.h>
 #include <Objects/riggedobject.h>
 #include <Objects/envobject.h>
+#include <Objects/attachment_pose.h>
+#include <Asset/Asset/attachmentasset.h>
 #include <Internal/memwrite.h>
 #include <Physics/bulletworld.h>
 #include <Logging/logdata.h>
@@ -31,6 +35,12 @@
 #include <set>
 #include <sstream>
 #include <iomanip>
+
+void ArmorProtection::ApplyMaterial(Object& mesh, int tier) {
+    ScriptParam material;
+    material.SetInt(tier);
+    mesh.GetScriptParams()->InsertScriptParam("Armor Material Tier", material);
+}
 
 namespace {
 struct Reinforcement {
@@ -114,12 +124,6 @@ float NearestMainParty(Online* online, SceneGraph* graph, const vec3& position, 
             if (actor->enabled_ && Awake(actor)) nearest = std::min(nearest, distance(actor->position, position));
     }
     return nearest;
-}
-int MainPartyBots(const Online* online, SceneGraph* graph) {
-    int bots = 0;
-    if (online->online_session) for (const auto& player : online->online_session->player_states)
-        if (player.second.is_bot && online->CampaignPlayerOnMainTeam(player.first) && Actor(graph, player.second.object_id)) ++bots;
-    return bots;
 }
 int EncounterReinforcements(SceneGraph* graph, const Encounter& encounter, int humans, int bots) {
     int rank = 0;
@@ -255,6 +259,8 @@ Reinforcement Spawn(Online* online, SceneGraph* graph, MovementObject* source, i
 struct CampaignDifficultyState {
     struct Equipment {
         CampaignEquipment::Plan plan;
+        uint32_t seed = 0;
+        double intensity = 0;
         std::vector<ObjectID> armor;
         std::vector<ObjectID> weapons;
         int applied_regions = 0;
@@ -274,7 +280,7 @@ struct CampaignDifficultyState {
     };
     SceneGraph* graph = nullptr;
     std::map<std::pair<ObjectID, int>, Encounter> encounters;
-    std::map<ObjectID, std::array<float, 4>> applied;
+    std::map<ObjectID, std::array<float, 5>> applied;
     std::map<ObjectID, Equipment> gear;
     ObjectID gear_cursor = -1;
     uint32_t equipment_epoch = 0;
@@ -299,6 +305,10 @@ struct ArmorTemplate {
     AttachedEnvObject attachment = {};
     std::string path;
     vec3 scale = vec3(1.0f);
+    const char* wearable_slot = nullptr;
+    const char* reference_rig = nullptr;
+    float reference_scale = 1.0f;
+    bool mirror = false;
 };
 const std::vector<ArmorTemplate>& ArmorTemplates() {
     static const std::vector<ArmorTemplate> templates = [] {
@@ -342,52 +352,361 @@ const std::vector<ArmorTemplate>& ArmorTemplates() {
     }();
     return templates;
 }
-bool BoneOnChain(MovementObject* actor, const char* chain, int target) {
-    const auto& skeleton = actor->rigged_object()->skeleton_;
-    const auto found = skeleton.simple_ik_bones.find(chain);
-    if (found == skeleton.simple_ik_bones.end()) return false;
-    int bone = found->second.bone_id;
-    for (int n = 0; n < 5 && bone >= 0 && unsigned(bone) < skeleton.parents.size(); ++n) {
-        if (bone == target) return true;
+// The rabbit plate has real item attachment poses for arms, shoulders and
+// legs. Reuse them on each rig, including the wearable's authored mirror.
+const std::vector<ArmorTemplate>& WoodenGuardTemplates() {
+    static const std::vector<ArmorTemplate> templates = [] {
+        std::vector<ArmorTemplate> pieces;
+        const std::string path = "Data/Objects/Gear/rabbit_gear/large_wood_plate.xml";
+        EntityDescriptionList descriptions;
+        std::string type;
+        Path file;
+        ActorsEditor_LoadEntitiesFromFile(path, descriptions, &type, &file);
+        if (descriptions.empty()) return pieces;
+        const char* slots[] = {"Data/Items/attachments/rightlowerarm.xml", "Data/Items/attachments/rightshoulder.xml",
+                               "Data/Items/attachments/rightthigh.xml"};
+        for (unsigned region = 3; region < 9; ++region) {
+            ArmorTemplate piece;
+            piece.region = 1 << region;
+            piece.path = path;
+            piece.description = descriptions.front();
+            piece.wearable_slot = slots[(region - 3) / 2];
+            piece.mirror = region % 2 == 1;
+            pieces.push_back(piece);
+        }
+        return pieces;
+    }();
+    return templates;
+}
+bool FitWearableGuard(const ArmorTemplate& piece, const Skeleton& skeleton, float model_scale, BoneConnect& fit) {
+    const auto slot = Engine::Instance()->GetAssetManager()->LoadSync<Attachment>(piece.wearable_slot);
+    if (!slot.valid() || (piece.mirror && !slot->mirror_allowed)) return false;
+    const auto chain = skeleton.simple_ik_bones.find(slot->ik_chain_label);
+    if (chain == skeleton.simple_ik_bones.end()) return false;
+    int bone = chain->second.bone_id;
+    for (int depth = 0; depth < slot->ik_chain_bone; ++depth) {
+        if (unsigned(bone) >= skeleton.parents.size()) return false;
         bone = skeleton.parents[bone];
     }
-    return false;
+    const auto& symmetry = skeleton.skeleton_asset_ref->GetData().symmetry;
+    if (piece.mirror) {
+        if (unsigned(bone) >= symmetry.size()) return false;
+        bone = symmetry[bone];
+    }
+    if (unsigned(bone) >= skeleton.physics_bones.size()) return false;
+    mat4 local = LoadAttachPose(slot->anim, slot->ik_chain_label, skeleton, &bone, piece.mirror, false, slot->ik_chain_bone);
+    if (unsigned(bone) >= skeleton.physics_bones.size()) return false;
+    // Item attachment animations use weapon axes. UpdateAttachedItem performs
+    // this same quarter-turn before displaying the item; an environment mesh
+    // needs it too or the wooden plate crosses the limb instead of guarding it.
+    const mat4 item_axes = local;
+    local.SetColumn(1, item_axes.GetColumnVec3(2));
+    local.SetColumn(2, item_axes.GetColumnVec3(1) * -1.0f);
+    local.SetTranslationPart(local.GetTranslationPart() * model_scale);
+    const auto& physics_bone = skeleton.physics_bones[bone];
+    // The display bone already includes inverse bind rotation/translation.
+    // Convert the physical item socket into the corresponding skin-space fit.
+    fit.rel_mat = physics_bone.initial_rotation * local;
+    fit.rel_mat.AddTranslation(physics_bone.initial_position / model_scale);
+    fit.bone_id = bone;
+    fit.num_connections = 1;
+    return true;
 }
-int AuthoredPieceRegions(MovementObject* actor, Object* object, const AttachedEnvObject& attachment, int depth = 0) {
-    if (!object || depth > 5 || object->GetScriptParams()->HasParam("Campaign Armor Region")) return 0;
+
+const std::vector<ArmorTemplate>& ChitinTemplates() {
+    static const std::vector<ArmorTemplate> templates = [] {
+        std::vector<ArmorTemplate> result;
+        EntityDescriptionList actors;
+        std::string type; Path file;
+        ActorsEditor_LoadEntitiesFromFile("Data/Prefabs/handofouran.xml", actors, &type, &file);
+        for (const auto& actor : actors) {
+            if (GetTypeFromDesc(actor) != _movement_object) continue;
+            const auto* field = actor.GetField(EDF_ENV_OBJECT_ATTACH);
+            if (!field) continue;
+            std::vector<AttachedEnvObject> attachments;
+            Deserialize(field->data, attachments);
+            // Use the stock armored cat's fitted pieces, rather than applying
+            // dog mesh offsets to a different model. The other arm is mirrored.
+            const int indices[] = {3, 4, 0, 7, 7, 1, 2, 9, 10};
+            const auto reference = Engine::Instance()->GetAssetManager()->LoadSync<SkeletonAsset>("Data/Skeletons/r_male_cat.xml");
+            if (!reference.valid()) continue;
+            for (unsigned region = 0; region < 9; ++region) {
+                const unsigned index = indices[region];
+                if (index >= actor.children.size() || index >= attachments.size()) continue;
+                ArmorTemplate piece;
+                piece.region = 1 << region; piece.description = actor.children[index]; piece.attachment = attachments[index];
+                piece.attachment.direct_ptr = nullptr;
+                piece.reference_rig = "Data/Skeletons/r_male_cat.xml"; piece.reference_scale = .96078f;
+                if (const auto* path_field = piece.description.GetField(EDF_FILE_PATH)) { Path path; path_field->ReadPath(&path); piece.path = path.GetOriginalPathStr(); }
+                if (const auto* scale = piece.description.GetField(EDF_SCALE)) memread(piece.scale.entries, sizeof(float), 3, scale->data);
+                if (region == 4) {
+                    piece.scale.x() *= -1;
+                    for (auto& bone : piece.attachment.bone_connects) if (bone.num_connections) {
+                        if (unsigned(bone.bone_id) >= reference->GetData().symmetry.size()) { bone.num_connections = 0; continue; }
+                        bone.bone_id = reference->GetData().symmetry[bone.bone_id];
+                        for (int k : {1, 2, 4, 8, 12}) bone.rel_mat[k] *= -1;
+                    }
+                }
+                piece.scale /= piece.reference_scale;
+                if (!piece.path.empty()) result.push_back(piece);
+            }
+        }
+        return result;
+    }();
+    return templates;
+}
+const std::vector<ArmorTemplate>& GreyTemplates() {
+    static const std::vector<ArmorTemplate> templates = [] {
+        auto result = ArmorTemplates();
+        for (auto& piece : result) {
+            const auto slash = piece.path.find_last_of('/');
+            piece.path = "Data/Objects/therium/Gear/dog_armour_grey/" + piece.path.substr(slash + 1);
+            EntityDescriptionList descriptions;
+            std::string type; Path file;
+            ActorsEditor_LoadEntitiesFromFile(piece.path, descriptions, &type, &file);
+            if (!descriptions.empty()) piece.description = descriptions.front();
+        }
+        return result;
+    }();
+    return templates;
+}
+const std::vector<ArmorTemplate>& ShopArmorTemplates(int material) {
+    if (material == ArmorProtection::Wood) return WoodenGuardTemplates();
+    if (material == ArmorProtection::Chitin) return ChitinTemplates();
+    return material == ArmorProtection::Grey ? GreyTemplates() : ArmorTemplates();
+}
+
+int ChainDepth(MovementObject* actor, const char* chain, int target) {
+    const auto& skeleton = actor->rigged_object()->skeleton_;
+    const auto found = skeleton.simple_ik_bones.find(chain);
+    if (found == skeleton.simple_ik_bones.end()) return -1;
+    int bone = found->second.bone_id;
+    for (int n = 0; n < 5 && bone >= 0 && unsigned(bone) < skeleton.parents.size(); ++n) {
+        if (bone == target) return n;
+        bone = skeleton.parents[bone];
+    }
+    return -1;
+}
+int AuthoredPieceRegions(MovementObject* actor, Object* object, const AttachedEnvObject& attachment, int depth = 0, ArmorProtection::Coverage* coverage = nullptr, bool include_inactive = false) {
+    if (!object || depth > 5 || (!include_inactive && !object->enabled_)) return 0;
+    ScriptParams* params = object->GetScriptParams();
+    const bool added = params->HasParam("Campaign Armor Region") || params->HasParam("Progression Armor Region");
+    if (added && !coverage) return 0;
     std::string path = object->obj_file;
+    std::replace(path.begin(), path.end(), '\\', '/');
     std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return std::tolower(c); });
     int region = 0;
-    if (path.find("breastplate") != std::string::npos || path.find("chestplate") != std::string::npos) region = CampaignEquipment::Front;
+    if (path.find("/dog_armor/dog_armor.xml") != std::string::npos) region = CampaignEquipment::kAllRegions;
+    else if (path.find("breastplate") != std::string::npos || path.find("chestplate") != std::string::npos) region = CampaignEquipment::Front;
     else if (path.find("backplate") != std::string::npos) region = CampaignEquipment::Back;
     else if (path.find("helmet") != std::string::npos) region = CampaignEquipment::Head;
     else {
         const auto* bone = &attachment.bone_connects[0];
         for (const auto& candidate : attachment.bone_connects) if (candidate.num_connections > bone->num_connections) bone = &candidate;
-        const bool left_arm = BoneOnChain(actor, "leftarm", bone->bone_id), right_arm = BoneOnChain(actor, "rightarm", bone->bone_id);
-        const bool left_leg = BoneOnChain(actor, "left_leg", bone->bone_id), right_leg = BoneOnChain(actor, "right_leg", bone->bone_id);
-        const bool left = left_arm != right_arm ? left_arm : left_leg != right_leg ? left_leg : bone->rel_mat.GetTranslationPart().x() >= 0;
-        if (path.find("lower_arm") != std::string::npos || path.find("armchunk") != std::string::npos) region = left ? CampaignEquipment::LeftForearm : CampaignEquipment::RightForearm;
+        const int la = ChainDepth(actor, "leftarm", bone->bone_id), ra = ChainDepth(actor, "rightarm", bone->bone_id);
+        const int ll = ChainDepth(actor, "left_leg", bone->bone_id), rl = ChainDepth(actor, "right_leg", bone->bone_id);
+        const vec3 anchor = bone->rel_mat.GetTranslationPart();
+        const bool left = (la >= 0) != (ra >= 0) ? la >= 0 : (ll >= 0) != (rl >= 0) ? ll >= 0 : anchor.x() >= 0;
+        if (path.find("/rabbit_gear/large_wood_plate.xml") != std::string::npos) {
+            // A wooden plate can be mounted at several different sockets.
+            // Authored guards sometimes also wear it on the front or back.
+            const int arm = std::max(la, ra);
+            if (arm >= 0 && arm <= 2) region = left ? CampaignEquipment::LeftForearm : CampaignEquipment::RightForearm;
+            else if (arm >= 3) region = left ? CampaignEquipment::LeftShoulder : CampaignEquipment::RightShoulder;
+            else if (std::max(ll, rl) >= 3) region = left ? CampaignEquipment::LeftThigh : CampaignEquipment::RightThigh;
+            else if (ChainDepth(actor, "torso", bone->bone_id) >= 0) {
+                // The stock shoulder wearable uses torso bone zero. Match its
+                // real socket before treating an untagged plate as body armor.
+                const float model_scale = actor->rigged_object()->GetCharScale() / actor->character_script_getter.GetModelScale();
+                float nearest = .08f * .08f;
+                for (const auto& piece : WoodenGuardTemplates()) if (piece.region == CampaignEquipment::LeftShoulder || piece.region == CampaignEquipment::RightShoulder) {
+                    BoneConnect fit{};
+                    if (FitWearableGuard(piece, actor->rigged_object()->skeleton_, model_scale, fit) && fit.bone_id == bone->bone_id) {
+                        const float distance = distance_squared(anchor, fit.rel_mat.GetTranslationPart());
+                        if (distance < nearest) { nearest = distance; region = piece.region; }
+                    }
+                }
+                if (!region) region = anchor.z() >= 0 ? CampaignEquipment::Front : CampaignEquipment::Back;
+            }
+        } else if (path.find("lower_arm") != std::string::npos || path.find("armchunk") != std::string::npos) region = left ? CampaignEquipment::LeftForearm : CampaignEquipment::RightForearm;
         else if (path.find("shoulder") != std::string::npos && (path.find("armor") != std::string::npos || path.find("armour") != std::string::npos)) region = left ? CampaignEquipment::LeftShoulder : CampaignEquipment::RightShoulder;
         else if (path.find("hip_plate") != std::string::npos || path.find("thighpiece") != std::string::npos) region = left ? CampaignEquipment::LeftThigh : CampaignEquipment::RightThigh;
+    }
+    if (coverage) {
+        if (added) region = params->ASGetInt(params->HasParam("Progression Armor Region") ? "Progression Armor Region" : "Campaign Armor Region");
+        if (region) {
+            int tier = params->HasParam("Armor Material Tier") ? params->ASGetInt("Armor Material Tier") :
+                ArmorProtection::MaterialTier(path, 0);
+            if (!tier) {
+                // Custom plates may identify leather or cloth only through their surface.
+                auto surface = object->GetType() == _env_object ? static_cast<EnvObject*>(object)->GetMaterial(object->GetTranslation()) : MaterialRef();
+                std::string name = surface.valid() ? surface->path_ : "";
+                std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+                tier = ArmorProtection::MaterialTier(name);
+            }
+            for (unsigned i = 0; i < coverage->size(); ++i)
+                if (region & (1 << i)) (*coverage)[i] = std::max((*coverage)[i], tier);
+        }
     }
     if (object->IsGroupDerived()) {
         std::vector<Object*> children;
         object->GetChildren(&children);
-        for (Object* child : children) region |= AuthoredPieceRegions(actor, child, attachment, depth + 1);
+        for (Object* child : children) region |= AuthoredPieceRegions(actor, child, attachment, depth + 1, coverage, include_inactive);
     }
     return region;
 }
+// Authored gear can also be an ItemObject connected to a wearable socket,
+// outside the rig's list of attached environment meshes.
+int WearableItemRegions(const ItemObjectScriptReader& connection, bool include_inactive = false) {
+    if (!connection.holding || connection.attachment_type != _at_attachment || !connection.valid() ||
+        (!include_inactive && !connection->enabled_) || !connection.attachment_ref.valid() ||
+        connection->item_ref()->GetObjPath().find("/rabbit_gear/large_wood_plate.xml") == std::string::npos) return 0;
+    const auto& socket = connection.attachment_ref;
+    const bool left = connection.attachment_mirror;
+    int slot;
+    if (socket->path_.find("rightshoulder.xml") != std::string::npos) slot = left ? 5 : 6;
+    else if (socket->ik_chain_label == "rightarm") slot = socket->ik_chain_bone <= 2 ? (left ? 3 : 4) : (left ? 5 : 6);
+    else if (socket->ik_chain_label == "right_leg" && socket->ik_chain_bone >= 3) slot = left ? 7 : 8;
+    else return 0;
+    return 1 << slot;
+}
+int WornItemRegions(MovementObject* actor, ArmorProtection::Coverage* coverage = nullptr) {
+    int mask = 0;
+    for (const auto& attachment : actor->rigged_object()->attached_items.items) {
+        const int regions = WearableItemRegions(attachment.item);
+        mask |= regions;
+        if (coverage) for (unsigned slot = 0; slot < coverage->size(); ++slot)
+            if (regions & (1 << slot)) (*coverage)[slot] = std::max((*coverage)[slot], int(ArmorProtection::Wood));
+    }
+    return mask;
+}
+
+const char* kArmorSlotSuppressed = "Armor Slot Suppressed";
+bool ArmorSlotSuppressed(Object* object) {
+    const auto* params = object->GetScriptParams();
+    return params->HasParam(kArmorSlotSuppressed) && object->GetScriptParams()->ASGetInt(kArmorSlotSuppressed) > 0;
+}
+struct WornArmorCandidate {
+    Object* object;
+    ObjectID owner;
+    int regions, material, priority;
+    std::string path;
+};
+void CollectArmorCandidates(MovementObject* actor, Object* object, const AttachedEnvObject& attachment,
+                            std::vector<WornArmorCandidate>& candidates, int depth = 0) {
+    if (!object || depth > 5 || (!object->enabled_ && !ArmorSlotSuppressed(object))) return;
+    if (object->IsGroupDerived()) {
+        std::vector<Object*> children;
+        object->GetChildren(&children);
+        for (Object* child : children) CollectArmorCandidates(actor, child, attachment, candidates, depth + 1);
+        return;
+    }
+    auto* params = object->GetScriptParams();
+    if (params->HasParam("Campaign Armor Region")) return; // generated gear has its own reconciliation pass
+    ArmorProtection::Coverage coverage{};
+    const int mask = AuthoredPieceRegions(actor, object, attachment, 0, &coverage, true);
+    if (!mask) return;
+    std::string path = object->obj_file;
+    std::replace(path.begin(), path.end(), '\\', '/');
+    std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return std::tolower(c); });
+    const int material = *std::max_element(coverage.begin(), coverage.end());
+    candidates.push_back({object, actor->GetID(), mask, material, params->HasParam("Progression Armor Region") ? 2 : 1,
+                          path});
+}
+bool SameArmorFit(const WornArmorCandidate& a, const WornArmorCandidate& b) {
+    if (a.path != b.path || distance_squared(a.object->GetScale(), b.object->GetScale()) > .00000001f) return false;
+    const auto& lhs = a.object->GetTransform();
+    const auto& rhs = b.object->GetTransform();
+    for (int i = 0; i < 16; ++i) if (std::fabs(lhs[i] - rhs[i]) > .0001f) return false;
+    return true;
+}
+bool AuthoredArmorComponents(const WornArmorCandidate& a, const WornArmorCandidate& b, int region) {
+    if (a.priority != 1 || b.priority != 1 || a.material != b.material || SameArmorFit(a, b)) return false;
+    // These stock suits are assemblies, not several complete items in one
+    // slot: dog shoulders have an outer and inner plate, and chitin's back
+    // uses several deliberately offset segments. Preserve their silhouettes.
+    if (a.material == ArmorProtection::Chitin && region == CampaignEquipment::Back)
+        return a.path.find("/chitinarmour/backplate.xml") != std::string::npos && b.path.find("/chitinarmour/backplate.xml") != std::string::npos;
+    if ((a.material == ArmorProtection::Dog || a.material == ArmorProtection::Grey) &&
+        (region == CampaignEquipment::LeftShoulder || region == CampaignEquipment::RightShoulder)) {
+        const bool ab = a.path.find("shoulder_a.xml") != std::string::npos && b.path.find("shoulder_b.xml") != std::string::npos;
+        const bool ba = b.path.find("shoulder_a.xml") != std::string::npos && a.path.find("shoulder_b.xml") != std::string::npos;
+        return ab || ba;
+    }
+    return false;
+}
+void ReconcileAuthoredArmor(Online* online, SceneGraph* graph, std::set<ObjectID>& suppressed) {
+    std::set<ObjectID> present;
+    for (Object* object : graph->movement_objects_) {
+        auto* actor = static_cast<MovementObject*>(object);
+        if (!actor->enabled_ || !actor->rigged_object()) continue;
+        std::vector<WornArmorCandidate> candidates;
+        for (const auto& attachment : actor->rigged_object()->children)
+            CollectArmorCandidates(actor, attachment.direct_ptr, attachment, candidates);
+        for (const auto& attachment : actor->rigged_object()->attached_items.items) {
+            const auto& item = attachment.item;
+            const int regions = WearableItemRegions(item, true);
+            if (!regions || (!item->enabled_ && !ArmorSlotSuppressed(item.GetAttached()))) continue;
+            candidates.push_back({item.GetAttached(), actor->GetID(), regions, ArmorProtection::Wood, 1, item->item_ref()->GetObjPath()});
+        }
+        std::sort(candidates.begin(), candidates.end(), [online](const WornArmorCandidate& a, const WornArmorCandidate& b) {
+            if (a.priority != b.priority) return a.priority > b.priority;
+            if (a.material != b.material) return a.material > b.material;
+            return online->GetOriginalID(a.object->GetID()) < online->GetOriginalID(b.object->GetID());
+        });
+        std::array<std::vector<const WornArmorCandidate*>, 9> occupied;
+        for (const auto& candidate : candidates) {
+            Object* piece = candidate.object;
+            if (!present.insert(piece->GetID()).second) continue;
+            auto* params = piece->GetScriptParams();
+            bool conflict = false;
+            for (unsigned slot = 0; slot < occupied.size(); ++slot) if (candidate.regions & (1 << slot))
+                for (const auto* winner : occupied[slot]) if (!AuthoredArmorComponents(candidate, *winner, 1 << slot)) conflict = true;
+            if (conflict) {
+                if (piece->enabled_) {
+                    params->ASSetInt(kArmorSlotSuppressed, online->GetOriginalID(candidate.owner) + 1);
+                    piece->SetEnabled(false);
+                    online->Send<OnlineMessages::SetObjectEnabledMessage>(piece->GetID(), false);
+                }
+                suppressed.insert(piece->GetID());
+            } else {
+                for (unsigned slot = 0; slot < occupied.size(); ++slot) if (candidate.regions & (1 << slot)) occupied[slot].push_back(&candidate);
+                if (ArmorSlotSuppressed(piece)) {
+                    params->ASSetInt(kArmorSlotSuppressed, 0);
+                    piece->SetEnabled(true);
+                    online->Send<OnlineMessages::SetObjectEnabledMessage>(piece->GetID(), true);
+                }
+                suppressed.erase(piece->GetID());
+            }
+        }
+    }
+    for (auto it = suppressed.begin(); it != suppressed.end();) {
+        Object* piece = graph->GetObjectFromID(*it);
+        if (!piece || !ArmorSlotSuppressed(piece)) { it = suppressed.erase(it); continue; }
+        if (present.count(*it)) { ++it; continue; }
+        auto* params = piece->GetScriptParams();
+        Object* owner = graph->GetObjectFromID(online->GetObjectID(params->ASGetInt(kArmorSlotSuppressed) - 1));
+        if (owner && !owner->enabled_) { ++it; continue; }
+        // A script detached or replaced the armor. Restore only objects this
+        // pass disabled; authored quest/editor visibility is never enabled here.
+        params->ASSetInt(kArmorSlotSuppressed, 0);
+        piece->SetEnabled(true);
+        online->Send<OnlineMessages::SetObjectEnabledMessage>(piece->GetID(), true);
+        it = suppressed.erase(it);
+    }
+}
+
 void PublishArmor(Online* online, MovementObject* actor, int mask) {
     const char* keys[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
     float values[] = {1, 1, 1, 0};
     for (int i = 0; i < 4; ++i) if (actor->ASHasVar(keys[i])) values[i] = actor->ASGetFloatVar(keys[i]);
     if (online->IsPlayerCharacter(actor->GetID()) && !LobbyBot(online, actor->GetID())) { values[0] = values[1] = values[2] = 1; values[3] = 0; }
     if (actor->ASHasVar("campaign_armor_regions")) actor->ASSetIntVar("campaign_armor_regions", mask);
-    online->ReceiveCampaignScale(online->GetOriginalID(actor->GetID()), values[0], values[1], 1, values[3], mask);
-    online->Send<OnlineMessages::CampaignScale>(online->GetOriginalID(actor->GetID()), values[0], values[1], 1, values[3], mask);
+    const float base = actor->ASHasVar("campaign_base_difficulty") ? actor->ASGetFloatVar("campaign_base_difficulty") : -1.f;
+    online->ReceiveCampaignScale(online->GetOriginalID(actor->GetID()), values[0], values[1], 1, values[3], mask, base);
+    online->Send<OnlineMessages::CampaignScale>(online->GetOriginalID(actor->GetID()), values[0], values[1], 1, values[3], mask, base);
 }
-ObjectID AddArmorPiece(Online* online, SceneGraph* graph, MovementObject* actor, const ArmorTemplate& piece) {
+ObjectID AddArmorPiece(Online* online, SceneGraph* graph, MovementObject* actor, const ArmorTemplate& piece, int material = 0) {
     auto* rigged = actor->rigged_object();
     if (rigged->display_bone_transforms.empty()) return -1;
     AttachedEnvObject attachment = piece.attachment;
@@ -399,8 +718,11 @@ ObjectID AddArmorPiece(Online* online, SceneGraph* graph, MovementObject* actor,
     const float model_scale = scale / actor->character_script_getter.GetModelScale();
     if (!std::isfinite(model_scale) || model_scale <= 0) return -1;
     SkeletonAssetRef turner;
-    if (piece.region != CampaignEquipment::Head) turner = Engine::Instance()->GetAssetManager()->LoadSync<SkeletonAsset>("Data/Skeletons/r_turner.xml");
-    if (piece.region == CampaignEquipment::Head) {
+    if (!piece.wearable_slot && (piece.region != CampaignEquipment::Head || piece.reference_rig))
+        turner = Engine::Instance()->GetAssetManager()->LoadSync<SkeletonAsset>(piece.reference_rig ? piece.reference_rig : "Data/Skeletons/r_turner.xml");
+    if (piece.wearable_slot) {
+        if (!FitWearableGuard(piece, rigged->skeleton_, model_scale, attachment.bone_connects[0])) return -1;
+    } else if (piece.region == CampaignEquipment::Head && !piece.reference_rig) {
         const auto head = rigged->skeleton_.simple_ik_bones.find("head");
         if (head == rigged->skeleton_.simple_ik_bones.end() || head->second.bone_id < 0 ||
             unsigned(head->second.bone_id) >= target_data.bone_mats.size()) return -1;
@@ -432,7 +754,8 @@ ObjectID AddArmorPiece(Online* online, SceneGraph* graph, MovementObject* actor,
     }
     for (auto& bone : attachment.bone_connects) if (bone.num_connections) {
         if (bone.bone_id < 0 || unsigned(bone.bone_id) >= rigged->display_bone_transforms.size()) return -1;
-        if (piece.region != CampaignEquipment::Head) {
+        if (!piece.wearable_slot && (piece.region != CampaignEquipment::Head || piece.reference_rig)) {
+            if (!turner.valid()) return -1;
             const auto& reference = turner->GetData();
             if (unsigned(bone.bone_id) >= reference.bone_mats.size() || unsigned(bone.bone_id) >= target_data.bone_mats.size()) return -1;
             const vec3 reference_bind = reference.bone_mats[bone.bone_id].GetTranslationPart();
@@ -440,7 +763,7 @@ ObjectID AddArmorPiece(Online* online, SceneGraph* graph, MovementObject* actor,
             const vec3 target_com = rigged->skeleton_.physics_bones[bone.bone_id].initial_position / model_scale;
             const vec3 original = bone.rel_mat.GetTranslationPart();
             vec3 position;
-            for (int i = 0; i < 3; ++i) position[i] = CampaignEquipment::RetargetAnchor(original[i], reference_bind[i], reference_bind[i], 1.0f, target_bind[i], target_com[i], scale, model_scale);
+            for (int i = 0; i < 3; ++i) position[i] = CampaignEquipment::RetargetAnchor(original[i], reference_bind[i], reference_bind[i], piece.reference_scale, target_bind[i], target_com[i], scale, model_scale);
             bone.rel_mat.SetTranslationPart(position);
         }
         count += bone.num_connections;
@@ -462,18 +785,17 @@ ObjectID AddArmorPiece(Online* online, SceneGraph* graph, MovementObject* actor,
     if (!object || object->GetType() != _env_object) return -1;
     object->exclude_from_save = true; object->exclude_from_undo = true; object->created_on_the_fly = true;
     object->SetCollisionEnabled(false); object->SetParent(actor);
-    ScriptParam provenance; provenance.SetInt(piece.region); object->GetScriptParams()->InsertScriptParam("Campaign Armor Region", provenance);
+    ScriptParam provenance; provenance.SetInt(piece.region); object->GetScriptParams()->InsertScriptParam(material ? "Progression Armor Region" : "Campaign Armor Region", provenance);
+    ArmorProtection::ApplyMaterial(*object, material ? material : ArmorProtection::MaterialTier(piece.path));
     attachment.direct_ptr = object; attachment.legacy_obj_id = object->GetID(); attachment.bone_connection_dirty = false;
     rigged->children.push_back(attachment);
     online->Send<OnlineMessages::CreateEntity>(piece.path, world.GetTranslationPart(), object->GetID());
-    online->Send<OnlineMessages::AttachToMessage>(actor->GetID(), object->GetID(), 0, true, false, &attachment, piece_scale * scale, piece.region);
+    online->Send<OnlineMessages::AttachToMessage>(actor->GetID(), object->GetID(), 0, true, false, &attachment, piece_scale * scale, piece.region, false, material);
     return object->GetID();
 }
-void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState& state, int humans, int bots, bool party_stats) {
+void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState& state, const CampaignDifficulty::Sample& sample) {
     const bool held = online->CoopCutscene() || graph->level->DialogueCameraControl();
-    const bool master = online->DifficultyScalingEnabled();
-    const bool armor = master && config["campaign_armor_scaling"].toBool();
-    const bool weapons = master && config["campaign_weapon_scaling"].toBool();
+    const bool armor = sample.armor, weapons = sample.weapons;
     for (auto it = state.gear.begin(); it != state.gear.end();) {
         MovementObject* actor = Actor(graph, it->first);
         if (!actor || !Hostile(online, graph, actor)) {
@@ -482,7 +804,7 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
             it = state.gear.erase(it);
         } else ++it;
     }
-    const double intensity = CampaignEquipment::Intensity(online->ModeChallengePressure(), party_stats ? CampaignDifficulty::ExtraPlayersForParty(humans, bots) : 0);
+    const double intensity = CampaignEquipment::Intensity(sample.pressure, sample.stats ? CampaignDifficulty::ExtraPlayersForParty(sample.humans, sample.bots) : 0);
     for (Object* object : graph->movement_objects_) {
         auto* actor = static_cast<MovementObject*>(object);
         bool inherited = actor->GetScriptParams()->HasParam("Campaign Weapon Issued");
@@ -493,23 +815,17 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
         Reinforcement* extra = nullptr; Encounter* encounter = nullptr;
         for (auto& entry : state.encounters) for (auto& candidate : entry.second.extras) if (candidate.actor == actor->GetID()) { extra = &candidate; encounter = &entry.second; }
         auto& gear = state.gear[actor->GetID()];
-        gear.plan = CampaignEquipment::ForUnit(extra ? extra->seed : uint32_t(online->GetOriginalID(actor->GetID())), intensity, actor->ASHasVar("campaign_armor_regions"), false, Strength(actor) == CampaignDifficulty::Wolf);
+        gear.seed = extra ? extra->seed : uint32_t(online->GetOriginalID(actor->GetID()));
+        gear.intensity = intensity;
+        gear.plan = CampaignEquipment::ForUnit(gear.seed, intensity, actor->ASHasVar("campaign_armor_regions"), false, Strength(actor) == CampaignDifficulty::Wolf);
         const int authored = online->AuthoredArmorRegions(actor->GetID());
         gear.plan.armor_regions &= ~authored;
-        if (actor->ASHasVar("g_wearing_metal_armor") && actor->ASGetBoolVar("g_wearing_metal_armor") && (!config["armor_localized"].toBool() || !authored)) gear.plan.armor_regions = 0;
+        if (actor->ASHasVar("g_wearing_metal_armor") && actor->ASGetBoolVar("g_wearing_metal_armor") && (config["armor_localized"].toNumber<int>() == 0 || !authored)) gear.plan.armor_regions = 0;
         if (extra && encounter && !encounter->originals.empty()) {
             const uint32_t base = CampaignEquipment::ExtraSeed(online->GetOriginalID(encounter->originals.front()), online->GetOriginalID(encounter->hotspot), encounter->goal, 0);
             gear.plan.weapon = CampaignEquipment::WaveWeapon(base, extra->slot, std::max(encounter->spawned, encounter->reinforcement_target), intensity, Strength(actor) == CampaignDifficulty::Wolf);
         }
         gear.weapon_done = gear.plan.weapon == CampaignEquipment::Unarmed;
-        // A promoted host already has these replicated pieces. Adopt them
-        // rather than treating them as authored armor or manufacturing copies.
-        for (const auto& child : actor->rigged_object()->children) if (child.direct_ptr && child.direct_ptr->GetScriptParams()->HasParam("Campaign Armor Region")) {
-            const int region = child.direct_ptr->GetScriptParams()->ASGetInt("Campaign Armor Region") & CampaignEquipment::kAllRegions;
-            gear.armor.push_back(child.direct_ptr->GetID()); gear.applied_regions |= region; gear.plan.armor_regions |= region;
-            child.direct_ptr->exclude_from_save = true; child.direct_ptr->exclude_from_undo = true;
-        }
-        if (gear.applied_regions && actor->ASHasVar("campaign_armor_regions") && actor->ASGetIntVar("campaign_armor_regions") != gear.applied_regions) PublishArmor(online, actor, gear.applied_regions);
         if (extra) {
             for (ObjectID id : extra->equipment) {
                 Object* item = graph->GetObjectFromID(id);
@@ -524,10 +840,33 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
     }
     for (auto& entry : state.gear) if (MovementObject* actor = Actor(graph, entry.first)) {
         auto& gear = entry.second;
-        if (!armor && !gear.armor.empty()) {
-            for (ObjectID id : gear.armor) if (graph->GetObjectFromID(id)) graph->map_editor->DeleteID(id);
-            gear.armor.clear(); gear.applied_regions = 0; PublishArmor(online, actor, 0);
+        // Reconcile actual attachments before issuing anything. A script may
+        // have equipped a guard after the plan was made, or a promoted host
+        // may have inherited pieces without this local director's bookkeeping.
+        int reserved = online->AuthoredArmorRegions(actor->GetID());
+        for (const auto& child : actor->rigged_object()->children) {
+            if (child.direct_ptr && child.direct_ptr->GetScriptParams()->HasParam("Progression Armor Region"))
+                reserved |= child.direct_ptr->GetScriptParams()->ASGetInt("Progression Armor Region");
         }
+        gear.armor.clear();
+        std::vector<ObjectID> redundant;
+        int equipped = 0;
+        for (const auto& child : actor->rigged_object()->children) {
+            Object* piece = child.direct_ptr;
+            if (!piece || !piece->GetScriptParams()->HasParam("Campaign Armor Region")) continue;
+            const int slot = piece->GetScriptParams()->ASGetInt("Campaign Armor Region");
+            if (!armor || !(slot & CampaignEquipment::kAllRegions) || (slot & (slot - 1)) || ((reserved | equipped) & slot)) {
+                redundant.push_back(piece->GetID());
+                continue;
+            }
+            equipped |= slot;
+            gear.armor.push_back(piece->GetID());
+        }
+        for (ObjectID id : redundant) graph->map_editor->DeleteID(id);
+        gear.plan.armor_regions &= ~reserved;
+        gear.applied_regions = equipped;
+        if (actor->ASHasVar("campaign_armor_regions") && actor->ASGetIntVar("campaign_armor_regions") != equipped)
+            PublishArmor(online, actor, equipped);
         if (!weapons) for (auto it = gear.weapons.begin(); it != gear.weapons.end();) {
             Object* object = graph->GetObjectFromID(*it);
             if (object && object->GetType() == _item_object && static_cast<ItemObject*>(object)->HeldByWhom() == actor->GetID()) {
@@ -575,14 +914,15 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
         const ObjectID id = begin->first; auto& gear = begin->second; ++begin;
         MovementObject* actor = Actor(graph, id);
         if (!actor || !actor->enabled_ || !Awake(actor)) continue;
-        for (const auto& piece : ArmorTemplates()) if ((gear.plan.armor_regions & piece.region) && !(gear.applied_regions & piece.region)) {
-            bool duplicate = false;
-            for (const auto& child : actor->rigged_object()->children) if (child.direct_ptr && child.direct_ptr->obj_file == piece.path &&
-                child.bone_connects[0].bone_id == piece.attachment.bone_connects[0].bone_id) duplicate = true;
-            if (duplicate) { gear.plan.armor_regions &= ~piece.region; continue; }
-            const ObjectID added = AddArmorPiece(online, graph, actor, piece);
+        for (unsigned slot = 0; slot < 9; ++slot) {
+            const int region = 1 << slot;
+            if (!(gear.plan.armor_regions & region) || (gear.applied_regions & region)) continue;
+            const auto& pieces = ShopArmorTemplates(CampaignEquipment::ArmorTier(gear.seed, slot, gear.intensity));
+            auto piece = std::find_if(pieces.begin(), pieces.end(), [region](const ArmorTemplate& p) { return p.region == region; });
+            if (piece == pieces.end()) continue;
+            const ObjectID added = AddArmorPiece(online, graph, actor, *piece);
             if (added < 0) continue;
-            --budget; gear.armor.push_back(added); gear.applied_regions |= piece.region; state.gear_cursor = id;
+            --budget; gear.armor.push_back(added); gear.applied_regions |= region; state.gear_cursor = id;
             PublishArmor(online, actor, gear.applied_regions);
             break;
         }
@@ -863,20 +1203,23 @@ std::string Online::CampaignWaitingText() {
     return "";
 }
 
-void Online::ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions) {
+void Online::ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions, float base) {
     if (!std::isfinite(vitality) || !std::isfinite(damage) || !std::isfinite(armor) || !std::isfinite(ai) ||
         vitality < 0.75f || vitality > 6 || damage < 0.9625f || damage > 2 || armor < 0.975f || armor > 2 || ai < 0 || ai > 0.03f ||
+        !std::isfinite(base) || (base != -1 && (base < 0 || base > 1)) ||
         armor_regions < -1 || armor_regions > CampaignEquipment::kAllRegions) return;
     MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), GetObjectID(character));
     if (!actor || !actor->HasFunction("void SetCampaignScaling(float, float, float, float)")) return;
-    if (IsPlayerCharacter(actor->GetID()) && !LobbyBot(this, actor->GetID()) && (vitality != 1 || damage != 1 || armor != 1 || ai != 0 || armor_regions > 0)) return;
+    if (IsPlayerCharacter(actor->GetID()) && !LobbyBot(this, actor->GetID()) && (vitality != 1 || damage != 1 || armor != 1 || ai != 0 || armor_regions > 0 || base >= 0)) return;
     ASArglist args;
+    if (actor->ASHasVar("campaign_base_difficulty")) actor->ASSetFloatVar("campaign_base_difficulty", base);
     args.Add(vitality); args.Add(damage); args.Add(armor); args.Add(ai);
     actor->as_context->CallScriptFunction("void SetCampaignScaling(float, float, float, float)", &args);
     if (armor_regions >= 0 && actor->ASHasVar("campaign_armor_regions")) actor->ASSetIntVar("campaign_armor_regions", armor_regions);
 }
 
 void Online::ResetCampaignDifficulty(bool scene_disposed) {
+    if (!scene_disposed && IsHosting()) CaptureEnemyDifficulty();
     if (scene_disposed) campaign_difficulty_state.reset();
     else if (IsHosting() && campaign_difficulty_state) campaign_difficulty_state->reset = true;
 }
@@ -888,9 +1231,10 @@ bool Online::CampaignEncounterDefeated(ObjectID hotspot, int goal) const {
     SceneGraph* graph = Engine::Instance()->GetSceneGraph();
     // A wave is allocated over several updates. Killing its authored enemies
     // must not advance the goal before the remaining reserved extras arrive.
-    if (DifficultyScalingEnabled() && config["campaign_mp_scaling"].toBool() && !it->second.reinforcements_deferred &&
+    const auto sample = EnemyDifficulty();
+    if (sample.stats && !it->second.reinforcements_deferred &&
         it->second.spawned < std::min(it->second.reinforcement_target,
-            EncounterReinforcements(graph, it->second, CampaignHumanCount(), MainPartyBots(this, graph)))) {
+            EncounterReinforcements(graph, it->second, sample.humans, sample.bots))) {
         it->second.reinforcements_recheck = true;
         return false;
     }
@@ -911,10 +1255,13 @@ bool Online::CampaignEncounterDefeated(ObjectID hotspot, int goal) const {
 void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
     if (!IsHosting() || !host_started_level || loading || LobbyWaiting() || LobbyBuild() || BuildSession() || !graph || !graph->level) return;
     const bool campaign = CoopCampaign();
-    const bool master = DifficultyScalingEnabled();
-    const bool ai_scaling = master && config["campaign_ai_scaling"].toBool();
-    const bool equipment_scaling = master && (config["campaign_armor_scaling"].toBool() || config["campaign_weapon_scaling"].toBool());
-    if (!campaign && !campaign_difficulty_state && ModeChallengePressure() == 0 && !ai_scaling && !equipment_scaling) {
+    auto sample = EnemyDifficulty();
+    if (sample.humans == 0) {
+        CaptureEnemyDifficulty();
+        sample = EnemyDifficulty();
+    }
+    const bool ai_scaling = sample.ai;
+    if (!campaign && !campaign_difficulty_state && sample.base < 0 && sample.pressure == 0 && !ai_scaling && !sample.armor && !sample.weapons) {
         bool inherited = false;
         for (Object* object : graph->movement_objects_) {
             auto* actor = static_cast<MovementObject*>(object);
@@ -948,9 +1295,8 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
         state.member_combat.clear(); state.active_encounter = {-1, -1}; state.last_deployment = -100000;
     }
     if (campaign) StageOpponents(this, graph, state);
-    const int humans = CampaignHumanCount();
-    const int bots = MainPartyBots(this, graph);
-    const bool stats = campaign && master && config["campaign_mp_scaling"].toBool();
+    const int humans = sample.humans, bots = sample.bots;
+    const bool stats = sample.stats;
     // Reserve a newly activated fight on the first ordinary update, even if
     // the heavier scaling/spawning pass is still on its 350ms throttle.
     if (stats && !coop_cutscene && !graph->level->DialogueCameraControl()) for (auto& entry : state.encounters) {
@@ -968,9 +1314,7 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
     }
     if (now < state.next_update) return;
     state.next_update = now + 350.0;
-    // Publish small steps rather than a reliable packet for every tiny clock
-    // change, while keeping the authoritative progression clock continuous.
-    const auto challenge = ChallengeScaling::Evaluate(std::round(ModeChallengePressure() * 1000.0f) / 1000.0f);
+    const auto challenge = ChallengeScaling::Evaluate(std::round(sample.pressure * 1000.0f) / 1000.0f);
     std::set<ObjectID> bosses;
     for (Object* object : graph->hotspots_) {
         if (!campaign) break;
@@ -1037,23 +1381,24 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
             factors.damage = std::min(2.0f, factors.damage * challenge.damage);
             factors.armor = 1;
             if (ai_scaling && !LobbyBot(this, actor->GetID()) && CampaignDifficulty::TweakForUnit(GetOriginalID(actor->GetID())) != CampaignDifficulty::NoTweak)
-                factors.ai = CampaignDifficulty::AIAmount(humans, ModeChallengePressure());
+                factors.ai = CampaignDifficulty::AIAmount(humans, sample.pressure);
         }
-        const std::array<float, 4> values = {{factors.vitality, factors.damage, factors.armor, factors.ai}};
+        const float base = hostile && !LobbyBot(this, actor->GetID()) && actor->ASHasVar("campaign_base_difficulty") ? sample.base : -1.f;
+        const std::array<float, 5> values = {{factors.vitality, factors.damage, factors.armor, factors.ai, base}};
         auto old = state.applied.find(actor->GetID());
         const char* names[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
-        bool installed = true;
+        bool installed = !actor->ASHasVar("campaign_base_difficulty") || actor->ASGetFloatVar("campaign_base_difficulty") == base;
         for (int i = 0; i < 4; ++i)
             installed = installed && actor->ASHasVar(names[i]) && std::fabs(actor->ASGetFloatVar(names[i]) - values[i]) < 0.00001f;
         // Character ResetGlobals can run after the level's reset message. A
         // cached send does not prove the host's new script has installed it.
         if (old != state.applied.end() && old->second == values && installed) return;
         if (!hostile && old == state.applied.end()) return;
-        ReceiveCampaignScale(GetOriginalID(actor->GetID()), factors.vitality, factors.damage, factors.armor, factors.ai);
+        ReceiveCampaignScale(GetOriginalID(actor->GetID()), factors.vitality, factors.damage, factors.armor, factors.ai, -1, base);
         // Persistent scale messages coalesce by actor. Keep the current mask
         // with newer stats so a late join never loses its armor protection.
         const int armor_regions = actor->ASHasVar("campaign_armor_regions") ? actor->ASGetIntVar("campaign_armor_regions") : 0;
-        Send<OnlineMessages::CampaignScale>(GetOriginalID(actor->GetID()), factors.vitality, factors.damage, factors.armor, factors.ai, armor_regions);
+        Send<OnlineMessages::CampaignScale>(GetOriginalID(actor->GetID()), factors.vitality, factors.damage, factors.armor, factors.ai, armor_regions, base);
         state.applied[actor->GetID()] = values;
     };
     int active_hostiles = 0;
@@ -1067,10 +1412,10 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
         if (actor->HasFunction("void SetCampaignScaling(float, float, float, float)"))
             apply(actor, hostile, bosses.count(actor->GetID()) != 0 || ExplicitBoss(actor, false));
     }
-    UpdateEquipment(this, graph, state, humans, bots, stats);
+    UpdateEquipment(this, graph, state, sample);
     if (!campaign) return;
     DeployOpponents(this, graph, state, now);
-    if (!stats || humans + bots <= 1 || coop_cutscene || graph->level->DialogueCameraControl()) {
+    if (!stats || (humans <= 1 && bots == 0) || coop_cutscene || graph->level->DialogueCameraControl()) {
         RecheckReinforcementGoals(this, graph, state);
         return;
     }
@@ -1208,7 +1553,7 @@ Json::Value HUDProfile(const HUDContext& ctx, const Encounter* encounter, bool f
             const uint32_t base = CampaignEquipment::ExtraSeed(ctx.online->GetOriginalID(encounter->originals.front()), ctx.online->GetOriginalID(encounter->hotspot), encounter->goal, 0);
             const uint32_t seed = generated ? CampaignEquipment::ExtraSeed(ctx.online->GetOriginalID(encounter->originals.front()), ctx.online->GetOriginalID(encounter->hotspot), encounter->goal, slot) : actor ? uint32_t(ctx.online->GetOriginalID(actor->GetID())) : 0;
             const double intensity = CampaignEquipment::Intensity(ctx.next_pressure, ctx.stats ? CampaignDifficulty::ExtraPlayersForParty(ctx.humans, ctx.bots) : 0);
-            auto plan = CampaignEquipment::ForUnit(seed, intensity, config["campaign_armor_scaling"].toBool() && !(full_armor && (!config["armor_localized"].toBool() || !stock_mask)), false, false);
+            auto plan = CampaignEquipment::ForUnit(seed, intensity, config["campaign_armor_scaling"].toBool() && !(full_armor && (config["armor_localized"].toNumber<int>() == 0 || !stock_mask)), false, false);
             mask = plan.armor_regions & ~stock_mask;
             if (generated && config["campaign_weapon_scaling"].toBool()) {
                 tier = CampaignEquipment::WaveWeapon(base, slot, expected, intensity, actor && Strength(actor) == CampaignDifficulty::Wolf);
@@ -1348,15 +1693,29 @@ std::string Online::DifficultyHUDSnapshot() {
         if (entry.second.is_bot) ++ctx.bots; else ++ctx.humans;
     }
     if (!IsActive() && reference) ctx.humans = 1;
+    HUDContext applied = ctx;
+    const auto sample = EnemyDifficulty();
+    if (sample.humans) {
+        if (sample.base >= 0 && sample.base != result["base"]["game_difficulty"].asFloat()) {
+            // The selected preset also controls tutorials and world speed. Only
+            // its enemy combat component is held until the next boundary.
+            result["base"]["name"] = "Enemy base " + HUDNumber(sample.base, 2);
+            result["base"]["game_difficulty"] = sample.base;
+        }
+        applied.humans = sample.humans; applied.bots = sample.bots;
+        applied.stats = sample.stats; applied.ai_enabled = sample.ai;
+        applied.pressure = sample.pressure;
+    }
+    result["progression"]["applied_pressure"] = applied.pressure;
     result["campaign"] = ctx.campaign;
-    result["party"]["humans"] = ctx.humans; result["party"]["bots"] = ctx.bots;
-    result["party"]["stats_enabled"] = ctx.stats;
-    result["party"]["stats_weight"] = CampaignDifficulty::EffectivePartySize(ctx.humans, ctx.bots);
-    result["party"]["count_weight"] = std::max(1, std::min(64, ctx.humans)) + 0.5 * std::min(64, ctx.bots);
-    result["party"]["ai_humans"] = ctx.humans;
-    result["party"]["ai_enabled"] = ctx.ai_enabled;
-    result["equipment"]["armor_enabled"] = master && config["campaign_armor_scaling"].toBool();
-    result["equipment"]["weapons_enabled"] = master && config["campaign_weapon_scaling"].toBool();
+    result["party"]["humans"] = applied.humans; result["party"]["bots"] = applied.bots;
+    result["party"]["stats_enabled"] = applied.stats;
+    result["party"]["stats_weight"] = CampaignDifficulty::EffectivePartySize(applied.humans, applied.bots);
+    result["party"]["count_weight"] = std::max(1, std::min(64, applied.humans)) + 0.5 * std::min(64, applied.bots);
+    result["party"]["ai_humans"] = applied.humans;
+    result["party"]["ai_enabled"] = applied.ai_enabled;
+    result["equipment"]["armor_enabled"] = sample.humans ? sample.armor : master && config["campaign_armor_scaling"].toBool();
+    result["equipment"]["weapons_enabled"] = sample.humans ? sample.weapons : master && config["campaign_weapon_scaling"].toBool();
     result["equipment"]["localized"] = config["armor_localized"].toBool();
     const Encounter* current = nullptr;
     const Encounter* next = nullptr;
@@ -1416,7 +1775,7 @@ std::string Online::DifficultyHUDSnapshot() {
                 factors[3] > 0.0001f || (actor->ASHasVar("campaign_armor_regions") && actor->ASGetIntVar("campaign_armor_regions") != 0);
         }
     }
-    result["current"] = HUDProfile(ctx, current, false, nearby);
+    result["current"] = HUDProfile(applied, current, false, nearby);
     result["next"] = HUDProfile(ctx, next, true, {});
     const bool arena = LobbyMode() == "com-wolfire-arena" || LobbyCampaign() == "com-wolfire-arena";
     const auto& rates = result["progression"]["rates"];
@@ -1424,9 +1783,9 @@ std::string Online::DifficultyHUDSnapshot() {
     const int performance_mode = result["progression"]["performance"]["mode"].asInt();
     const int performance_rate = result["progression"]["performance"]["rate"].asInt();
     const bool growth = master && (rates["time"].asInt() || (performance_mode && performance_rate) || completion_rate);
-    const bool party_stats = ctx.stats && ctx.humans + ctx.bots > 1;
-    const bool ai = ctx.ai_enabled && CampaignDifficulty::AIAmount(ctx.humans, ctx.pressure) > 0;
-    const bool scaled = retained_factors || retained_extras || ((eligible_npcs || arena) && (party_stats || ai || growth || ctx.pressure > 0.00001));
+    const bool party_stats = applied.stats && (applied.humans > 1 || applied.bots > 0);
+    const bool ai = applied.ai_enabled && CampaignDifficulty::AIAmount(applied.humans, applied.pressure) > 0;
+    const bool scaled = retained_factors || retained_extras || ((eligible_npcs || arena) && (party_stats || ai || growth || applied.pressure > 0.00001));
     result["scaled_context"] = scaled;
     result["visible"] = authoritative && gameplay && scaled && !CoopCutscene() && !RemoteCutsceneActive() && !graph->level->DialogueCameraControl();
     result["rating"]["current"] = result["current"]["threat"];
@@ -1439,9 +1798,9 @@ std::string Online::DifficultyHUDSnapshot() {
     if (!next) result["next"]["preview_basis"] = "Regular rabbit reference, not a discovered upcoming wave; " + result["progression"]["preview_basis"].asString();
     Json::Value lines(Json::arrayValue);
     lines.append(result["base"]["name"].asString() + " | Threat ~" + HUDNumber(result["current"]["threat"].asDouble(), 1) + "x base");
-    std::string party = std::to_string(ctx.humans) + (ctx.humans == 1 ? " human + " : " humans + ") +
-        std::to_string(ctx.bots) + (ctx.bots == 1 ? " bot" : " bots");
-    party += ctx.stats ? " | Party scaling on" : " | Party scaling off";
+    std::string party = std::to_string(applied.humans) + (applied.humans == 1 ? " human + " : " humans + ") +
+        std::to_string(applied.bots) + (applied.bots == 1 ? " bot" : " bots");
+    party += applied.stats ? " | Party scaling on" : " | Party scaling off";
     lines.append(party);
     const auto& live = result["current"];
     std::string current_line = std::string(live["factor_source"].asString() == "reference" ? "Now est " : live["boss"].asBool() ? "Now boss " : "Now ") + HUDMods(live);
@@ -1450,7 +1809,8 @@ std::string Online::DifficultyHUDSnapshot() {
     current_line += " | " + HUDGear(live);
     if (live["ai_varied_actors"].asInt() > 0) current_line += " AI+" + HUDNumber(live["factors"]["ai"]["max"].asDouble() * 100, 1) + "%";
     lines.append(current_line);
-    std::string next_line = std::string(next ? "Next " : "Next est (rabbit) ") + "~" + HUDNumber(result["next"]["threat"].asDouble(), 1) + "x | " + HUDMods(result["next"]);
+    std::string next_line = arena ? "Next match" : ctx.campaign ? "Next save" : "Next load";
+    next_line += std::string(next ? " est ~" : " est (rabbit) ~") + HUDNumber(result["next"]["threat"].asDouble(), 1) + "x | " + HUDMods(result["next"]);
     if (next) next_line += " | +" + std::to_string(result["next"]["extras_expected"].asInt()) + " enemies";
     lines.append(next_line);
     std::string growth_line;
@@ -1464,7 +1824,9 @@ std::string Online::DifficultyHUDSnapshot() {
     }
     lines.append("Growth: " + (growth_line.empty() ? "Off" : growth_line));
     const auto& progress = result["progression"];
-    std::string pressure_line = "Pressure " + std::string(ctx.pressure >= 0 ? "+" : "") + HUDNumber(ctx.pressure * 100, 1) + "%";
+    std::string pressure_line = "Applied " + std::string(applied.pressure >= 0 ? "+" : "") + HUDNumber(applied.pressure * 100, 1) + "%";
+    if (std::fabs(ctx.pressure - applied.pressure) >= 0.0005)
+        pressure_line += " | Pending " + std::string(ctx.pressure >= 0 ? "+" : "") + HUDNumber(ctx.pressure * 100, 1) + "%";
     if (progress["win_pending"].asBool()) pressure_line += " -> " + std::string(ctx.next_pressure >= 0 ? "+" : "") + HUDNumber(ctx.next_pressure * 100, 1) + "% on win";
     if (progress["encounter_relief"].asDouble() > 0) pressure_line += " | Retry relief " + HUDNumber(progress["encounter_relief"].asDouble() * 100, 1) + "%";
     else pressure_line += " | " + std::to_string(static_cast<int>(progress["active_seconds"].asDouble() / 60)) + "m active";
@@ -1477,7 +1839,259 @@ std::string Online::DifficultyHUDSnapshot() {
 int Online::AuthoredArmorRegions(ObjectID avatar) const {
     MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), avatar);
     if (!actor || !actor->rigged_object()) return 0;
-    int mask = 0;
+    int mask = WornItemRegions(actor);
     for (const auto& child : actor->rigged_object()->children) mask |= AuthoredPieceRegions(actor, child.direct_ptr, child);
     return mask;
+}
+
+float Online::WornArmorRating(ObjectID avatar) const {
+    MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), avatar);
+    if (!actor || !actor->rigged_object()) return 0;
+    ArmorProtection::Coverage pieces{};
+    WornItemRegions(actor, &pieces);
+    for (const auto& attachment : actor->rigged_object()->children)
+        AuthoredPieceRegions(actor, attachment.direct_ptr, attachment, 0, &pieces);
+    float rating = ArmorProtection::Rating(pieces);
+    // A legacy actor may declare metal armor without any recognizable mesh.
+    return rating == 0 && actor->ASHasVar("g_wearing_metal_armor") && actor->ASGetBoolVar("g_wearing_metal_armor") ? .36f : rating;
+}
+
+// Ownership of spawned gear lasts for one attempt. Dropping a purchased
+// weapon does not trigger another issue during that fight.
+struct ProgressionEquipmentState {
+    struct Weapon {
+        ObjectID item = -1, issuing_avatar = -1;
+        std::string path;
+    };
+    struct Seat {
+        ObjectID avatar = -1;
+        int issued = 0;
+        bool prepared = false;
+        Weapon weapons[2]; // main weapon, offhand dagger
+        std::vector<Weapon> replaced; // authored gear restored on the next attempt
+    };
+    std::map<PlayerID, Seat> seats;
+    std::set<ObjectID> suppressed_armor;
+    double next_check = 0;
+    bool arena_armed = false;
+};
+
+namespace {
+const char* SelectedWeapon(const FriendlyProgression::Build& build, bool offhand) {
+    if (offhand) return build.dagger ? "Data/Items/rabbit_weapons/rabbit_knife.xml" : nullptr;
+    if (build.big_weapon == 1) return "Data/Items/DogWeapons/DogSword.xml";
+    if (build.big_weapon == 2) return "Data/Items/DogWeapons/DogSpear.xml";
+    return nullptr;
+}
+
+Object* OwnedWeapon(SceneGraph* graph, const ProgressionEquipmentState::Weapon& entry) {
+    if (entry.item < 0 || !graph->DoesObjectWithIdExist(entry.item)) return nullptr;
+    Object* item = graph->GetObjectFromID(entry.item);
+    auto* params = item->GetScriptParams();
+    return item->GetType() == _item_object && item->obj_file == entry.path && params->HasParam("Progression Issued Weapon") &&
+           params->ASGetInt("Progression Issued Weapon") == entry.issuing_avatar ? item : nullptr;
+}
+
+void PrepareProgressionWeapons(Online* online, SceneGraph* graph, MovementObject* actor,
+                               const FriendlyProgression::Build& build, ProgressionEquipmentState::Seat& seat) {
+    if (seat.prepared || (!build.big_weapon && !build.dagger)) return;
+    seat.prepared = true;
+    bool kept_starting_dagger = false;
+    std::set<ObjectID> seen;
+    std::vector<ObjectID> starting_items;
+    for (int slot = 0; slot < 4; ++slot) {
+        const ObjectID id = actor->ASGetArrayIntVar("weapon_slots", slot);
+        if (id >= 0 && seen.insert(id).second) starting_items.push_back(id);
+    }
+    // A reset can restore two editor links to one script slot before its
+    // callbacks settle. Replace their physical attachments too, so an
+    // unselected starter cannot remain drawn beside the selected weapon.
+    for (const auto& attached : actor->rigged_object()->attached_items.items) {
+        ItemObject* item = attached.item.GetAttached();
+        if (item && seen.insert(item->GetID()).second) starting_items.push_back(item->GetID());
+    }
+    for (ObjectID id : starting_items) {
+        Object* object = id >= 0 ? graph->GetObjectFromID(id) : nullptr;
+        if (!object || object->GetType() != _item_object ||
+            object->GetScriptParams()->HasParam("Progression Issued Weapon")) continue;
+        auto* item = static_cast<ItemObject*>(object);
+        const auto& asset = item->item_ref();
+        if (!asset.valid() || asset->GetItemType() != _weapon) continue;
+        const bool dagger = asset->GetLabel() == "knife";
+        // A bought large weapon replaces the supplied large weapon. A bought
+        // dagger supplements one supplied dagger, except with a chosen large
+        // weapon: that pair is the complete selected loadout.
+        const bool replace = dagger ? build.dagger && (build.big_weapon || kept_starting_dagger) : build.big_weapon != 0;
+        if (dagger && !replace) kept_starting_dagger = true;
+        if (!replace) continue;
+        seat.replaced.push_back({id, actor->GetID(), object->obj_file});
+        ScriptParam owner;
+        owner.SetInt(actor->GetID());
+        object->GetScriptParams()->InsertScriptParam("Progression Replaced Weapon", owner);
+        actor->NetworkDetachItem(id);
+        actor->Execute("NotifyItemDetach(" + std::to_string(id) + ");");
+        object->SetParent(nullptr);
+        object->SetEnabled(false);
+        item->SetPhysicsTransform(item->GetPhysicsTransform()); // retain the authored object without loose physics
+        online->Send<OnlineMessages::AttachToMessage>(actor->GetID(), id, 0, false, false, nullptr, vec3(1), 0, true);
+        online->Send<OnlineMessages::SetObjectEnabledMessage>(id, false);
+    }
+}
+
+bool IssueProgressionWeapon(Online* online, SceneGraph* graph, MovementObject* actor,
+                            const char* path, bool offhand, ProgressionEquipmentState::Seat& seat) {
+    auto& assets = *Engine::Instance()->GetAssetManager();
+    auto weapon = assets.LoadSync<Item>(path);
+    if (!weapon.valid()) return false;
+    AttachmentSlotList slots;
+    actor->rigged_object()->AvailableItemSlots(weapon, &slots);
+    // Prefer opposite hips. Long weapons without a sheath attachment start
+    // in an available hand using the character's actual grip attachment.
+    for (AttachmentType type : {_at_sheathe, _at_grip}) {
+        for (bool mirrored : {offhand, !offhand}) {
+            int index = type == _at_sheathe ? (mirrored ? 3 : 2) : (mirrored ? 0 : 1);
+            if (actor->ASGetArrayIntVar("weapon_slots", index) >= 0) continue;
+            auto slot = std::find_if(slots.begin(), slots.end(), [&](const AttachmentSlot& s) {
+                return s.type == type && s.mirrored == mirrored;
+            });
+            if (slot == slots.end()) continue;
+            // A checkpoint resets everyone's rig. Return the original purchase,
+            // whether it was sheathed, dropped or thrown on the previous attempt.
+            auto& tracked = seat.weapons[offhand ? 1 : 0];
+            Object* item = OwnedWeapon(graph, tracked);
+            if (item && item->obj_file != path) {
+                graph->map_editor->DeleteID(item->GetID());
+                item = nullptr;
+            }
+            if (!item) {
+                const ObjectID id = graph->map_editor->CreateObject(path);
+                if (id < 0 || !graph->DoesObjectWithIdExist(id)) return false;
+                item = graph->GetObjectFromID(id);
+                if (item->GetType() != _item_object) return false;
+                item->exclude_from_save = item->exclude_from_undo = true;
+                online->Send<OnlineMessages::CreateEntity>(path, actor->position, id);
+            }
+            const ObjectID id = item->GetID();
+            tracked.item = id;
+            tracked.issuing_avatar = seat.avatar;
+            tracked.path = path;
+            ScriptParam issued;
+            issued.SetInt(seat.avatar);
+            item->GetScriptParams()->InsertScriptParam("Progression Issued Weapon", issued);
+            item->SetTranslation(actor->position);
+            actor->AttachItemToSlot(id, type, mirrored);
+            actor->Execute("HandleEditorAttachment(" + std::to_string(id) + "," + std::to_string(int(type)) + "," +
+                           (mirrored ? "true" : "false") + ");");
+            online->Send<OnlineMessages::AttachToMessage>(actor->GetID(), id, type, true, mirrored, nullptr, vec3(1), 0, true);
+            return true;
+        }
+    }
+    return false;
+}
+}
+
+void Online::RefreshProgressionLoadouts(bool arena_round) {
+    if (!IsHosting() || !FriendlyProgression::Enabled()) return;
+    if (!progression_equipment) progression_equipment = std::make_shared<ProgressionEquipmentState>();
+    auto& state = *progression_equipment;
+    SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    if (!graph || !graph->map_editor) return;
+    for (auto& entry : state.seats) {
+        const auto build = FriendlyProgression::GetBuild(entry.first);
+        for (const auto& replaced : entry.second.replaced) {
+            Object* item = graph->DoesObjectWithIdExist(replaced.item) ? graph->GetObjectFromID(replaced.item) : nullptr;
+            if (!item || item->GetType() != _item_object || item->obj_file != replaced.path ||
+                !item->GetScriptParams()->HasParam("Progression Replaced Weapon") ||
+                item->GetScriptParams()->ASGetInt("Progression Replaced Weapon") != replaced.issuing_avatar) continue;
+            item->SetEnabled(true);
+            Send<OnlineMessages::SetObjectEnabledMessage>(item->GetID(), true);
+        }
+        entry.second.replaced.clear();
+        entry.second.prepared = false;
+        for (int slot = 0; slot < 2; ++slot) {
+            auto& tracked = entry.second.weapons[slot];
+            Object* item = OwnedWeapon(graph, tracked);
+            const char* selected = SelectedWeapon(build, slot == 1);
+            if (item && selected && item->obj_file == selected) continue;
+            if (item) graph->map_editor->DeleteID(item->GetID());
+            tracked = {};
+        }
+        entry.second.issued = 0;
+    }
+    state.arena_armed = arena_round;
+    state.next_check = 0;
+}
+
+void Online::ApplyProgressionEquipment(SceneGraph* graph) {
+    if (LobbyWaiting() || LobbyBuild() || BuildSession() || loading || !graph || !graph->level || !graph->map_editor || (!IsHosting() && !FriendlyProgression::Enabled())) return;
+    if (!progression_equipment) progression_equipment = std::make_shared<ProgressionEquipmentState>();
+    auto& state = *progression_equipment;
+    const double now = OnlineClockMs();
+    if (now < state.next_check) return;
+    state.next_check = now + 200;
+    if (!FriendlyProgression::Enabled()) {
+        if (IsHosting()) ReconcileAuthoredArmor(this, graph, state.suppressed_armor);
+        return;
+    }
+    int armor_budget = 2;
+    for (const auto& member : GetPlayerStates()) {
+        auto* actor = Actor(graph, member.object_id);
+        if (!actor || !actor->as_context || !actor->rigged_object() || !actor->ASHasVar("progression_ai")) continue;
+        const auto build = FriendlyProgression::GetBuild(member.player_id);
+        const int ai = member.is_bot && build.trained ? build.ai : -1;
+        if (actor->ASGetIntVar("progression_health") != build.health || actor->ASGetIntVar("progression_damage") != build.damage ||
+            actor->ASGetIntVar("progression_speed") != build.speed || actor->ASGetIntVar("progression_ai") != ai ||
+            actor->ASGetIntVar("progression_stealth_passive") != build.stealth_passive ||
+            actor->ASGetIntVar("progression_stealth_active") != build.stealth_active) {
+            actor->ASSetIntVar("progression_health", build.health);
+            actor->ASSetIntVar("progression_damage", build.damage);
+            actor->ASSetIntVar("progression_speed", build.speed);
+            actor->ASSetIntVar("progression_stealth_passive", build.stealth_passive);
+            actor->ASSetIntVar("progression_stealth_active", build.stealth_active);
+            actor->ASSetIntVar("progression_ai", ai);
+            actor->Execute("CampaignApplyAuthoredScaling();");
+        }
+        int mask = 0;
+        std::vector<ObjectID> replace;
+        for (const auto& child : actor->rigged_object()->children) {
+            if (!child.direct_ptr) continue;
+            auto* params = child.direct_ptr->GetScriptParams();
+            if (!params->HasParam("Progression Armor Region")) continue;
+            const int region = params->ASGetInt("Progression Armor Region");
+            mask |= region;
+            if (IsHosting()) for (size_t i = 0; i < build.armor.size(); ++i) {
+                if (region == (1 << i) && build.armor[i] != params->ASGetInt("Armor Material Tier"))
+                    replace.push_back(child.direct_ptr->GetID());
+            }
+        }
+        actor->ASSetIntVar("progression_armor_regions", mask);
+        if (!IsHosting() || FriendlyProgression::ShopOpen() || !actor->enabled_ || !Awake(actor)) continue;
+        for (ObjectID id : replace) graph->map_editor->DeleteID(id);
+        if (armor_budget && std::any_of(build.armor.begin(), build.armor.end(), [](int tier) { return tier > 0; })) {
+            for (size_t index = 0; index < build.armor.size() && armor_budget; ++index) {
+                const int region = 1 << index;
+                const int material = build.armor[index];
+                if (!material || (mask & region)) continue;
+                const auto& pieces = ShopArmorTemplates(material);
+                const auto match = std::find_if(pieces.begin(), pieces.end(), [region](const ArmorTemplate& p) { return p.region == region; });
+                if (match != pieces.end() && AddArmorPiece(this, graph, actor, *match, material) >= 0) --armor_budget;
+            }
+        }
+        if (CoopCutscene() || (LobbyMode() == "com-wolfire-arena" && !state.arena_armed) ||
+            !actor->ASHasVar("weapon_slots") || actor->ASGetIntVar("species") == 1) continue;
+        // Sample and copy the campaign's starting weapons before applying
+        // personal overrides, including for guests who arrive later.
+        if (CoopCampaign() && CampaignCharacterOnMainTeam(actor->GetID()) &&
+            actor->ASHasVar("coop_story_loadout_ready") && !actor->ASGetBoolVar("coop_story_loadout_ready")) continue;
+        auto& seat = state.seats[member.player_id];
+        if (seat.avatar != member.object_id) { seat.issued = 0; seat.prepared = false; seat.avatar = member.object_id; }
+        PrepareProgressionWeapons(this, graph, actor, build, seat);
+        for (int slot = 0; slot < 2; ++slot) {
+            const char* path = SelectedWeapon(build, slot == 1);
+            const int bit = 1 << slot;
+            if (path && !(seat.issued & bit) && IssueProgressionWeapon(this, graph, actor, path, slot == 1, seat))
+                seat.issued |= bit;
+        }
+    }
+    if (IsHosting()) ReconcileAuthoredArmor(this, graph, state.suppressed_armor);
 }

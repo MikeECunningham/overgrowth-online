@@ -1,3 +1,4 @@
+#include "campaign/progression_transition.as"
 #include "save/linear.as"
 // (Overgrowth Online: no campaign_common.as include: the file never shipped, every start logged it missing)
 
@@ -7,6 +8,7 @@ void Dispose() {
 }
 
 void Update() {
+    FinishProgressionTransition();
     //if( GetConfigValueBool("block_cheating_progress") ) {
     //    if( disable_progress == false && EditorModeActive() ) {
     //        Log(warning, "Detected that editor mode activated during block_cheating_progress, deactivating progress handling");
@@ -43,6 +45,7 @@ void EnterLevel() {
 }
 
 void LeaveLevel() {
+    progression_transition_pending = false;
     Log(info, "Left level"+ GetCurrLevelName());
 }
 
@@ -71,16 +74,16 @@ void ReceiveMessage(string msg) {
 
             if( IsLastLevel(curr_id) ) {
                 //We can roll credits here maybe.
-                SendLevelMessage("go_to_main_menu");		
+                AdvanceCampaign("");
             } else {
                 string next_level_id = GetFollowingLevel(curr_id);
                 if(next_level_id != ""){
                     UnlockLevel(next_level_id); 
 
-                    LoadLevelID(next_level_id);
+                    AdvanceCampaign(next_level_id);
                 } else {
                     Log(error, "unexpected error" );
-                    SendLevelMessage("go_to_main_menu");		
+                    AdvanceCampaign("");
                 }
             }
         } else {

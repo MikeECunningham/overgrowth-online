@@ -545,6 +545,20 @@ void UpdateInput() {
 	}
 }
 
+// Discrete row scrolling for script menus which build only the visible rows.
+int previous_scroll_direction = 0;
+float next_stick_scroll = 0;
+void UpdateStickScroll() {
+    int direction = GetInputDown(controller_player, "menu_scroll_down") ? 1 :
+                    GetInputDown(controller_player, "menu_scroll_up") ? -1 : 0;
+    float now = ImGui_GetTime();
+    if(direction != 0 && (direction != previous_scroll_direction || now >= next_stick_scroll)) {
+        imGUI.receiveMessage(IMMessage("shift_menu", direction));
+        next_stick_scroll = now + (direction == previous_scroll_direction ? 0.10f : 0.26f);
+    }
+    previous_scroll_direction = direction;
+}
+
 void UpdateController() {
 	if(imGUI is null) {
 		return;
@@ -567,6 +581,7 @@ void UpdateController() {
 	if(controller_paused) {
 		return;
 	}
+	if(current_controller_item_state == kMainController && !current_item_locked) UpdateStickScroll();
 	if(controller_active) {
 		if(mouse_position != imGUI.guistate.mousePosition){
 			DeactivateCurrentItem();

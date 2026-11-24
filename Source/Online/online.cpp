@@ -24,6 +24,7 @@
 #include <thread>
 #include <chrono>
 #include "online.h"
+#include <Online/friendly_progression.h>
 #include <Scripting/angelscript/ascontext.h>
 #include <algorithm>
 
@@ -182,7 +183,9 @@ void Online::ClearIDTranslations() {
     // same-map retries. Object IDs can be reused by the next scene; saved
     // cutscene physics and ownership must never follow those numeric IDs.
     ResetCampaignDifficulty(true);
+    progression_equipment.reset();
     ChallengeSceneChanged();
+    FriendlyProgression::NewWorld();
     ResetCampaignFactions();
     coop_cutscene_players.clear();
     coop_hidden.clear();
@@ -626,6 +629,7 @@ void Online::SendPlayerInputState() {
 
 void Online::LateUpdate(SceneGraph* scenegraph) {
     UpdateLobbyHostMigration();
+    FriendlyProgression::Update();
     UpdateScriptApi();  // (Overgrowth Online: the script API's sends, deliveries and player events)
     UpdateEditing(scenegraph);  // (Overgrowth Online: building a level together)
 
@@ -714,6 +718,7 @@ void Online::LateUpdate(SceneGraph* scenegraph) {
         CoopUpdate(scenegraph);
         UpdateModeChallenge(scenegraph);
         UpdateCampaignDifficulty(scenegraph);
+        ApplyProgressionEquipment(scenegraph);
         CoopSpectateUpdate(scenegraph);
         ResolveHeldHits();
 
@@ -940,6 +945,7 @@ void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
         LOGE << "Incompatible mods: " << OnlineUtility::GetActiveIncompatibleModsString() << std::endl;
     }
 
+    FriendlyProgression::NewSession();
     online_session = new OnlineSession();
 
     host_started_level = false;
@@ -1743,13 +1749,19 @@ void Online::SetBuildSession(bool on) {
 
 // Freeze time: the session paused for everyone (builders' editors work on)
 void Online::SetTimeFrozen(bool on) {
-    if (!IsHosting() || on == time_frozen_) {
+    if (!IsHosting()) return;
+    menu_pausers_.clear();
+    if (on == time_frozen_) {
         return;
     }
     time_frozen_ = on;
     build_state_dirty_ = true;
     Engine::Instance()->CommitPause();
     LOGI << "Overgrowth Online editing: time " << (on ? "frozen" : "runs again") << std::endl;
+}
+
+void Online::ReleaseMenuPause(PlayerID player) {
+    if (menu_pausers_.erase(player) && menu_pausers_.empty()) SetTimeFrozen(false);
 }
 
 void Online::RestartLevel(SceneGraph* sg) {
@@ -1962,6 +1974,7 @@ void DrawObjectBox(Object* obj, const vec4& color) {
 
 void Online::UpdateEditing(SceneGraph* sg) {
     if (!IsActive() || sg == nullptr) {
+        menu_pausers_.clear();
         if (time_frozen_) {
             time_frozen_ = false;
             Engine::Instance()->CommitPause();
@@ -3510,6 +3523,8 @@ void Online::CloseConnectionImmediate(NetConnectionID conn_id, ConnectionClosedR
             }
             ActiveCameras::Instance()->FreeVirtualCameraInstance(state.camera_id);
             online_session->player_inputs.erase(id);
+            ReleaseMenuPause(id);
+            FriendlyProgression::ForgetPlayer(id);
             online_session->player_states.erase(id);
             Send<OnlineMessages::RemovePlayerState>(id);
         }

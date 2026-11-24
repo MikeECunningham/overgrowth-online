@@ -1,18 +1,20 @@
 # Publishing this fork
 
 This fork is published at <https://github.com/MikeECunningham/overgrowth-online>.
-The current version is **0.42.0-alpha.11**, a testing prerelease. See [VERSION](VERSION)
+The current version is **0.42.0-alpha.14**, a testing prerelease. See [VERSION](VERSION)
 for the authoritative version, [FRIENDS.md](FRIENDS.md) for building and playing,
 and [COMPILING.md](COMPILING.md) for dependency details.
 
-Alpha.11 adds unified Traditional/Scaling difficulty menus, physical armor and
-staged weapons for extra enemies, independent AI scaling, and performance rules
-based on complete human-party wipes. Forced-50 replaces adaptive scaling and
-eases retries of the current encounter. The host readout uses larger game fonts
-and menu artwork. Host Retry resumes the new attempt; menu recovery diagnostics
-cover empty animation poses. Protocol **12** carries the new progression ledger,
-armor coverage and exact armor attachments; distribute matching builds and Data
-files to every participant.
+Alpha.12 adds optional campaign and Arena XP, between-fight shops, persistent
+loadouts and campaign loops. Arena fills small mode-managed matches with house
+fighters. Campaign checkpoints keep defeated incidental guards behind the
+party and recover stalled defeat objectives. The host can choose Legacy,
+Weighted or Localized armor. Controllers can scroll menus with the right stick.
+Alpha.13 updates shop meshes and locks enemy strength to gameplay boundaries.
+Alpha.14 adds four armor materials, stealth upgrades and permission-aware menu pausing.
+Protocol **15** carries exact wearable sockets, the expanded progression state
+and shared menu-pause requests.
+Distribute the matching executable and Data overrides to every participant.
 
 ## Versioning
 
@@ -37,7 +39,7 @@ maintained local-multiplayer protocol revision.
   compatibility is determined by the fork version and protocol, not that ID.
 
 Once a release commit has passed its checks, create its corresponding version
-tag, such as `v0.42.0-alpha.11`. Create a GitHub **prerelease** from that tag and
+tag, such as `v0.42.0-alpha.14`. Create a GitHub **prerelease** from that tag and
 attach the tested artifacts.
 Do not move a published tag to different code; publish another version instead.
 

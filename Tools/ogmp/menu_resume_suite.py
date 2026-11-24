@@ -56,7 +56,8 @@ def campaign_menu_resume(ctx):
         def close_settings(phase):
             key("Escape")
             wait(lambda: status()["open_menu_players"] == [0], phase + " opens the actual pause menu")
-            assert status()["paused"] == (not network), (phase, "unexpected automatic world pause", status())
+            # Bots do not turn a sole human's lobby into a shared-human game.
+            assert status()["paused"], (phase, "sole human's menu did not pause", status())
             code('for(uint i=0;i<controller_items.size();++i){IMElement@ e=controller_items[i];'
                  'IMMessage@ m=e.controllerItem.getMessage();if(m !is null && m.name=="Settings") {'
                  'vec2 p=e.getScreenPosition();SetConfigValueString("test_menu_resume_box",""+'
@@ -142,7 +143,9 @@ def campaign_menu_resume(ctx):
         if network:
             key("Escape")
             wait(lambda: status()["open_menu_players"] == [0], "host reopens its menu")
-            code('imGUI.receiveMessage(IMMessage("toggle_world_pause"));', "player_menu")
+            # Solo menus auto-pause and have no separate shared-world button.
+            # An explicit session freeze must nevertheless survive their close.
+            code('LobbySetPaused(true);')
             wait(lambda: status()["paused"], "host explicitly pauses the shared world")
             key("Escape")
             wait(lambda: not status()["open_menu_players"], "host closes its explicitly paused menu")
@@ -150,10 +153,10 @@ def campaign_menu_resume(ctx):
             assert status()["paused"], "closing a personal menu discarded an explicit shared pause"
             key("Escape")
             wait(lambda: bool(status()["open_menu_players"]), "paused world still permits reopening the menu")
-            code('imGUI.receiveMessage(IMMessage("toggle_world_pause"));', "player_menu")
-            wait(lambda: not status()["paused"], "host explicitly resumes the shared world")
+            code('LobbySetPaused(false);')
+            assert status()["paused"], "automatic menu pause vanished with explicit freeze"
             key("Escape")
-            wait(lambda: not status()["open_menu_players"], "resume menu closes")
+            wait(lambda: not status()["open_menu_players"] and not status()["paused"], "resume menu closes")
             movement("after_explicit_resume")
 
         # Retry must use the same route as the player's menu, not a fabricated reset.
@@ -166,7 +169,7 @@ def campaign_menu_resume(ctx):
         key("Escape")
         wait(lambda: bool(status()["open_menu_players"]), "host opens Retry")
         if network:
-            code('imGUI.receiveMessage(IMMessage("toggle_world_pause"));', "player_menu")
+            code('LobbySetPaused(true);')
             wait(lambda: status()["paused"], "explicitly paused world before Retry")
         code('imGUI.receiveMessage(IMMessage("Retry"));', "player_menu")
 
@@ -225,3 +228,105 @@ def campaign_menu_resume(ctx):
             if inst:
                 inst.stop()
                 (Path(ctx.out_dir) / (inst.name + ".log")).write_text(inst.log())
+
+
+def lobby_menu_pause(ctx):
+    from .newcampaign_local_suite import FIRST
+    host = ctx.instance("shortcut_host", keys={**RENDER_KEYS, "mp_port": "28671"})
+    guest = ctx.instance("shortcut_guest", keys={**RENDER_KEYS, "mp_port": "28672"})
+    def script(inst, code, where="level"):
+        inst.bridge.call("exec", target=where, code=code)
+    def key(inst, name):
+        inst.bridge.call("key", key=name, down=True)
+        time.sleep(.13)
+        inst.bridge.call("key", key=name, down=False)
+        time.sleep(.1)
+    def expect(inst, menu, paused):
+        def ready():
+            s = inst.bridge.status()
+            return bool(s["open_menu_players"]) == menu and s["paused"] == paused
+        try:
+            inst.bridge.wait(ready, 6, what=f"{inst.name} menu={menu} paused={paused}")
+        except Exception as exc:
+            s = inst.bridge.status()
+            raise AssertionError({"instance":inst.name,"expected":[menu,paused],
+                                  "actual":[s["open_menu_players"],s["paused"]],
+                                  "inputs":s["local_inputs"],"cutscene":s["coop_cutscene"],
+                                  "dialogue":s["dialogue_camera_control"]}) from exc
+    script(host, 'LobbyBeginHost();LobbyAddBot();'
+           f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);LobbyStart();', "menu")
+    _ready(host, FIRST)
+    _skip(host)
+    key(host, "Escape")
+    expect(host, True, True)
+    key(host, "Escape")
+    expect(host, False, False)
+    guest.bridge.call("connect", ip="127.0.0.1:28671")
+    _ready(guest, FIRST)
+    key(host, "Escape")
+    expect(host, True, False)
+    key(host, "Escape")
+    expect(host, False, False)
+    key(guest, "p")
+    expect(guest, True, False)
+    expect(host, False, False)
+    key(guest, "Escape")
+    expect(guest, False, False)
+    script(guest,'LobbySetPaused(true);')
+    expect(host,False,False)
+    expect(guest,False,False)
+    script(host, 'SetBindingValue("key","walk","p");')
+    key(host, "p")
+    expect(host, False, False)
+    script(host, 'SetBindingValue("key","walk","lctrl");')
+    key(host, "p")
+    expect(host, True, True)
+    expect(guest, False, True)
+    key(host, "Escape")
+    expect(host, False, False)
+    expect(guest, False, False)
+    script(host, 'LobbySetPaused(true);')
+    key(host, "p")
+    expect(host, True, True)
+    key(host, "Escape")
+    expect(host, False, True)
+    script(host, 'LobbySetPaused(false);')
+    expect(guest, False, False)
+    # The lobby option grants guests the same menu-owned pause lifetime. A
+    # second menu can join that pause, and closing either alone must retain it.
+    script(host,'LobbyEndGame();')
+    host.bridge.wait(lambda:all(i.bridge.status()["online"]["lobby_waiting"] and
+                               not i.bridge.status()["level_loaded"] for i in (host,guest)),
+                     30,what="pause policy lobby")
+    script(host,'LobbySetAllowAllPause(true);LobbyStart();',"menu")
+    for inst in (host,guest): _ready(inst,FIRST)
+    _skip(host)
+    key(guest,"p")
+    expect(guest,True,True)
+    expect(host,False,True)
+    key(host,"p")
+    expect(host,True,True)
+    key(guest,"Escape")
+    expect(guest,False,True)
+    key(host,"Escape")
+    expect(host,False,False)
+    expect(guest,False,False)
+    # Holding P opens once, while an explicit freeze survives a shortcut menu.
+    guest.bridge.call("key",key="p",down=True)
+    time.sleep(.6)
+    guest.bridge.call("key",key="p",down=False)
+    expect(guest,True,True)
+    key(guest,"Escape")
+    expect(guest,False,False)
+    script(host,'LobbySetPaused(true);')
+    expect(guest,False,True)
+    key(guest,"p")
+    expect(guest,True,True)
+    key(guest,"Escape")
+    expect(guest,False,True)
+    script(host,'LobbySetPaused(false);')
+    expect(guest,False,False)
+    assert not script_errors(host) and not script_errors(guest)
+    return {"passed": True, "metrics": {"solo_escape": True, "shared_shortcut": True,
+            "rebind_respected": True, "explicit_pause_preserved": True,
+            "guest_permissions":True,"multiple_menu_owners":True,"held_shortcut_opens_once":True}, "notes": []}

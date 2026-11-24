@@ -93,7 +93,7 @@ void BuildPlayerPauseMenu() {
     buttons.append(title);
     buttons.appendSpacer(25.0f);
 
-    const bool shared_session = (Online_IsActive() && !LobbyIsLocalOnly()) || GetLocalPlayerCount() > 1;
+    const bool shared_session = LobbyHasMultipleHumans() || GetLocalPlayerCount() > 1;
     if(shared_session && world_paused) {
         buttons.append(IMText("World paused", button_font_small));
         buttons.appendSpacer(15.0f);

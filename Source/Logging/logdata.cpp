@@ -216,16 +216,13 @@ LogSystem::LogData& operator<<(const LogSystem::LogData& data, const char* obj) 
 }
 
 LogSystem::LogData::LogData(LogType type, const char* prefix, const char* filename, int line) {
-    const char* end = filename + strlen(filename);
-
 #ifdef PLATFORM_UNIX
-    while (end != NULL && *(end - 1) != '/' && end > filename)
+    const char separator = '/';
 #else
-    while (end != NULL && *(end - 1) != '\\' && end > filename)
+    const char separator = '\\';
 #endif
-        end--;
-
-    strscpy(m_filename, end, FILENAME_LENGTH);
+    const char* last_separator = strrchr(filename, separator);
+    strscpy(m_filename, last_separator ? last_separator + 1 : filename, FILENAME_LENGTH);
     strscpy(m_prefix, prefix, PREFIX_LENGTH);
     m_line = line;
     m_type = type;

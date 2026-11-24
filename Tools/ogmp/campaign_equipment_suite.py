@@ -149,6 +149,7 @@ def campaign_equipment(ctx, fit_only=False):
             for piece_id, piece in lhs.items():
                 other = rhs[piece_id]
                 assert piece["path"] == other["path"] and piece["region"] == other["region"]
+                assert 1 <= piece["material"] <= 4 and piece["material"] == other["material"], (piece,other)
                 assert all(math.isclose(a,b,abs_tol=1e-5) for a,b in zip(piece["scale"],other["scale"]))
                 assert piece["bones"] == other["bones"], (piece, other)
                 assert piece["fit_error"] < 0.15 and other["fit_error"] < 0.15, (piece,other)
@@ -241,7 +242,7 @@ def campaign_equipment(ctx, fit_only=False):
             _ready(guest,FIRST)
         # Distinct legitimate event keys seed a late-game pressure, capped1.5.
         code(host, 'for(int i=0;i<40;++i){string key="equipment_fixture_"+i;'
-             'Online_ChallengeEncounterBegin(key);Online_ChallengeEncounterWin(key);}')
+             'Online_ChallengeEncounterBegin(key);Online_ChallengeEncounterWin(key);}Online_CaptureEnemyDifficulty();')
         wait(lambda: status(host)["difficulty_hud"]["progression"]["general_pressure"] >= 1.49,
              "production challenge awards establish late-game equipment pressure")
         drain("opening")
@@ -301,10 +302,19 @@ def campaign_equipment(ctx, fit_only=False):
              'this_mo.rigged_object().skeleton().GetBoneTransform(31).GetTranslationPart()',target=head_actor["id"])
         head_local = {inst:next(c["id"] for c in extras(inst) if c["common_id"] == head_actor["common_id"]) for inst in machines}
         def coverage(inst):
-            return probe('CampaignArmorProtectsAt(this_mo.rigged_object().GetAvgIKChainPos("head"))+"|"+'
-                         'CampaignArmorProtectsAt(this_mo.rigged_object().GetAvgIKChainPos("torso"))',inst=inst,target=head_local[inst])
+            # The director now reconciles actual worn slots every update.
+            # Isolate this geometric query in one script call instead of
+            # leaving a synthetic mask for the director to correct between RPCs.
+            inst.bridge.call("level_messages",prefix="equipment_coverage")
+            code(inst,'int saved=campaign_armor_regions;campaign_armor_regions=4;'
+                 'campaign_authored_armor_regions=0;g_wearing_metal_armor=false;'
+                 'level.SendMessage("equipment_coverage "+CampaignArmorProtectsAt(this_mo.rigged_object().GetAvgIKChainPos("head"))+"|"+'
+                 'CampaignArmorProtectsAt(this_mo.rigged_object().GetAvgIKChainPos("torso")));'
+                 'campaign_armor_regions=saved;',head_local[inst])
+            messages=inst.bridge.call("level_messages",prefix="equipment_coverage")["messages"]
+            assert len(messages)==1,messages
+            return messages[0].split(" ",1)[1]
         for inst in machines:
-            code(inst,'campaign_armor_regions=4;campaign_authored_armor_regions=0;g_wearing_metal_armor=false;',head_local[inst])
             assert coverage(inst) == "true|false"
         code(host, 'SetConfigValueBool("armor_localized",false);')
         wait(lambda: all(probe('GetConfigValueBool("armor_localized")',inst=i) == "false" for i in machines),
@@ -341,6 +351,7 @@ def campaign_equipment(ctx, fit_only=False):
         # torso still takes the same blade's impact damage.
         host.bridge.call("level_messages",prefix="equipment_impact")
         code(host, 'int item=CreateObject("Data/Items/rabbit_weapons/rabbit_knife.xml",true);'
+             'int saved_mask=campaign_armor_regions;campaign_armor_regions=4;'
              'ItemObject@ knife=ReadItemID(item);knife.last_held_char_id_=0;'
              'ReadObjectFromID(item).SetTranslation(this_mo.position+vec3(0,20,0));'
              'float hp=temp_health;float blood=blood_health;this_mo.velocity=vec3(0);'
@@ -350,7 +361,7 @@ def campaign_equipment(ctx, fit_only=False):
              'knife.SetLinearVelocity(vec3(6,0,0));knife.SetThrown();'
              'HitByItem("metal",this_mo.rigged_object().GetAvgIKChainPos("torso"),item,1);'
              'bool exposed=temp_health<hp||blood_health<blood;temp_health=hp;blood_health=blood;'
-             'DeleteObjectID(item);level.SendMessage("equipment_impact "+covered+"|"+exposed);',head_local[host])
+             'DeleteObjectID(item);campaign_armor_regions=saved_mask;level.SendMessage("equipment_impact "+covered+"|"+exposed);',head_local[host])
         impact = host.bridge.call("level_messages",prefix="equipment_impact")["messages"]
         assert len(impact) == 1 and impact[0].endswith("true|true"),impact
         metrics["actual_impact_covered_vs_exposed"] = impact
@@ -366,7 +377,7 @@ def campaign_equipment(ctx, fit_only=False):
         code(host,f'AttachWeapon({loot["id"]});',0)
         wait(lambda: any(i["common_id"] == loot["common_id"] and i["held_by"] == 0 for i in world(host)["items"]),
              "human takes generated weapon")
-        code(host,'SetConfigValueBool("campaign_armor_scaling",false);SetConfigValueBool("campaign_weapon_scaling",false);')
+        code(host,'SetConfigValueBool("campaign_armor_scaling",false);SetConfigValueBool("campaign_weapon_scaling",false);Online_CaptureEnemyDifficulty();')
         wait(lambda: all(c["combat_stats"].get("campaign_armor_regions",0) == 0 and not added(c)
                          for inst in machines for c in extras(inst)), "armor Off removes owned meshes and protection on both peers")
         assert any(i["common_id"] == loot["common_id"] and i["held_by"] == 0 for i in world(host)["items"])
@@ -376,7 +387,7 @@ def campaign_equipment(ctx, fit_only=False):
             assert {p["common_id"] for p in stock["armor_attachments"] if p["region"] == 0} == stock_original[inst]
         metrics["preserved_authored_pieces"] = {inst.name:sorted(ids) for inst,ids in stock_original.items()}
         metrics["preserved_human_loot"] = loot["common_id"]
-        code(host,'SetConfigValueBool("campaign_armor_scaling",true);SetConfigValueBool("campaign_weapon_scaling",true);')
+        code(host,'SetConfigValueBool("campaign_armor_scaling",true);SetConfigValueBool("campaign_weapon_scaling",true);Online_CaptureEnemyDifficulty();')
         wait(armor_ready,"same frozen armor plans restore after checkbox reenable")
 
         # Pressure/party changes replace the persistent stats message. Joining
@@ -412,7 +423,7 @@ def campaign_equipment(ctx, fit_only=False):
         code(authority,f'Object@ o=ReadObjectFromID({wolf_id});o.GetScriptParams().SetInt("Campaign Boss",1);'
              f'MovementObject@ wolf=ReadCharacterID({wolf_id});wolf.position=Online_SafeSpotNear(ReadCharacterID(363).position,wolf.GetFacing(),8);'
              'wolf.Execute("combat_allowed=false;chase_allowed=false;always_unaware=true;listening=false;");'
-             'SetConfigValueBool("campaign_armor_scaling",false);SetConfigValueBool("campaign_weapon_scaling",true);')
+             'SetConfigValueBool("campaign_armor_scaling",false);SetConfigValueBool("campaign_weapon_scaling",true);Online_CaptureEnemyDifficulty();')
         wolf_common = next(c["common_id"] for c in chars() if c["id"] == wolf_id)
         code(authority,'for(int i=0;i<GetNumHotspots();++i){Hotspot@ h=ReadHotspot(i);if(h.GetID()==14){'
              'int goal=h.GetIntVar("progress")+1;ScriptParams@ p=ReadObjectFromID(14).GetScriptParams();'
@@ -450,7 +461,7 @@ def campaign_equipment(ctx, fit_only=False):
         code(authority,'LobbyStart();',"menu")
         _ready(authority,FIRST)
         _ready(host,FIRST)
-        code(authority,'for(int i=0;i<40;++i){string key="equipment_new_host_"+i;Online_ChallengeEncounterBegin(key);Online_ChallengeEncounterWin(key);}')
+        code(authority,'for(int i=0;i<40;++i){string key="equipment_new_host_"+i;Online_ChallengeEncounterBegin(key);Online_ChallengeEncounterWin(key);}Online_CaptureEnemyDifficulty();')
         drain("new host match opening")
         hold_party()
         for number,trigger,expected in ((0,477,1),(1,85,2)):

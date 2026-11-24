@@ -6,7 +6,7 @@
 //                 engine runs it instead of multi_arena.as / arena_level.as
 //                 when the level is played online (Level::Initialize).
 //
-//                 The arena's rules without its AI: a match takes one of the
+//                 A match takes one of the
 //                 level's battle setups (spots, weapons, items, intro); a
 //                 weapon match is a fight to the death (one point), the others
 //                 are two points; the last team standing takes the round.
@@ -14,8 +14,8 @@
 //                 The host may instead force its manual lobby teams.
 //                 The crowd and the arena music.
 //
-//                 Bots are explicit lobby seats. The native host creates their
-//                 AI actors; this script never fills or deletes those seats.
+//                 The host creates lobby bots. In automatic team mode this
+//                 script also fills open battle positions with temporary AI.
 //                 Humans and bots who join enter the next round together.
 //                 The randomizer (config "oo_arena_random"): every round each
 //                 fighter, players and bots, becomes a random species and look
@@ -56,7 +56,9 @@ ArenaPhase phase = kWaiting;
 float phase_time = 0.0f;   // the_time when the phase began
 int intro_step = 0;
 
-array<int> bots;           // live actors belonging to explicit lobby bot seats
+array<int> bots;           // host-simulated fighters, including match opponents
+array<int> fill_bots;      // owned by this Arena only, never lobby seats
+int match_size = 2;
 
 // The randomizer: this round's (per roster place) character and gear
 bool random_round = false;
@@ -315,7 +317,10 @@ void ReceiveMessage(string msg) {
 void SetPhase(ArenaPhase p) {
     if(p != phase) {
         if(p == kFighting) ChallengeArenaRoundBegin();
-        else if(p == kRoundOver) ChallengeArenaRoundWin(round_winner);
+        else if(p == kRoundOver) {
+            ChallengeArenaRoundWin(round_winner);
+            ProgressionBeginShop(false);
+        }
         else if(p == kMatchOver) ChallengeArenaMatchComplete();
     }
     phase = p;
@@ -324,12 +329,13 @@ void SetPhase(ArenaPhase p) {
 }
 
 void HostUpdate() {
+    if(ProgressionShopOpen()) return;
     float t = the_time - phase_time;
     DropGonePlayers();
 
     if(phase == kWaiting) {
-        array<int> fighters = Fighters();
-        if((LobbyGetForceTeams() ? TeamCount(fighters) : int(fighters.length())) >= 2) {
+        array<int> fighters = RosterSeats();
+        if(LobbyGetForceTeams() ? TeamCount(fighters) >= 2 : fighters.length() > 0) {
             if(shown_text != "") {
                 Show("");
             }
@@ -366,6 +372,7 @@ void HostUpdate() {
         if(arm_pending && t > arm_at) {
             arm_pending = false;
             ArmPlayers();
+            ProgressionArenaLoadouts();
         }
         if(round_number == 1 && intro_step == 0 && t > 2.0f) {
             Show(weapons_match ? "This is a fight to the death!" : "Two points to win!");
@@ -454,9 +461,19 @@ void StartRound() {
     round_winner = -1;
     round_winners.resize(0);
 
-    // Bot actors belong to native roster seats, just like the human actors.
-    int previous_size = int(roster.length());
-    SyncBots();
+    array<int> seats = RosterSeats();
+    for(uint k = 0; round_number > 1 && k < seats.length(); ++k) {
+        if(roster.find(seats[k]) < 0) {
+            // A late seat takes part at a round boundary. Pick a new match
+            // before filling its open places so nobody inherits another score.
+            round_number = 1;
+            SetUpMatch();
+            roster.resize(0);
+            points.resize(0);
+        }
+    }
+    FillOpenSpots(int(seats.length()));
+    DropGonePlayers();
 
     // Everyone here plays (late joiners from the next round on), on their lobby teams.
     array<int> players = Fighters();
@@ -465,11 +482,6 @@ void StartRound() {
             roster.insertLast(players[k]);
             points.insertLast(0);
         }
-    }
-    if(round_number > 1 && previous_size != int(roster.length())) {
-        round_number = 1;
-        for(uint k = 0; k < points.length(); ++k) points[k] = 0;
-        SetUpMatch();
     }
     if(round_number == 1 || fighter_teams.length() != roster.length()) {
         ConfigureMatchTeams();
@@ -647,7 +659,7 @@ void Become(int id, const string &in path) {
 
 // Every ready seat gets exactly one fighter. Native owns creation/removal and
 // the mapping from a persistent lobby seat to this level's actor.
-array<int> Fighters() {
+array<int> RosterSeats() {
     array<int> ids;
     array<PlayerState>@ states = GetPlayerStates();
     for(uint k = 0; k < states.length(); ++k) {
@@ -656,6 +668,13 @@ array<int> Fighters() {
             ids.insertLast(id);
         }
     }
+    return ids;
+}
+
+array<int> Fighters() {
+    array<int> ids = RosterSeats();
+    for(uint i = 0; i < fill_bots.length(); ++i)
+        if(MovementObjectExists(fill_bots[i])) ids.insertLast(fill_bots[i]);
     return ids;
 }
 
@@ -762,7 +781,7 @@ void HealOwn() {
 // Track the host-simulated actors without creating or deleting roster seats.
 // A late bot waits quietly until the next round, as a late human does.
 void SyncBots() {
-    bots.resize(0);
+    bots = fill_bots;
     array<PlayerState>@ states = GetPlayerStates();
     for(uint k = 0; k < states.length(); ++k) {
         int id = states[k].avatar_id;
@@ -770,6 +789,29 @@ void SyncBots() {
             bots.insertLast(id);
             if(!ReadObjectFromID(id).GetScriptParams().HasParam("Arena AI Initialized")) ConfigureBot(id);
         }
+    }
+}
+
+void FillOpenSpots(int seats) {
+    int wanted = LobbyGetForceTeams() || seats == 0 ? 0 : max(0, match_size - seats);
+    for(int i = int(fill_bots.length()) - 1; i >= 0; --i)
+        if(!MovementObjectExists(fill_bots[i])) fill_bots.removeAt(i);
+    while(int(fill_bots.length()) > wanted) {
+        QueueDeleteObjectID(fill_bots[fill_bots.length() - 1]);
+        fill_bots.removeLast();
+    }
+    const array<string> paths = {"char_guard", "char_raider", "char_civ"};
+    while(int(fill_bots.length()) < wanted) {
+        string path = level.GetPath(paths[rand() % int(paths.length())]);
+        int id = CreateObject(path, true);
+        if(!MovementObjectExists(id)) break;
+        Object@ object = ReadObjectFromID(id);
+        object.SetPlayer(false);
+        if(spots.length() > 0) object.SetTranslation(spots[fill_bots.length() % spots.length()]);
+        object.GetScriptParams().AddIntCheckbox("No Save", true);
+        object.GetScriptParams().AddString("Bot Name", "Arena fighter " + (fill_bots.length() + 1));
+        ConfigureBot(id);
+        fill_bots.insertLast(id);
     }
 }
 
@@ -871,7 +913,8 @@ void SetUpMatch() {
         // matches everyone gets the same weapon (arena_level.as)
         intro = "Welcome to the arena!";
         int game_type = rand() % 3;
-        int fighters = int(Fighters().length());
+        match_size = 2 + rand() % 3;
+        int fighters = max(match_size, int(RosterSeats().length()));
         template_ffa = rand() % 3 == 0;
         int teams = min(max(2, fighters), rand() % 2 == 0 ? 2 : 3);
         for(int t = 0; t < teams; ++t) template_weights.insertLast(1);
@@ -939,6 +982,9 @@ bool SetUpFromBattle(array<int> &inout used) {
         template_weights.insertLast(max(1, members));
         template_ffa = template_ffa && members <= 1;
     }
+    int authored_size = 0;
+    for(uint t = 0; t < template_weights.length(); ++t) authored_size += template_weights[t];
+    match_size = min(4, max(2, authored_size));
     // Interleave the authored teams while retaining each position's team and
     // equipment. Larger rosters reuse safe neighbouring positions on that side.
     int most = 0;

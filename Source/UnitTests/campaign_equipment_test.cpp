@@ -1,4 +1,5 @@
 #include <Online/campaign_equipment.h>
+#include <Online/armor_protection.h>
 #include <Online/campaign_difficulty.h>
 #include <tut/tut.hpp>
 
@@ -90,5 +91,50 @@ template<> template<> void equipment_test::test<6>() {
     ensure("animated bone plus attachment produces the doubled point",std::fabs(.6f+twice-2*.626611f)<1e-6f);
     const float wolf=RetargetAnchor(.7f,.5f,.55f,1,.6f,.65f,1.8f,1.8f/1.3f);
     ensure("model-scaled skeleton and character-scaled gear offsets stay separate",std::fabs((1.8f/1.3f-1)*.65f+wolf-(.6f*1.8f/1.3f+(.7f-.5f)*1.8f))<1e-6f);
+}
+template<> template<> void equipment_test::test<7>() {
+    using namespace ArmorProtection;
+    ensure_equals(MaterialTier("Data/Objects/Gear/rabbit_gear/large_wood_plate.xml"), int(Wood));
+    ensure_equals(MaterialTier("Data/Objects/therium/chitinarmour/armchunk.xml"), int(Chitin));
+    ensure_equals(MaterialTier("Data/Objects/Gear/dog_armor/dog_armor_helmet.xml"), int(Dog));
+    ensure_equals(MaterialTier("Data/Objects/therium/Gear/dog_armour_grey/dog_armor_helmet.xml"), int(Grey));
+    Coverage pieces{};
+    ensure_equals(Rating(pieces), 0.f);
+    pieces[3] = Wood;
+    const float wrist = Rating(pieces);
+    pieces[3] = Chitin;
+    ensure("chitin guards protect more than wood", Rating(pieces) > wrist);
+    pieces[3] = Dog;
+    const float plate = Rating(pieces);
+    pieces[3] = 0;
+    pieces[2] = Dog;
+    const float helmet = Rating(pieces);
+    ensure("vitals carry greater weight than extremities", helmet > plate);
+    pieces[3] = Dog;
+    ensure("worn ratings add across regions", std::fabs(Rating(pieces) - (helmet + plate)) < .00001f);
+    ensure("weighted damage remains positive with a full suit", 1.f / (1.f + Rating({{3,3,3,3,3,3,3,3,3}})) > 0.f);
+    Coverage chitin_chest{}, dog_chest{}, dog_shoulder{};
+    chitin_chest[0] = Chitin; dog_chest[0] = Dog; dog_shoulder[5] = Dog;
+    ensure("material strengths overlap across body importance", Rating(dog_shoulder) < Rating(chitin_chest) && Rating(chitin_chest) < Rating(dog_chest));
+    ensure("grey improves the same slot", Rating({{0,0,0,Grey,0,0,0,0,0}}) > plate);
+}
+
+template<> template<> void equipment_test::test<8>() {
+    using namespace ArmorProtection;
+    for (unsigned slot = 0; slot < 9; ++slot) {
+        const int minimum = HasWoodenGuard(slot) ? Wood : Chitin;
+        unsigned observed = 0;
+        for (unsigned seed = 0; seed < 128; ++seed) {
+            int previous = minimum;
+            for (double intensity : {0.0, 0.5, 1.0, 1.5, 2.5, 4.0}) {
+                const int tier = CampaignEquipment::ArmorTier(seed, slot, intensity);
+                ensure("increasing pressure keeps or upgrades the material", previous <= tier && tier <= Grey);
+                observed |= 1u << tier;
+                previous = tier;
+            }
+        }
+        for (int tier = minimum; tier <= Grey; ++tier)
+            ensure("every supported material can be selected for this slot", (observed & (1u << tier)) != 0);
+    }
 }
 }

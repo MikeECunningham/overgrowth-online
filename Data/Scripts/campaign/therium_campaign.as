@@ -1,3 +1,4 @@
+#include "campaign/progression_transition.as"
 #include "save/therium.as"
 #include "levelinfo.as"
 
@@ -7,6 +8,7 @@ void Dispose() {
 }
 
 void Update() {
+    FinishProgressionTransition();
     //if( GetConfigValueBool("block_cheating_progress") ) {
     //    if( disable_progress == false && EditorModeActive() ) {
     //        Log(warning, "Detected that editor mode activated during block_cheating_progress, deactivating progress handling");
@@ -65,6 +67,7 @@ void EnterLevel() {
 }
 
 void LeaveLevel() {
+    progression_transition_pending = false;
 }
 
 void LeaveCampaign() { 
@@ -122,10 +125,10 @@ void ReceiveMessage(string msg) {
             if(next_level_id != "") {
                 Log(info, "unlocking " + next_level_id);
                 campaign_save.AppendArrayValueIfUnique("unlocked_levels",next_level_id); 
-                LoadLevelID(next_level_id);
+                AdvanceCampaign(next_level_id);
             } else {
                 Log(error,"Current level " + GetCurrLevelID() + " doesn't have any next-level directive for the path "  + chosen_path + " , this is likely unintended.");
-                SendLevelMessage("go_to_main_menu");		
+                AdvanceCampaign("");
             }
             save_file.WriteInPlace();
         } else {

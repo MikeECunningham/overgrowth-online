@@ -38,6 +38,8 @@
 #include <GUI/scriptable_ui.h>
 #include <GUI/local_player_menus.h>
 #include <GUI/difficulty_hud.h>
+#include <GUI/progression_ui.h>
+#include <Online/friendly_progression.h>
 #include <GUI/dimgui/dimgui.h>
 #include <GUI/dimgui/modmenu.h>
 #include <GUI/dimgui/imgui_impl_sdl_gl3.h>
@@ -561,6 +563,7 @@ Engine::~Engine() = default;
 
 void Engine::Dispose() {
     DifficultyHUD::Dispose();
+    ProgressionUI::Clear();
     player_menus_.reset();
     ModLoading::Instance().DeRegisterCallback(this);
     ModLoading::Instance().Dispose();
@@ -958,6 +961,11 @@ void Engine::HandleRabbotToggleControls() {
     // press in the same tick, including simultaneous presses on different pads.
     bool personal_menus = (current_engine_state_.type == kEngineLevelState ||
                            current_engine_state_.type == kEngineEditorLevelState) && rabbot_mode;
+    if (personal_menus && FriendlyProgression::ShopOpen()) {
+        if (player_menus_ && player_menus_->AnyOpen()) player_menus_->Clear();
+        Input::Instance()->SetGrabMouse(false);
+        return;
+    }
     if (personal_menus) {
         if (!player_menus_) player_menus_.reset(new LocalPlayerMenus(*this));
         Input* input = Input::Instance();
@@ -966,8 +974,15 @@ void Engine::HandleRabbotToggleControls() {
             PlayerInput* controller = input->GetController(actual);
             if (controller == nullptr || !controller->enabled || controller->remote_controlled) continue;
             const auto pressed = controller->key_down.find("quit");
-            if (pressed != controller->key_down.end() && pressed->second.count == 1) {
-                if (!player_menus_->Toggle(actual)) personal_menus = false;
+            const auto pause_pressed = controller->key_down.find("menu_pause_shortcut");
+            const bool shortcut = static_cast<int>(local) == input->LocalKeyboardPlayerIndex() &&
+                pause_pressed != controller->key_down.end() && pause_pressed->second.count == 1 && !player_menus_->IsOpen(actual) &&
+                !scenegraph_->level->HasScriptFocus() && !WantKeyboardImGui() &&
+                !(SDL_GetModState() & (KMOD_CTRL | KMOD_ALT | KMOD_GUI | KMOD_SHIFT)) &&
+                Online::Instance()->IsActive() && Online::Instance()->HasMultipleLobbyHumans() &&
+                !input->HasKeyboardBinding(SDL_SCANCODE_P, input->debug_keys && current_engine_state_.type == kEngineEditorLevelState);
+            if (shortcut || (pressed != controller->key_down.end() && pressed->second.count == 1)) {
+                if (!player_menus_->Toggle(actual, shortcut)) personal_menus = false;
                 Graphics::Instance()->SetMediaMode(false);
             }
         }
@@ -4944,6 +4959,7 @@ void Engine::Draw() {
                 scenegraph_->level->Draw();
                 DifficultyHUD::Draw(*this);
                 if (player_menus_) player_menus_->Draw();
+                ProgressionUI::Draw(*this);
                 CHECK_GL_ERROR();
             }
             if (!graphics->media_mode()) {
@@ -6458,7 +6474,8 @@ bool Engine::ExecutePlayerMenuCode(int local_index, const std::string& code) {
 }
 
 bool Engine::PlayerHasMenu(int input_id) const {
-    return player_menus_ && player_menus_->IsOpen(input_id);
+    return (FriendlyProgression::ShopOpen() && Input::Instance()->LocalPlayerIndexForInputID(input_id) >= 0) ||
+           (player_menus_ && player_menus_->IsOpen(input_id));
 }
 
 bool Engine::HasPlayerMenus() const {
@@ -6753,7 +6770,7 @@ void Engine::CommitPause() {
         paused = user_paused || menu_paused || (player_menus_ && player_menus_->PausesWorld()) ||
             (solo_party && online->TimeFrozen());
     } else {
-        paused = online->TimeFrozen();  // (Overgrowth Online: the host froze time for everyone)
+        paused = online->TimeFrozen() || (player_menus_ && player_menus_->PausesWorld());
     }
 
     game_timer.target_time_scale = (paused || slow_motion) ? 0.1f : current_global_scale_mult;

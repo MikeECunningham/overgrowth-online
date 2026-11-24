@@ -38,23 +38,54 @@ reduce modifiers on subsequent attempts of a lost encounter.
 
 ## Physical armor and weapons
 
-**Physical armor** equips real bone-attached helmets, torso plates, shoulder,
-forearm and thigh pieces. Protection follows covered body regions using the
-attack contact point and current-pose body capsules. Added coverage does not
-turn an entire partially armored actor invulnerable. The host's **Localized
-armor protection** checkbox chooses this model or the old whole-body protection.
-The pieces are visible attachments; protection uses these regional hit tests,
-not triangle-exact collision against each armor mesh. Thrown-weapon contacts are
-checked before cutting or sticking the weapon into a covered body region.
-Recognized authored pieces also provide regional coverage; metal-armor flags
-without recognized pieces retain their original protection as a compatibility
-fallback.
+**Physical armor** equips bone-attached helmets, torso plates, shoulder guards,
+forearm guards and thigh pieces. The host chooses **Armor protection** in the
+lobby or under Game settings. This choice also applies to purchased gear.
+
+| Model | How a hit resolves |
+| --- | --- |
+| Legacy | The original whole-body metal-armor flag handles qualifying hits. Generated or purchased coverage also grants this whole-body protection. |
+| Weighted | Worn pieces contribute to one rating. A hit deals its ordinary damage divided by one plus the rating, whatever the hit location. |
+| Localized | The contact point is tested against current-pose body capsules. Covered regions protect against qualifying blows or thrown-weapon penetration. |
+
+Weighted armor counts the strongest material in each covered region once.
+The base weights are 0.30 for head, 0.28 for chest, 0.20 for back, 0.095 for
+each thigh, 0.09 for each shoulder and 0.065 for each forearm. Multiply by
+0.50 for Wood, 0.85 for Chitin, 1.30 for Dog armor and 1.75 for Therium grey.
+A Chitin chest contributes 0.238, between a Dog shoulder at 0.117 and a Dog
+chest at 0.364. Authored cloth and leather use the Wood weight. An actor whose
+only armor information is the original metal flag retains fallback protection.
+
+### Armor in the installed game
+
+The commercial Data files contain 43 model-backed object definitions in the
+following armor families, referencing 26 distinct model paths. The count includes
+bag, strap, scale and trim pieces that help assemble a suit. A mirrored copy on
+the other limb uses the same object. The shop sells a selection of these assets.
+
+| Asset family | Object definitions | Contents |
+| --- | ---: | --- |
+| Dog armor | 18 | Stock metal plates, fittings and one model containing the whole kit |
+| Therium grey dog armor | 17 | Grey texture variants of the individual dog meshes |
+| Therium chitin | 7 | Chest, back, head, collar, shoulder, arm and thigh |
+| Rabbit wood | 1 | A wooden plate with authored limb attachments |
+
+The standard dog and grey variant share geometry and use different color maps.
+Armor can also be part of a character model. For example, the light-armored
+dog's color palette includes an **Armor** channel. Lighting and character
+colors affect its appearance. The stock metal gear does not specify an alloy.
 
 Equipment intensity combines encounter pressure with a small party-size
 contribution when party scaling is enabled. Armor has a delay, a cubic onset,
 and a logarithmically slowing tail. Armored enemies and partial sets become
 more common gradually; full sets take considerably longer. Deterministic
-percentiles keep attempts consistent instead of rerolling better loot on retry.
+percentiles keep attempts consistent at the same difficulty. Each generated slot
+has its own material roll, with stronger pieces appearing as equipment intensity
+rises. Arms, shoulders and thighs can receive all four materials. Head, chest
+and back start at Chitin. Existing campaign plates reserve the slots they cover,
+including wooden plates worn through item sockets. The inner and outer plates
+of a stock Dog shoulder and the segments of a Chitin backplate each count as
+one protection slot.
 
 For the armor curve, let `I` be effective encounter pressure plus `0.10` times
 the softened weighted ally count, and `x = max(0, I - 0.30)`. The maturity is
@@ -77,6 +108,12 @@ and attachment systems for weapons. Disabling armor removes only added pieces.
 Retries rebuild generated gear; player-taken or dropped weapons are not refilled
 or silently deleted. Friendly bots and human players receive no scaling gear.
 
+Enemy sight and hearing ranges also scale with the durability and damage sampled
+for the encounter. The range factor is `1 + 0.10 × (durability − 1) + 0.25 ×
+(damage − 1)`, clamped between 0.9 and 1.5. Party or progression pressure
+building during a fight takes effect at the next difficulty boundary. The
+separate AI scaling option controls combat behavior.
+
 ## Optional AI scaling
 
 **AI scaling** replaces Nightmare as an independent checkbox. One in eight
@@ -90,8 +127,9 @@ from the party-stat checkbox.
 
 ## Reinforcement and story safeguards
 
-Enemy numbers respond immediately to the first extra human or friendly bot,
-then grow more slowly. Let `x = extra humans + 0.5 × friendly bots` and
+The first extra human or friendly bot counts toward enemy numbers at the next
+checkpoint, retry or new level. The reinforcement budget grows more slowly as
+the party gets larger. Let `x = extra humans + 0.5 × friendly bots` and
 `L = 2 × log2(1 + x / 2)`. Round to the nearest whole enemy after applying the
 following encounter weights:
 
@@ -134,9 +172,13 @@ without trapping story progression. Campaign cinematics do not spawn
 reinforcements. Authored objective strings and editor connections remain
 unchanged, and deployed opposing seats must also be defeated before proceeding.
 
-Stats react to party/settings changes during play. Existing reinforcements
-remain in their current fight when the party shrinks or the checkbox is turned
-off. Completed encounters can retire distant defeated reinforcements and their
+Enemy durability, outgoing damage, eligible AI variations and reinforcement
+budgets use the party and pressure sampled at the last load, saved checkpoint
+or retry. New Arena matches also take a sample. Changes to the party or scaling
+settings take effect at the next boundary. In both Traditional and Scaling
+mode, enemies keep the base difficulty preset from that same boundary. An
+enemy that joins the fight later uses the same preset. Existing reinforcements stay in
+their current fight if its budget shrinks. Completed encounters can retire distant defeated reinforcements and their
 unused gear, preserving player-held loot. A retry removes generated actors and
 their unused gear and rebuilds that attempt's budget; player-held loot is
 preserved. Chapter transitions start fresh. New actors and scaling factors are reliably replicated, including

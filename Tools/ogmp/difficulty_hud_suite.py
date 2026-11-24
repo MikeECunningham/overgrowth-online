@@ -166,7 +166,7 @@ def difficulty_hud(ctx):
         ctx.shot(guest, "guest_no_readout")
 
         owner(1)
-        code(host, 'SetConfigValueBool("campaign_mp_scaling",true);')
+        code(host, 'SetConfigValueBool("campaign_mp_scaling",true);Online_CaptureEnemyDifficulty();')
         wait(lambda: data()["party"]["stats_enabled"] and data()["current"]["extras_spawned"] == 2,
              "party scaling adds the real first encounter's two reinforcements")
         wait(applied_matches, "HUD reads applied party factors rather than a stale forecast")
@@ -188,13 +188,17 @@ def difficulty_hud(ctx):
         owner(1)
         code(host, 'Online_ChallengeEncounterBegin("difficulty_hud_probe");Online_ChallengeEncounterWin("difficulty_hud_probe");')
         wait(lambda: math.isclose(data()["progression"]["pressure"], 0.04, abs_tol=0.0002), "encounter victory updates progression")
+        time.sleep(1.0)
+        assert math.isclose(data()["current"]["threat"],scaled["current"]["threat"],abs_tol=.0001)
+        assert data()["progression"]["applied_pressure"] == 0, "HUD repriced the current fight after a win"
+        code(host, 'Online_CaptureEnemyDifficulty();')
         wait(lambda: data()["current"]["threat"] > scaled["current"]["threat"], "applied encounter estimate reflects progression")
         wait(applied_matches, "HUD follows the authoritative progression snapshot")
         assert data()["current"]["threat"] > scaled["current"]["threat"]
         assert data()["progression"]["next_pressure"] >= data()["progression"]["pressure"]
         metrics["progression_scaled"] = data()
 
-        code(host, 'SetConfigValueBool("campaign_mp_scaling",false);')
+        code(host, 'SetConfigValueBool("campaign_mp_scaling",false);Online_CaptureEnemyDifficulty();')
         wait(lambda: not data()["party"]["stats_enabled"], "party scaling disabled live")
         wait(lambda: data()["current"]["threat"] < metrics["progression_scaled"]["current"]["threat"],
              "applied encounter estimate reflects disabled party scaling")
@@ -232,7 +236,7 @@ def difficulty_hud(ctx):
         wait(lambda: not status()["coop_cutscene"], "solo intro ends")
         wait(lambda: not data().get("scaled_context", True) and not layout().get("drawn", False),
              "unscaled solo gameplay has no readout despite its enabled display setting")
-        code(host, 'SetConfigValueBool("campaign_mp_scaling",true);')
+        code(host, 'SetConfigValueBool("campaign_mp_scaling",true);Online_CaptureEnemyDifficulty();')
         time.sleep(0.5)
         assert not data()["scaled_context"] and not layout().get("drawn", False), "solo party toggle showed an unchanged difficulty"
         metrics["unscaled_solo"] = data()

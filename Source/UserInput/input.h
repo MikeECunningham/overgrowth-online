@@ -95,6 +95,7 @@ class Input {
     int AllocateRemotePlayerInput();
 
     bool IsKeyDown(const char* name);
+    bool HasKeyboardBinding(SDL_Scancode code, bool debug_bindings_active) const;
 
     bool IsControllerConnected();
 

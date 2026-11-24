@@ -1135,6 +1135,20 @@ def _roster_bots_arena(ctx):
 
 SCENARIOS["roster_bots_arena"] = _roster_bots_arena
 
+
+def _arena_autofill(ctx):
+    from .encounter_flow_suite import arena_autofill
+    return arena_autofill(ctx)
+
+
+def _ship_checkpoint(ctx):
+    from .encounter_flow_suite import ship_checkpoint
+    return ship_checkpoint(ctx)
+
+
+SCENARIOS["arena_autofill"] = _arena_autofill
+SCENARIOS["ship_checkpoint"] = _ship_checkpoint
+
 def _lobby_bots(ctx):
     from .lobby_bots_suite import lobby_bots
     return lobby_bots(ctx)
@@ -1165,6 +1179,14 @@ def _coop_inventory(ctx):
 
 
 SCENARIOS["coop_inventory"] = _coop_inventory
+
+
+def _purchased_checkpoint_inventory(ctx):
+    from .coop_inventory_suite import purchased_checkpoint_inventory
+    return purchased_checkpoint_inventory(ctx)
+
+
+SCENARIOS["purchased_checkpoint_inventory"] = _purchased_checkpoint_inventory
 
 
 def _crowded_actions(ctx):
@@ -1355,3 +1377,104 @@ def _campaign_equipment(ctx):
 
 
 SCENARIOS["campaign_equipment"] = _campaign_equipment
+
+
+def _progression_ui(ctx):
+    from .progression_ui_suite import progression_ui
+    return progression_ui(ctx)
+
+
+SCENARIOS["progression_ui"] = _progression_ui
+
+def _friendly_progression(ctx):
+    from .friendly_progression_suite import friendly_progression
+    return friendly_progression(ctx)
+
+
+SCENARIOS["friendly_progression"] = _friendly_progression
+
+
+def _progression_campaign(ctx):
+    from .progression_campaign_suite import progression_campaign
+    return progression_campaign(ctx)
+
+
+SCENARIOS["progression_campaign"] = _progression_campaign
+
+
+def _progression_purchases(ctx):
+    from .progression_purchases_suite import progression_purchases
+    return progression_purchases(ctx)
+
+
+SCENARIOS["progression_purchases"] = _progression_purchases
+
+
+def _progression_shared_armor(ctx):
+    from .progression_armor_suite import progression_shared_armor
+    return progression_shared_armor(ctx)
+
+
+SCENARIOS["progression_shared_armor"] = _progression_shared_armor
+
+
+def _progression_starting_weapons(ctx):
+    from .progression_weapons_suite import progression_starting_weapons
+    return progression_starting_weapons(ctx)
+
+
+SCENARIOS["progression_starting_weapons"] = _progression_starting_weapons
+
+
+def _authored_armor_slots(ctx):
+    from .authored_armor_suite import authored_armor_slots
+    return authored_armor_slots(ctx)
+
+
+SCENARIOS["authored_armor_slots"] = _authored_armor_slots
+
+
+def _enemy_difficulty_boundaries(ctx):
+    from .enemy_difficulty_boundary_suite import enemy_difficulty_boundaries
+    return enemy_difficulty_boundaries(ctx)
+
+
+SCENARIOS["enemy_difficulty_boundaries"] = _enemy_difficulty_boundaries
+
+
+def _stealth_stats(ctx):
+    from .stealth_stats_suite import stealth_stats
+    return stealth_stats(ctx)
+
+
+SCENARIOS["stealth_stats"] = _stealth_stats
+
+
+def _enemy_armor_integrity(ctx):
+    from .enemy_armor_integrity_suite import enemy_armor_integrity
+    return enemy_armor_integrity(ctx)
+
+
+SCENARIOS["enemy_armor_integrity"] = _enemy_armor_integrity
+
+
+def _ice_cliffs_retries(ctx):
+    from .ice_cliffs_suite import ice_cliffs_retries
+    return ice_cliffs_retries(ctx)
+
+
+SCENARIOS["ice_cliffs_retries"] = _ice_cliffs_retries
+
+
+def _well_sentry(ctx):
+    from .encounter_flow_suite import well_sentry
+    return well_sentry(ctx)
+
+
+def _lobby_menu_pause(ctx):
+    from .menu_resume_suite import lobby_menu_pause
+    return lobby_menu_pause(ctx)
+
+
+SCENARIOS["well_sentry"] = _well_sentry
+SCENARIOS["lobby_menu_pause"] = _lobby_menu_pause

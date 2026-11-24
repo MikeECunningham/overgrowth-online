@@ -758,6 +758,11 @@ void Input::ProcessController(int controller_id, float timestep) {
                 use_controller_input_ = false;
             }
         }
+        // Keep the optional P menu shortcut in the same per-player input
+        // stream as Escape. A newly joined controller can become ready after
+        // the keyboard's one-frame pressed flag has already been cleared.
+        if (catch_kbmouse && keyboard_.isScancodeDown(SDL_SCANCODE_P, KIMF_PLAYING))
+            PlayerInputKeyDown(&control.key_down["menu_pause_shortcut"]);
         if (controller_id == 0) keyboard_.Update(timestep);
 
         if (catch_kbmouse && in_focus_) {
@@ -919,6 +924,9 @@ void Input::ProcessBindings() {
         char gamepad_name[32];
         FormatString(gamepad_name, 32, "gamepad_%i", LocalPlayerIndexForInputID(js->player_input));
         if (!js->gamepad_bind.empty()) {
+            // Menu scrolling follows the physical stick independently of camera remaps and inversion.
+            js->joystick.ProcessBinding(ControllerInput::R_STICK_YN, "menu_scroll_up");
+            js->joystick.ProcessBinding(ControllerInput::R_STICK_YP, "menu_scroll_down");
             StrMap& gamepad_map = bindings_[gamepad_name];
             for (auto& xb_iter : gamepad_map) {
                 const std::string& input_str = xb_iter.second;
@@ -1263,6 +1271,16 @@ int Input::AllocateRemotePlayerInput() {
     player_inputs_[index].remote_controlled = true;
     player_inputs_[index].enabled = true;
     return index;
+}
+
+bool Input::HasKeyboardBinding(SDL_Scancode code, bool debug_bindings_active) const {
+    const auto keys = bindings_.find("key");
+    if (keys == bindings_.end()) return false;
+    for (const auto& binding : keys->second) {
+        if (!debug_bindings_active && binding.first.compare(0, 6, "debug_") == 0) continue;
+        if (StringToSDLScancode(binding.second) == code) return true;
+    }
+    return false;
 }
 
 bool Input::IsKeyDown(const char* name) {

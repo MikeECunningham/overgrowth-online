@@ -7,6 +7,7 @@ int challenge_arena_round_serial = 0;
 
 void ChallengeArenaNewMatch() {
     if(Online_IsClient() || EditorModeActive()) return;
+    Online_CaptureEnemyDifficulty(true);
     challenge_arena_match_key = "arena_match:" + the_time;
     challenge_arena_round_key = "";
     challenge_arena_round_serial = 0;

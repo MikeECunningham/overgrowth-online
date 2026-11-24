@@ -683,7 +683,8 @@ void MovementObject::ReconcileNetworkItems(const CharSnapshot::Vitals& v) {
     // Let go of what it no longer has (stuck weapons are another list)
     std::vector<int> attached;
     for (const AttachedItem& a : rigged_object_->attached_items.items) {
-        attached.push_back(a.item->GetID());
+        // Wearable armor uses separate sockets outside the six weapon slots.
+        if (a.item.attachment_type != _at_attachment) attached.push_back(a.item->GetID());
     }
     for (int id : attached) {
         if (std::find(slots, slots + 6, id) == slots + 6) {
@@ -1821,6 +1822,7 @@ void MovementObject::Reset() {
     // Scaling is authoritative match metadata, not an actor's initial script
     // default. Keep it through ResetGlobals on hosts and network replicas.
     const bool keep_campaign_scale = HasFunction("void SetCampaignScaling(float, float, float, float)");
+    const float campaign_base = ASHasVar("campaign_base_difficulty") ? ASGetFloatVar("campaign_base_difficulty") : -1.f;
     float campaign_scale[4] = {1, 1, 1, 0};
     const char* campaign_names[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
     if (keep_campaign_scale) for (int i = 0; i < 4; ++i)
@@ -1847,6 +1849,7 @@ void MovementObject::Reset() {
     as_context->CallScriptFunction(as_funcs.set_parameters);
     as_context->CallScriptFunction(as_funcs.post_reset);
     if (keep_campaign_scale) {
+        if (ASHasVar("campaign_base_difficulty")) ASSetFloatVar("campaign_base_difficulty", campaign_base);
         ASArglist scaling_args;
         for (float factor : campaign_scale) scaling_args.Add(factor);
         as_context->CallScriptFunction("void SetCampaignScaling(float, float, float, float)", &scaling_args);
@@ -4604,7 +4607,10 @@ void MovementObject::AttachItemToSlotAttachmentRef(int which, AttachmentType typ
     }
 
     if (online->IsActive() && !from_socket) {
-        online->Send<OnlineMessages::AttachToMessage>(GetID(), which, type, true, mirrored);
+        if (type == _at_attachment && ref && ref->valid())
+            online->Send<OnlineMessages::AttachToMessage>(GetID(), which, mirrored, (*ref)->path_);
+        else
+            online->Send<OnlineMessages::AttachToMessage>(GetID(), which, type, true, mirrored);
     }
     ItemObject* io = (ItemObject*)obj;
     io->InvalidateHeldReaders();
