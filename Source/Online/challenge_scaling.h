@@ -13,6 +13,7 @@ constexpr double kPressureCap = 1.5;
 constexpr double kRetryReliefCap = 0.25;
 
 struct Settings {
+    double five_minute_gain = 0, completion_gain = 0, win_gain = 0, wipe_gain = 0, forced_win_gain = 0, retry_relief = 0;
     int time_rate = Off;
     int round_rate = Off;  // level or completed match; caller gates mode support
     int performance_mode = PerformanceOff;
@@ -80,7 +81,7 @@ public:
     void Clear();
     Snapshot Capture() const { return snapshot_; }
     const Snapshot& Data() const { return snapshot_; }
-    bool Restore(const Snapshot& snapshot);
+    bool Restore(const Snapshot& snapshot, const Settings& settings);
     Factors Evaluate() const { return ChallengeScaling::Evaluate(snapshot_.pressure); }
 
 private:

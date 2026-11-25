@@ -48,6 +48,9 @@
 #include <Graphics/render_backend.h>
 #include <Graphics/Vulkan/vk_backend.h>
 #include <Graphics/Vulkan/vk_gl.h>
+#include <Graphics/Vulkan/vk_nrd.h>
+#include <Graphics/Vulkan/vk_rt.h>
+#include <Graphics/raytrace.h>
 #include <Graphics/Vulkan/vk_draw.h>
 #include <Graphics/textures.h>
 #include <Internal/timer.h>
@@ -342,6 +345,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         out["frame"] = (Json::UInt64)frame_;
         out["epoch_ms"] = EpochMs();
         out["game_time"] = game_timer.game_time;
+        out["time_scale"] = game_timer.time_scale;
         out["clock_ms"] = OnlineClockMs();  // this instance's online clock (clock sync checks)
         out["menu_owner"] = config["controller_menu_owner"].toNumber<int>();
         out["current_menu_player"] = engine->current_menu_player;
@@ -377,6 +381,13 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         out["difficulty_hud_layout"] = DifficultyHUD::Inspect();
         out["progression_ui"] = ProgressionUI::Inspect();
         if (UseVulkan()) {
+            out["vk_last_trace_gi"] = VkRt::GiTraced();
+            out["vk_last_nrd_dispatches"] = VkRt::LastNrdDispatchCount();
+            out["vk_nrd_image_bytes"] = (Json::UInt64)VkNrd::LiveImageBytes();
+            const ivec2 lighting_size = Raytrace::LightingSize();
+            out["vk_lighting_width"] = lighting_size[0];
+            out["vk_lighting_height"] = lighting_size[1];
+            out["vk_last_trace_instances"] = VkRt::SceneInstances();
             out["vk_problems"] = VkBackend::ValidationProblems();  // validation layer warnings and errors ("vk_validation")
             out["vk_frames"] = (Json::UInt64)VkBackend::FramesPresented();
             VkDraw::Stats ds = VkDraw::GetStats();
@@ -388,6 +399,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         Json::Value& o = out["online"];
         Json::Reader challenge_reader;
         challenge_reader.parse(online->ModeChallengePayload(), o["challenge"], false);
+        o["mode_settings"] = online->LobbyModeSettings();
         o["active"] = online->IsActive();
         o["hosting"] = online->IsHosting();
         o["client"] = online->IsClient();
@@ -646,11 +658,11 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 for (const char* name : {"goal", "escort_id", "target_id", "attacked_by_id"}) {
                     if (mo->ASHasVar(name)) c["ai_" + std::string(name)] = mo->ASGetIntVar(name);
                 }
-                for (const char* name : {"updated", "shadow_id", "lf_shadow_id", "rf_shadow_id"}) {
+                for (const char* name : {"updated", "shadow_id", "lf_shadow_id", "rf_shadow_id", "ofin_victim"}) {
                     if (mo->ASHasVar(name)) c[name] = mo->ASGetIntVar(name);
                 }
                 c["visible"] = mo->visible;
-                for (const char* name : {"duck_amount", "target_duck_amount"}) {
+                for (const char* name : {"duck_amount", "target_duck_amount", "ofin_weight"}) {
                     if (mo->ASHasVar(name)) c[name] = mo->ASGetFloatVar(name);
                 }
                 if (mo->ASHasVar("lobby_escort_bot")) c["lobby_escort_bot"] = mo->ASGetBoolVar("lobby_escort_bot");

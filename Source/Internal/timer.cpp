@@ -169,6 +169,11 @@ float Timer::GetFastestFrameTime() {
     return ToNanoseconds(fastest) * 0.000001f;
 }
 
+void Timer::CancelTimedSlowMotion() {
+    timed_slow_motion_layers.clear();
+    time_scale = target_time_scale;
+}
+
 void Timer::AddTimedSlowMotionLayer(float target_time_scale, float duration, float delay) {
     timed_slow_motion_layers.resize(timed_slow_motion_layers.size() + 1);
     TimedSlowMotionLayer& layer = timed_slow_motion_layers.back();

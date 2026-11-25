@@ -64,7 +64,10 @@ the traffic lanes and correlated hit replies. Protocol 9 adds host-authoritative
 campaign scaling factors and shared match difficulty settings; older binaries
 are incompatible. Protocol 10 adds campaign faction/adversary behavior and the
 higher campaign durability limits. Protocol 11 adds per-mode challenge settings
-and authoritative progression snapshots; use matching updated binaries and scripts.
+and authoritative progression snapshots. Protocol 17 compares active mods’ network
+schemas during joining and carries host-owned mod state and lobby options through
+late joins and host handoff. A mod can change its release version while retaining a
+compatible network schema. See [session mods](Mod%20Loading%20Design.md#session-mods).
 
 ## Campaign and inventory consistency
 

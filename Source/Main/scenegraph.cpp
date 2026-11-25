@@ -2791,6 +2791,13 @@ void SceneGraph::BindLights(int the_shader) {
     Textures* textures = Textures::Instance();
     Shaders* shaders = Shaders::Instance();
 
+    if (Raytrace::MaskReady()) {
+        // The single-view depth prepass covers scene_dims even when decal clusters are disabled.
+        const ivec2 lighting = Raytrace::LightingSize();
+        const int* scene = Graphics::Instance()->scene_dims;
+        shaders->SetUniformVec2("rt_lighting_scale", vec2(float(lighting[0]) / scene[0], float(lighting[1]) / scene[1]));
+    }
+
     int cluster_block_index = shaders->GetUBOBindIndex(the_shader, "ClusterInfo");
     if (cluster_block_index == (int)GL_INVALID_INDEX) {
         // no decals in this shader, skip the whole thing

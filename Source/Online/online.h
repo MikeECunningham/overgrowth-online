@@ -396,7 +396,7 @@ class Online {
     bool CanAdoptLocalSession() const;
     uint32_t GetPlayerCount();
 
-    void StartMultiplayer(MultiplayerMode multiplayerMode);
+    void StartMultiplayer(MultiplayerMode multiplayerMode, bool adopting_world = false);
     void StartHostingMultiplayer();
 
     void QueueStopMultiplayer(bool transport_lost = false);
@@ -721,6 +721,10 @@ class Online {
     std::shared_ptr<ChallengeRuntimeState> mode_challenge_state;
     std::map<std::string, std::map<std::string, int>> mode_settings_;
     std::string ModeSettingsKey() const;
+    bool IsCampaignPlayMode() const;
+    bool ModeSettingAvailable(const std::string& modes) const;
+    Json::Value LobbyModeSettings() const;
+    bool ReceiveLobbyModeSettings(const Json::Value& modes, bool validate_only = false);
     int ModeSetting(const std::string& key) const;
     bool SetModeSetting(const std::string& key, int value, PlayerID actor = LobbyAuthority::InvalidPlayer);
     Json::Value SaveGameRules() const;
@@ -729,6 +733,7 @@ class Online {
     std::string ModeChallengePayload() const;
     bool ReceiveModeChallenge(const std::string& payload, bool validate_only = false);
     void ResetModeChallenge();
+    void BeforeChallengeRateChange();
     CampaignDifficulty::Sample EnemyDifficulty() const;
     void CaptureEnemyDifficulty(bool new_match = false);
     void ChallengeSceneChanged();
@@ -927,6 +932,7 @@ class Online {
     PeerID LocalPeerID() const;
     unsigned LocalLobbyPlayerCount() const;
     bool HasMultipleLobbyHumans() const;
+    bool AllowsSoloCinematics() const;
     bool BeginLobby(bool local_only = false);
     bool EnsureLocalSession();
     bool IsLocalOnlySession() const { return local_only_session_ && IsHosting(); }

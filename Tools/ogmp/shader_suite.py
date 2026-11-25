@@ -242,9 +242,8 @@ def vk_pipeline_seed(ctx):
             ctx.instances.append(inst)
             inst.prepare()
             shutil.copytree(cache, inst.writedir + "Data/VulkanShaders")
-            inst.prepare = lambda: None  # (keep the cache copied in)
             try:
-                inst.start()
+                inst.start(reuse_profile=True)
                 wait_loaded(inst)
                 time.sleep(4.0)
                 me = inst.bridge.me()

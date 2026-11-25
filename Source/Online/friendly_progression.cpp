@@ -1,6 +1,7 @@
 // Friendly progression is owned by the host. Combat peers report outcomes only
 // for victims they simulate, and shops transact against the host's wallet.
 #include <Online/friendly_progression.h>
+#include <Online/session_mods.h>
 #include <Online/armor_protection.h>
 #include <Online/progression_economy.h>
 #include <Online/campaign_difficulty.h>
@@ -11,6 +12,7 @@
 #include <Objects/movementobject.h>
 #include <Objects/itemobject.h>
 #include <Internal/config.h>
+#include <Internal/modloading.h>
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -101,10 +103,7 @@ Wallet& Balance(const PlayerState& p) {
 }
 void Publish() {
     if (!Net()->IsHosting()) return;
-    Json::Value message;
-    message["action"] = "progress_snapshot";
-    message["progression"] = Snapshot();
-    Net()->Send<OnlineMessages::LobbyControl>(Json::FastWriter().write(message));
+    SessionMods::PublishFeature("progression");
     dirty = false;
     next_send = OnlineClockMs() + 150;
 }
@@ -134,12 +133,23 @@ Spawn& Observe(MovementObject* actor) {
     }
     return spawn;
 }
+double Rule(const std::string& key) {
+    const auto* provider = ModLoading::Instance().GetSessionFeature("progression");
+    return provider ? provider->Rule(key) : 0;
+}
+int UpgradePrice(int rank) {
+    return StatPrice(rank, Rule("stat_base"), Rule("stat_linear"), Rule("stat_quadratic"));
+}
+double BaseBounty(int species, bool large_dog) {
+    const char* const keys[] = {"bounty_rabbit", "bounty_wolf", "bounty_dog", "bounty_rat", "bounty_cat"};
+    return Rule(large_dog ? "bounty_large_dog" : keys[std::max(0, std::min(4, species))]);
+}
 double Bounty(MovementObject* victim, double gear) {
     const int species = victim->ASHasVar("species") ? victim->ASGetIntVar("species") : 0;
     const bool large = species == 2 && victim->character_path.find("dog_big") != std::string::npos;
     const auto sample = Net()->EnemyDifficulty();
     auto factor = [&](const char* name) { return victim->ASHasVar(name) ? victim->ASGetFloatVar(name) : 1.f; };
-    return Reward(species, large, sample.base >= 0 ? sample.base : config["game_difficulty"].toNumber<double>(), gear,
+    return Reward(BaseBounty(species, large), sample.base >= 0 ? sample.base : config["game_difficulty"].toNumber<double>(), gear,
         factor("campaign_vitality_mult"), factor("campaign_damage_mult"), sample.pressure);
 }
 void SampleXPScales(SceneGraph* graph) {
@@ -172,7 +182,7 @@ void SampleXPScales(SceneGraph* graph) {
             if (!enemy(source)) continue;
             const int species = source->ASGetIntVar("species");
             const bool large = species == 2 && source->character_path.find("dog_big") != std::string::npos;
-            encounter += Reward(species, large, sample.base >= 0 ? sample.base :
+            encounter += Reward(BaseBounty(species, large), sample.base >= 0 ? sample.base :
                 config["game_difficulty"].toNumber<double>(), pending["equipment"].asDouble(),
                 pending["vitality"].asDouble(), pending["damage"].asDouble(), sample.pressure);
         }
@@ -307,7 +317,7 @@ std::vector<Offer> Catalog(const PlayerState& buyer, const PlayerState& target) 
             const std::string benefit = key == "health" ? "+8% durability" : key == "damage" ? "+6% damage" : key == "speed" ? "+3% movement speed" :
                                         key == "stealth_passive" ? "+6% concealment from sight and hearing while standing" :
                                                                    "+6% concealment from sight and hearing while crouched";
-            if (rank < kMaxRank) offer(key,label,benefit + (shared ? " for every teammate." : "."),StatPrice(rank), 0, target.player_id);
+            if (rank < kMaxRank) offer(key,label,benefit + (shared ? " for every teammate." : "."),UpgradePrice(rank), 0, target.player_id);
         }
     }
     const auto armor_choices = shared ? Rotation(team_id, true) : std::vector<ID>{target.player_id};
@@ -331,16 +341,16 @@ std::vector<Offer> Catalog(const PlayerState& buyer, const PlayerState& target) 
         for (ID id : choices) {
             if (run.players[id].weapons & weapon.ownership) continue;
             offer(weapon.key, weapon.label, "Unlock for " + Seat(id)->playername,
-                  weapon.price, weapon.rarity, id);
+                  static_cast<int>(Rule(std::string("weapon_") + weapon.key)), weapon.rarity, id);
             break;
         }
     }
     if (target.is_bot) {
-        static const int prices[] = {1800, 3400, 8600};
+        static const char* const prices[] = {"ai_hardcore", "ai_expert", "ai_nightmare"};
         static const char* names[] = {"Hardcore AI", "Expert AI", "Nightmare AI"};
-        if (build.ai < 3) offer("ai", names[build.ai], build.ai == 2 ? "Earns XP and trains its own stats between fights." : "Train this ally.", prices[build.ai], build.ai + 2, target.player_id);
+        if (build.ai < 3) offer("ai", names[build.ai], build.ai == 2 ? "Earns XP and trains its own stats between fights." : "Train this ally.", static_cast<int>(Rule(prices[build.ai])), build.ai + 2, target.player_id);
     } else if (!choices.empty()) {
-        offer("recruit","Recruit an ally","A new ally with Casual AI.", RecruitPrice(team.recruits), 4, choices.front());
+        offer("recruit","Recruit an ally","A new ally with Casual AI.", RecruitPrice(team.recruits, Rule("recruit_base"), Rule("recruit_growth")), 4, choices.front());
     }
     return offers;
 }
@@ -395,8 +405,8 @@ void TrainBots() {
             if (build.speed < *lowest) lowest = &build.speed;
             if (build.stealth_passive < *lowest) lowest = &build.stealth_passive;
             if (build.stealth_active < *lowest) lowest = &build.stealth_active;
-            if (*lowest >= kMaxRank || account.wallet.held < StatPrice(*lowest)) break;
-            account.wallet.held -= StatPrice(*lowest);
+            if (*lowest >= kMaxRank || account.wallet.held < UpgradePrice(*lowest)) break;
+            account.wallet.held -= UpgradePrice(*lowest);
             ++*lowest;
         }
     }
@@ -407,10 +417,10 @@ int SecondsLeft() {
 }
 
 bool Enabled() {
-    return Net()->IsActive() && !Net()->LobbyBuild() && Net()->ModeSetting("progression") != 0;
+    return Net()->IsActive() && !Net()->LobbyBuild() && ModLoading::Instance().HasSessionFeature("progression") && Net()->ModeSetting("progression") != 0;
 }
 bool ShopOpen() { return run.open && Enabled(); }
-bool LoopChosen() { return run.final && run.loop; }
+bool LoopChosen() { return Enabled() && run.final && run.loop; }
 Build GetBuild(ID id) {
     const auto found = run.players.find(id);
     Build b = found == run.players.end() ? Build{} : found->second.build;
@@ -450,7 +460,7 @@ void ForgetPlayer(ID id) {
     dirty = true;
 }
 void ResetAttempt() {
-    if (!Net()->IsHosting()) return;
+    if (!Net()->IsHosting() || !Enabled()) return;
     for (auto& p : run.players) p.second.wallet.pooled = 0;
     for (auto& t : run.teams) t.second.wallet.pooled = 0;
     spawns.clear();

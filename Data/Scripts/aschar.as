@@ -6915,9 +6915,7 @@ void SendDamageToPeer() {
 }
 
 void CharacterDefeated() {
-    // This scan only triggers cinematic slow motion. Network sessions disable
-    // that effect, including local-only hosts and opponents run by a peer.
-    if(Online_IsActive() || zone_killed != 0) return;
+    if(!AllowsSoloCinematics() || zone_killed != 0) return;
     array<int> player_ids = GetPlayerCharacterIDs();
 
     if(player_ids.size() != 0) {

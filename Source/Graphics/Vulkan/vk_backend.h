@@ -57,7 +57,9 @@ uint32_t TimestampValidBits();  // the queue's (0: no timestamps)
 void BeginLabel(const char* name);
 void EndLabel();
 void InsertLabel(const char* name);
-std::string MemoryDescription();  // (VMA's budget: "N of M MB free (device-local), K MB ours")
+std::string MemoryDescription();
+// Headroom in the driver-reported device-local memory budget. False when the device cannot report it.
+bool DeviceLocalMemoryAvailable(uint64_t& bytes);
 // (diagnostics, config debug_frame_log) Where the frame just presented waited: the
 // submits it made, the waits for the GPU and their time, the wait for its frame slot
 struct FrameDiag {

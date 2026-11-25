@@ -2,6 +2,7 @@
 // reachability checks; no loaded world or live simulation is migrated.
 // Copyright 2026. Licensed under the Apache License, Version 2.0.
 #include <Online/online.h>
+#include <Online/session_mods.h>
 #include <Online/Message/lobby_control.h>
 #include <Internal/config.h>
 #include <JSON/json.h>
@@ -148,7 +149,9 @@ bool Online::HandleLobbyMigrationControl(PeerID from, const std::string& payload
             handoff.phase = Phase::CandidateReady;
             handoff.status = "Opening the new host's multiplayer port...";
             Json::Value response = Message("handoff_listener");
-            response["ok"] = net.BeginMigrationListener(secret);
+            std::string mod_error;
+            response["compatible"] = SessionMods::Validate(message["snapshot"]["saved_mods"], SessionMods::Scope::Handoff, mod_error);
+            response["ok"] = response["compatible"].asBool() && net.BeginMigrationListener(secret);
             response["port"] = static_cast<unsigned>(NetFramework::DefaultPort());
             response["token"] = handoff.join_token;
             SubmitLobbyRequest(Encode(response));
@@ -190,7 +193,8 @@ bool Online::HandleLobbyMigrationControl(PeerID from, const std::string& payload
     if (action == "handoff_listener" && from == handoff.candidate && handoff.phase == Phase::AwaitListener) {
         if (!message.get("ok", false).asBool()) {
             Json::Value cancel = Message("handoff_cancel");
-            cancel["reason"] = "The new host cannot open its multiplayer port; the original lobby is unchanged.";
+            cancel["reason"] = message["compatible"] == false ? "The new host has incompatible save mods." :
+                               "The new host cannot open its multiplayer port; the original lobby is unchanged.";
             Send<OnlineMessages::LobbyControl>(Encode(cancel));
             net.StopMigrationProbes(); Done(cancel["reason"].asString());
             return true;
@@ -211,6 +215,7 @@ bool Online::HandleLobbyMigrationControl(PeerID from, const std::string& payload
         for (const auto& peer : online_session->connected_peers) if (peer.peer_id != handoff.candidate) {
             Json::Value prepare = Message("handoff_prepare");
             Json::Value snapshot; reader.parse(handoff.snapshot, snapshot, false);
+            snapshot.removeMember("saved_mods");  // Only the candidate receives private, save-only state.
             prepare["snapshot"] = snapshot; prepare["target"] = handoff.target; prepare["candidate"] = handoff.candidate;
             prepare["join_token"] = handoff.tokens.at(peer.peer_id);
             prepare["ip"] = handoff.ip; prepare["steam"] = Json::UInt64(handoff.steam);

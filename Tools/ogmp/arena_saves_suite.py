@@ -122,7 +122,7 @@ def arena_saves(ctx):
     assert probe(host, '""+ProgressionShopOpen()') == "false", "non-final rounds must not open a shop"
     after_win = save(host, 2)
     assert after_win["world"]["points"][f"seat{owner}"] == 3, after_win["world"]
-    shared_wallet = next(team["w"] for team in after_win["progression"]["teams"] if team["team"] == 5)
+    shared_wallet = next(team["w"] for team in after_win["session_mods"]["og-online-progression"]["runtime"]["teams"] if team["team"] == 5)
     assert shared_wallet["held"] > 0, shared_wallet
     # Load the earlier in-progress card into this live lobby. Connected humans
     # retain their physical inputs and their unit's score and gear template.
@@ -145,6 +145,11 @@ def arena_saves(ctx):
     # Compatibility with a pre-correction card that opened an inter-round shop:
     # the stale shop/ready timer must be cleared before the restored lobby.
     legacy = json.loads(json.dumps(after_win))
+    legacy["version"] = 1
+    mods = legacy.pop("session_mods")
+    legacy["progression"] = mods["og-online-progression"]["runtime"]
+    legacy["rules"]["challenge"] = mods["og-online-scaling"]["runtime"]
+    legacy["rules"]["challenge"]["modes"] = legacy["rules"].pop("mode_settings")
     legacy["world"]["arena"]["phase"] = 5
     legacy["progression"]["open"] = True
     legacy["progression"]["ms_left"] = 10000.0
@@ -180,7 +185,7 @@ def arena_saves(ctx):
     wait(lambda: probe(cold, '""+int(phase)') == "6", "final match victory enters shop")
     final = save(cold, 4)
     assert final["world"]["points"][f"seat{owner}"] == 4
-    wallet = next(p["w"] for p in final["progression"]["teams"] if p["team"] == 5)
+    wallet = next(p["w"] for p in final["session_mods"]["og-online-progression"]["runtime"]["teams"] if p["team"] == 5)
     assert wallet["held"] > 0, wallet
     for collection in ("fighters", "spots", "items"):
         corrupt = json.loads(json.dumps(final))

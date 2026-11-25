@@ -49,19 +49,26 @@ bool FinisherSeen(int id) {
     return false;
 }
 
+bool FinisherAllowed(int player_id) {
+    if(player_id == -1) return false;
+    // Older engines report only whether there is a session. Keep their offline camera.
+    MovementObject@ player = ReadCharacterID(player_id);
+    int solo = player.HasVar("online_solo_cinematics") ? player.GetIntVar("online_solo_cinematics") : -1;
+    return solo == 1 || (solo == -1 && !MPOnline());
+}
+
 void FinisherConsider(int victim_id) {
     if(FinisherSeen(victim_id) || !MovementObjectExists(victim_id) || fin_pending != -1 || ui_time < fin_next_ok) {
         return;
     }
 
-    // (not online: a cinematic shot takes the camera away from the fight with the others)
-    if(!CfgBool("ocam_enabled", true) || EditorModeActive() || level.DialogueCameraControl() || BattleSpectating() || MPOnline()) {
+    if(!CfgBool("ocam_enabled", true) || EditorModeActive() || level.DialogueCameraControl() || BattleSpectating()) {
         return;
     }
 
     int player_id = HudPlayerId();
 
-    if(player_id == -1) {
+    if(!FinisherAllowed(player_id)) {
         return;
     }
 
@@ -151,7 +158,7 @@ void FinisherUpdate() {
     fin_pending = -1;
     int player_id = HudPlayerId();
 
-    if(player_id == -1 || !MovementObjectExists(victim_id) || MPOnline()) {
+    if(!FinisherAllowed(player_id) || !MovementObjectExists(victim_id)) {
         return;
     }
 
@@ -184,10 +191,9 @@ void FinisherUpdate() {
     ReadCharacterID(player_id).Execute("OcamFinisherStart(" + victim_id + ", " + fin_pending_attacker + ", " + seq + ", " + shot_len + ");");
 
     // Speed ramp: hit-stop, deep slow motion, ease back (the engine smooths between).
-    // Not online: the host's would slow everyone's game, ours our own character.
     float s = max(0.0f, min(1.0f, CfgFloat("ofin_slowmo_amt", 0.85f)));
 
-    if(s > 0.01f && !MPOnline()) {
+    if(s > 0.01f) {
         if(seq == kSeqDeath) {
             TimedSlowMotion(mix(1.0f, 0.2f, s), shot_len * 0.8f, 0.0f);
         } else {

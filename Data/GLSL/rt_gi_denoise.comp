@@ -1,0 +1,66 @@
+// Native Vulkan diffuse GI filter. Each dispatch filters one signed spherical
+// harmonic coefficient texture, using the same weights for colour and direction.
+// The alpha channel keeps the sample count and is ignored by the colour pass.
+// License: Apache-2.0 (see LICENSE).
+#version 460
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0, rgba32f) uniform readonly image2D lighting;
+layout(binding = 1, rgba32f) uniform readonly image2D last_lighting;
+layout(binding = 2, rgba16f) uniform readonly image2D sample_sh;
+layout(binding = 3, rgba16f) uniform readonly image2D history_sh;
+layout(binding = 4, rgba16f) uniform writeonly image2D output_sh;
+layout(push_constant) uniform Params {
+    mat4 reprojection;
+    uvec4 info; // width, height, unused, history/denoise flags
+} pc;
+
+bool inside(ivec2 p) {
+    return all(greaterThanEqual(p, ivec2(0))) && all(lessThan(p, ivec2(pc.info.xy)));
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (!inside(p)) return;
+    float depth = imageLoad(lighting, p).g;
+    vec3 center = imageLoad(sample_sh, p).xyz;
+    if (depth <= 0.0 || (pc.info.w & 2u) == 0u) {
+        imageStore(output_sh, p, vec4(center, 1.0));
+        return;
+    }
+
+    // Gather nearby samples on the same surface. Keep their range to reject
+    // history of moving objects that happen to have approximately the same depth.
+    vec3 sum = center, lo = center, hi = center;
+    float weights = 1.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            ivec2 q = p + ivec2(x, y);
+            if ((x == 0 && y == 0) || !inside(q)) continue;
+            float d = imageLoad(lighting, q).g;
+            if (d <= 0.0) continue;
+            float w = exp(-abs(d - depth) / (0.015 * depth)) * (x != 0 && y != 0 ? 0.5 : 0.75);
+            if (w < 0.02) continue;
+            vec3 value = imageLoad(sample_sh, q).xyz;
+            sum += w * value;
+            weights += w;
+            lo = min(lo, value);
+            hi = max(hi, value);
+        }
+    }
+    vec3 value = sum / weights;
+    float frames = 1.0;
+    if ((pc.info.w & 1u) != 0u) {
+        vec2 size = vec2(pc.info.xy);
+        vec4 clip = pc.reprojection * vec4((vec2(p) + 0.5) / size * 2.0 - 1.0, depth, 1.0);
+        if (clip.w > 0.0) {
+            vec3 prev = clip.xyz / clip.w;
+            ivec2 q = ivec2(floor((prev.xy * 0.5 + 0.5) * size));
+            if (inside(q) && prev.z > 0.0 && abs(imageLoad(last_lighting, q).g - prev.z) < 0.02 * prev.z) {
+                vec4 old = imageLoad(history_sh, q);
+                frames = clamp(old.w + 1.0, 1.0, 16.0);
+                value = mix(clamp(old.xyz, lo, hi), value, 1.0 / frames);
+            }
+        }
+    }
+    imageStore(output_sh, p, vec4(value, frames));
+}

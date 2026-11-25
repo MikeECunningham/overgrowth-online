@@ -14,6 +14,7 @@
 #include <Editors/actors_editor.h>
 #include <Editors/map_editor.h>
 #include <Internal/config.h>
+#include <Internal/modloading.h>
 #include <Objects/hotspot.h>
 #include <Objects/itemobject.h>
 #include <Objects/movementobject.h>
@@ -1343,8 +1344,10 @@ Json::Value Online::ProgressionEncounterScope(ObjectID viewer) const {
 void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
     if (!IsHosting() || !host_started_level || loading || LobbyWaiting() || LobbyBuild() || BuildSession() || !graph || !graph->level) return;
     const bool campaign = CoopCampaign();
+    const bool scaling = ModLoading::Instance().HasSessionFeature("scaling");
+    if (!campaign && !scaling) return;
     auto sample = EnemyDifficulty();
-    if (sample.humans == 0) {
+    if (scaling && sample.humans == 0) {
         CaptureEnemyDifficulty();
         sample = EnemyDifficulty();
     }
@@ -1497,10 +1500,10 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
         // current fight's budget. Generated enemies retain a separate global
         // concurrency cap, including any still fighting a distant party member.
         if (hostile && ReadyForReinforcements(actor) && Awake(actor) && NearestMainParty(this, graph, actor->position) < 55.0f) ++active_hostiles;
-        if (actor->HasFunction("void SetCampaignScaling(float, float, float, float)"))
+        if (scaling && actor->HasFunction("void SetCampaignScaling(float, float, float, float)"))
             apply(actor, hostile, bosses.count(actor->GetID()) != 0 || ExplicitBoss(actor, false));
     }
-    UpdateEquipment(this, graph, state, sample);
+    if (scaling) UpdateEquipment(this, graph, state, sample);
     if (!campaign) return;
     DeployOpponents(this, graph, state, now);
     if (!stats || (humans <= 1 && bots == 0) || coop_cutscene || graph->level->DialogueCameraControl()) {
@@ -1744,6 +1747,7 @@ const char* HUDRate(int rate) { return rate == 1 ? "Gentle" : rate == 2 ? "Stand
 }
 
 std::string Online::DifficultyHUDSnapshot() {
+    if (!ModLoading::Instance().HasSessionFeature("scaling")) return R"({"version":1,"visible":false,"scaled_context":false,"progression":{"master_enabled":false}})";
     Engine* engine = Engine::Instance();
     SceneGraph* graph = engine->GetSceneGraph();
     if (!difficulty_hud_state) difficulty_hud_state = std::make_shared<DifficultyHUDState>();

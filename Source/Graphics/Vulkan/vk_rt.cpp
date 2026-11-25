@@ -210,9 +210,11 @@ struct State {
     VkDescriptorSetLayout denoise_set_layout = VK_NULL_HANDLE;  // (six storage images, pushed)
     VkPipelineLayout denoise_layout = VK_NULL_HANDLE;
     VkPipeline denoise[2] = {};  // temporal, spatial
+    VkPipeline gi_denoise = VK_NULL_HANDLE;
     // NRD's (rt_nrd.comp): its inputs made, its outputs into the mask (made the first time
     // NRD is asked for)
     bool nrd_tried = false;
+    uint32_t nrd_dispatches = 0;
     VkDescriptorSetLayout nrd_set_layout[2] = {};  // prepare, composite (storage images, pushed)
     VkPipelineLayout nrd_layout[2] = {};
     VkPipeline nrd[2] = {};
@@ -476,7 +478,7 @@ void Shutdown() {
         }
     }
     s.nrd_tried = false;
-    for (VkPipeline* pl : {&s.gi[0], &s.gi[1], &s.cache}) {
+    for (VkPipeline* pl : {&s.gi[0], &s.gi[1], &s.cache, &s.gi_denoise}) {
         if (*pl != VK_NULL_HANDLE) {
             vkDestroyPipeline(dev, *pl, NULL);
             *pl = VK_NULL_HANDLE;
@@ -1818,10 +1820,9 @@ bool NrdPasses() {
     }
     textFileRead(path, &source);
     VkDevice dev = VkBackend::Device();
-    // (#PREPARE: the raw result, the extra image, NRD's seven inputs, GI's raw result and
-    // directions, NRD's two inputs for it; #COMPOSITE: the raw result, NRD's three outputs,
-    // the mask, GI's two NRD outputs and the two images the colour pass reads)
-    const uint32_t images[2] = {13, 9};
+    // PREPARE writes the shared geometry guides and noisy shadow/AO inputs.
+    // COMPOSITE packs the denoised signals into the colour pass's lighting mask.
+    const uint32_t images[2] = {9, 5};
     const uint32_t push_sizes[2] = {sizeof(NrdPreparePush), 4 * sizeof(uint32_t)};
     const char* defines[2] = {"#define PREPARE 1\n", "#define COMPOSITE 1\n"};
     const char* names[2] = {"rt_nrd.comp #PREPARE", "rt_nrd.comp #COMPOSITE"};
@@ -1880,6 +1881,14 @@ bool NrdAvailable() {
     return Available() && VkNrd::Available();
 }
 
+uint32_t LastNrdDispatchCount() {
+    return s.nrd_dispatches;
+}
+
+bool GiSupported() {
+    return DrawsCanTrace() && VkBackend::Properties().limits.maxPushConstantsSize >= sizeof(GiPush);
+}
+
 bool GiTraced() {
     return s.available && s.gi_drawn;
 }
@@ -1912,10 +1921,10 @@ namespace {
 // (false: not there)
 bool GiPasses() {
     if (s.gi_tried) {
-        return s.gi[0] != VK_NULL_HANDLE && s.gi[1] != VK_NULL_HANDLE && s.cache != VK_NULL_HANDLE;
+        return s.cache_ages.buffer != VK_NULL_HANDLE;
     }
     s.gi_tried = true;
-    if (!VkBackend::RtPositionFetch() || VkBackend::Properties().limits.maxPushConstantsSize < sizeof(GiPush)) {
+    if (!GiSupported()) {
         LOGI << "Ray tracing: GI needs the hits' triangles (position fetch) and bigger push constants" << std::endl;
         return false;
     }
@@ -1995,6 +2004,11 @@ bool GiPasses() {
     s.gi[0] = MakeComputePipeline(gi_source, "", "rt_gi.comp", s.gi_layout);
     s.gi[1] = MakeComputePipeline(gi_source, "#define MSAA_DEPTH 1\n", "rt_gi.comp #MSAA_DEPTH", s.gi_layout);
     s.cache = MakeComputePipeline(cache_source, "", "rt_cache.comp", s.cache_layout);
+    std::string filter_source;
+    if (FindFilePath("Data/GLSL/rt_gi_denoise.comp", path, kPathSize, kDataPaths | kModPaths, false) != -1) {
+        textFileRead(path, &filter_source);
+        s.gi_denoise = MakeComputePipeline(filter_source, "", "rt_gi_denoise.comp", s.denoise_layout);
+    }
     if (s.gi[0] == VK_NULL_HANDLE || s.gi[1] == VK_NULL_HANDLE || s.cache == VK_NULL_HANDLE) {
         return false;
     }
@@ -2151,14 +2165,14 @@ bool TraceGi(VkCommandBuffer cmd, const LightingPass& p, Tlas* t, const vkgl::Im
     push.params[3] = p.gi_sky_scale;
     push.debug[0] = p.gi_debug;
     push.debug[1] = VkNrd::FrameIndex() & 1u;
-    push.debug[2] = p.gi_rr ? 0u : 1u;  // (NRD's REBLUR reconstructs the other half: checkerboardMode BLACK)
-    push.debug[3] = p.gi_rr ? 1u : 0u;
+    const bool checkerboard = p.nrd && !p.gi_rr;
+    push.debug[2] = checkerboard ? 1u : 0u;  // (NRD's REBLUR reconstructs the other half: checkerboardMode BLACK)
     push.look[0] = std::max(0.0f, p.gi_strength);
     push.look[1] = std::max(0.0f, p.ambient_contrib);
     push.look[2] = std::max(0.0f, p.gi_bounce);
     push.look[3] = std::max(0.0f, std::min(1.0f, p.gi_raster_ambient));
     vkCmdPushConstants(cmd, s.gi_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-    vkCmdDispatch(cmd, ((p.gi_rr ? p.width : (p.width + 1) / 2) + 7) / 8, (p.height + 7) / 8, 1);  // (NRD's: half the pixels, a checkerboard)
+    vkCmdDispatch(cmd, ((checkerboard ? (p.width + 1) / 2 : p.width) + 7) / 8, (p.height + 7) / 8, 1);  // (NRD's: half the pixels, a checkerboard)
     // (the cache's sums into its averages, after the samples are in)
     ComputeBarrier(cmd);
     DispatchCache(cmd, false);
@@ -2173,11 +2187,6 @@ bool DenoiseNrd(VkCommandBuffer cmd, const LightingPass& p, const vkgl::ImageInf
     }
     const uint32_t signals = (p.sun_rays > 0 ? 1u : 0u) | (p.ao_rays > 0 ? 2u : 0u) | (p.light_rays > 0 && p.light_count > 0 ? 4u : 0u) |
                              (gi_images != NULL ? 8u : 0u);
-    // (no GI: its bindings take NRD's own GI images, of the same format, untouched)
-    const VkImageView gi_raw_view = gi_images != NULL ? gi_images[0].view : VkNrd::View(VkNrd::kGiSh0Out);
-    const VkImageView gi_dir_view = gi_images != NULL ? gi_images[1].view : VkNrd::View(VkNrd::kGiSh1Out);
-    const VkImageView gi_sh0_view = gi_images != NULL ? gi_images[2].view : VkNrd::View(VkNrd::kGiSh0In);
-    const VkImageView gi_sh1_view = gi_images != NULL ? gi_images[3].view : VkNrd::View(VkNrd::kGiSh1In);
     VkMemoryBarrier2 traced = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     traced.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     traced.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
@@ -2199,8 +2208,7 @@ bool DenoiseNrd(VkCommandBuffer cmd, const LightingPass& p, const vkgl::ImageInf
     pp.info[0] = p.width;
     pp.info[1] = p.height;
     pp.info[2] = signals;
-    pp.info[3] = VkNrd::FrameIndex() & 1u;
-    const VkImageView prepare_views[13] = {images[0].view,
+    const VkImageView prepare_views[9] = {images[0].view,
                                            images[5].view,
                                            VkNrd::View(VkNrd::kViewZ),
                                            VkNrd::View(VkNrd::kNormalRoughness),
@@ -2208,12 +2216,8 @@ bool DenoiseNrd(VkCommandBuffer cmd, const LightingPass& p, const vkgl::ImageInf
                                            VkNrd::View(VkNrd::kSunPenumbra),
                                            VkNrd::View(VkNrd::kLightPenumbra),
                                            VkNrd::View(VkNrd::kLightTranslucency),
-                                           VkNrd::View(VkNrd::kAoHitDist),
-                                           gi_raw_view,
-                                           gi_dir_view,
-                                           VkNrd::View(VkNrd::kGiSh0In),
-                                           VkNrd::View(VkNrd::kGiSh1In)};
-    DispatchImages(cmd, s.nrd[0], s.nrd_layout[0], prepare_views, 13, &pp, sizeof(pp), p.width, p.height);
+                                           VkNrd::View(VkNrd::kAoHitDist)};
+    DispatchImages(cmd, s.nrd[0], s.nrd_layout[0], prepare_views, 9, &pp, sizeof(pp), p.width, p.height);
 
     f.width = p.width;
     f.height = p.height;
@@ -2228,28 +2232,32 @@ bool DenoiseNrd(VkCommandBuffer cmd, const LightingPass& p, const vkgl::ImageInf
     f.sun_shadow = (signals & 1u) != 0;
     f.ao = (signals & 2u) != 0;
     f.lights = (signals & 4u) != 0;
-    f.gi = (signals & 8u) != 0;
+    f.gi = gi_images != NULL;
+    if (f.gi) {
+        f.gi_sh0_in = gi_images[0].view;
+        f.gi_sh1_in = gi_images[1].view;
+        f.gi_sh0_out = gi_images[2].view;
+        f.gi_sh1_out = gi_images[3].view;
+    }
     f.reset = p.nrd_reset;
     // (NRD's passes end with a barrier: its outputs ready to read)
-    const bool denoised = signals != 0 && VkNrd::Denoise(cmd, f, ring);
+    s.nrd_dispatches = signals != 0 ? VkNrd::Denoise(cmd, f, ring) : 0;
 
-    const uint32_t composite_info[4] = {p.width, p.height, denoised ? signals : 0u, 0u};
-    const VkImageView composite_views[9] = {images[0].view,
+    const uint32_t composite_info[4] = {p.width, p.height, s.nrd_dispatches ? signals : 0u, 0u};
+    const VkImageView composite_views[5] = {images[0].view,
                                             VkNrd::View(VkNrd::kSunShadow),
                                             VkNrd::View(VkNrd::kLightShadow),
                                             VkNrd::View(VkNrd::kAoOut),
-                                            images[4].view,
-                                            VkNrd::View(VkNrd::kGiSh0Out),
-                                            VkNrd::View(VkNrd::kGiSh1Out),
-                                            gi_sh0_view,
-                                            gi_sh1_view};
-    DispatchImages(cmd, s.nrd[1], s.nrd_layout[1], composite_views, 9, composite_info, sizeof(composite_info), p.width, p.height);
+                                            images[4].view};
+    DispatchImages(cmd, s.nrd[1], s.nrd_layout[1], composite_views, 5, composite_info, sizeof(composite_info), p.width, p.height);
     return true;
 }
 
 }  // namespace
 
 bool TraceLighting(const LightingPass& p) {
+    s.nrd_dispatches = 0;
+    s.gi_drawn = false;
     if (!Available() || p.depth == 0 || p.raw == 0 || p.raw_prev == 0 || p.history_prev == 0 || p.history == 0 || p.mask == 0 || p.extra == 0 ||
         p.width == 0 || p.height == 0) {
         return false;
@@ -2278,15 +2286,17 @@ bool TraceLighting(const LightingPass& p) {
         return false;
     }
     // (GI's raw result and directions, what the colour pass reads of it, where it's asked for)
-    vkgl::ImageInfo gi_images[4];
-    const GLuint gi_names[4] = {p.gi_raw, p.gi_dir, p.gi_sh0, p.gi_sh1};
+    const bool builtin_gi = !p.nrd && !p.gi_rr;
+    const int gi_image_count = builtin_gi ? 6 : 4;
+    vkgl::ImageInfo gi_images[6];
+    const GLuint gi_names[] = {p.gi_raw, p.gi_dir, p.gi_sh0, p.gi_sh1, p.gi_sh0_prev, p.gi_sh1_prev};
     bool gi_begun = false;
     if (p.gi && p.gi_raw != 0 && p.gi_dir != 0 && p.gi_sh0 != 0 && p.gi_sh1 != 0) {
         int gi_count = 0;
-        while (gi_count < 4 && vkgl::BeginExternal(gi_names[gi_count], VK_IMAGE_LAYOUT_GENERAL, &gi_images[gi_count])) {
+        while (gi_count < gi_image_count && vkgl::BeginExternal(gi_names[gi_count], VK_IMAGE_LAYOUT_GENERAL, &gi_images[gi_count])) {
             ++gi_count;
         }
-        gi_begun = gi_count == 4;
+        gi_begun = gi_count == gi_image_count;
         if (!gi_begun) {
             for (int i = 0; i < gi_count; ++i) {
                 vkgl::EndExternal(gi_names[i]);
@@ -2436,18 +2446,31 @@ bool TraceLighting(const LightingPass& p) {
             PROFILER_GPU_ZONE(g_profiler_ctx, "RT shadows");
             vkCmdDispatch(cmd, (p.width + 7) / 8, (p.height + 7) / 8, 1);
         }
-        // GI, where it's asked for (NRD denoises it: no NRD, no GI)
+        // Trace checkerboard samples for NRD, or full-resolution spherical harmonics otherwise.
         PROFILER_GPU_ZONE(g_profiler_ctx, "RT GI");
-        gi_traced = gi_begun && (p.gi_rr || (p.nrd && p.denoise && VkNrd::Available())) &&
-                    TraceGi(cmd, p, t, depth, gi_images[0], gi_images[1], light_count);
+        gi_traced = gi_begun && TraceGi(cmd, p, t, depth, gi_images[0], gi_images[1], light_count);
     }
     // NRD's denoisers where they're there (and asked for), else ours
     PROFILER_GPU_ZONE(g_profiler_ctx, "RT denoise");
-    s.gi_drawn = false;
     if (ok && DenoiseNrd(cmd, p, images, ring, gi_traced && !p.gi_rr ? gi_images : NULL)) {
-        s.gi_drawn = gi_traced;
+        s.gi_drawn = gi_traced && (p.gi_rr || s.nrd_dispatches > 0);
     } else if (ok) {
-        s.gi_drawn = gi_traced && p.gi_rr;  // (Ray Reconstruction's: raw)
+        s.gi_drawn = gi_traced && p.gi_rr;
+        if (gi_traced && builtin_gi && s.gi_denoise != VK_NULL_HANDLE) {
+            ComputeBarrier(cmd);
+            DenoisePush filter = {};
+            memcpy(filter.reprojection, p.reprojection, sizeof(filter.reprojection));
+            filter.info[0] = p.width;
+            filter.info[1] = p.height;
+            filter.info[3] = (p.gi_history ? 1u : 0u) | (p.denoise ? 2u : 0u);
+            // The radiance and its direction use identical depth weights.
+            for (int i = 0; i < 2; ++i) {
+                const VkImageView views[] = {images[0].view, images[1].view, gi_images[i].view,
+                                             gi_images[4 + i].view, gi_images[2 + i].view};
+                DispatchImages(cmd, s.gi_denoise, s.denoise_layout, views, 5, &filter, sizeof(filter), p.width, p.height);
+            }
+            s.gi_drawn = true;
+        }
         // The denoiser: over time into the history, then across the penumbra into the mask
         DenoisePush dp = {};
         memcpy(dp.reprojection, p.reprojection, sizeof(dp.reprojection));
@@ -2493,7 +2516,7 @@ bool TraceLighting(const LightingPass& p) {
         vkgl::EndExternal(names[i]);
     }
     if (gi_begun) {
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < gi_image_count; ++i) {
             vkgl::EndExternal(gi_names[i]);
         }
     }

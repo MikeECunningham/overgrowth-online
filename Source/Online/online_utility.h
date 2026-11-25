@@ -49,9 +49,11 @@ class OnlineUtility {
         std::string id;
         std::string name;
         bool active;
+        std::string network_version;
     };
     struct ModDifference {
         std::string theirs;   // all of the list
+        std::string change_version;
         std::string install;  // on the list, not on this machine
         std::string enable;   // on the list, off here
         std::string disable;  // on here, not on the list

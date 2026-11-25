@@ -103,6 +103,18 @@ $stock_mods = @(
     @("com-wolfire-timbles-therium", "rc"), @("com-wolfire-versus", "0.0.1"), @("crxhvrd-overhaul", $version))
 $rows = @($stock_mods | ForEach-Object { "    <ModInstance id=""$($_[0])"" activated=""true"" modsource=""local"" version=""$($_[1])"" />" })
 
+# Preserve the player's choices for optional packaged and other local mods.
+# Newly shipped packages get their manifest defaults on their first discovery.
+$modconfig = Join-Path $wd "modconfig.xml"
+if (Test-Path $modconfig) {
+    $stock_ids = @($stock_mods | ForEach-Object { $_[0] })
+    foreach ($line in Get-Content $modconfig) {
+        if ($line -match '<ModInstance ' -and $line -match 'modsource="local"' -and $line -match 'id="([^"]+)"' -and $Matches[1] -notin $stock_ids) {
+            $rows += $line
+        }
+    }
+}
+
 # Steam Workshop mods: a mod the config doesn't list is switched on when the game
 # first sees it, so without these rows every subscription the player has would be
 # active online, where mods must match between players (most Workshop mods aren't
@@ -135,7 +147,6 @@ if (Test-Path $workshop_dir) {
 }
 $rows += @($workshop.Keys | Sort-Object | ForEach-Object { $workshop[$_] })
 $on = @($workshop.Values | Where-Object { $_ -match 'activated="true"' }).Count
-$modconfig = Join-Path $wd "modconfig.xml"
 [IO.File]::WriteAllText($modconfig, "<?xml version=""2.0"" ?>`n<ActiveMods>`n$($rows -join "`n")`n</ActiveMods>`n", (New-Object Text.UTF8Encoding $false))
 Write-Host "  Overgrowth Online $version installed, the Overhaul mod enabled ($wd)"
 if ($workshop.Count -gt 0) {

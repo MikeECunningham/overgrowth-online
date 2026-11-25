@@ -1,6 +1,6 @@
 # Difficulty modes and progression
 
-Open **Difficulty** in the lobby and choose **Traditional** or **Scaling**. The same controls are under
+With the bundled **Difficulty Scaling** mod enabled, open **Difficulty** in the lobby and choose **Traditional** or **Scaling**. The same controls are under
 **Settings → Game → Difficulty** during play. Traditional uses the original
 Casual, Hardcore and Expert presets. Scaling keeps the selected preset as its
 base and enables optional party, physical equipment, AI and progression factors.
@@ -79,6 +79,8 @@ All participants need the matching prerelease and protocol. The new progression
 and equipment replication are incompatible with older clients.
 
 ## Player progression
+
+The bundled **Friendly Progression** mod supplies the XP rules, shop and loadouts. It starts enabled in **Mods**. The campaign and Arena lobby each remember their own **Progression** toggle.
 
 Enable **Progression** under **Mode settings** for Campaign or Arena. It works
 with either Traditional or Scaling difficulty. XP rewards use enemy species,

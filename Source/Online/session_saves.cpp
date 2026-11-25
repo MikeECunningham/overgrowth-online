@@ -1,6 +1,7 @@
 // Host-local session saves. The manifest is replaced only after the thumbnail
 // and the complete replacement manifest have been written successfully.
 #include <Online/session_saves.h>
+#include <Online/session_mods.h>
 #include <Online/online.h>
 #include <Online/friendly_progression.h>
 #include <Online/Message/set_object_enabled_message.h>
@@ -72,10 +73,13 @@ bool Read(int slot, Json::Value& record) {
     const bool ok = !ferror(file);
     fclose(file);
     if (!ok || data.size() > kMaxBytes || !Json::Reader().parse(data, record, false) ||
-        !record.isObject() || record.get("version", 0) != 1 || !record["map"].isString() ||
+        !record.isObject() || (record["version"] != 1 && record["version"] != 2) || !record["map"].isString() ||
         !ValidMap(record["map"].asString()) || !record["mode"].isString() || !record["campaign"].isString() ||
         !record["lobby"].isBool() || !record["date"].isString() || !record["image_id"].isString() ||
-        !record["rules"].isObject() || !record["world"].isObject() || !record["progression"].isObject()) return false;
+        !record["rules"].isObject() || !record["world"].isObject()) return false;
+    if (record["version"] == 1) {
+        if (!record["progression"].isObject() || !record["rules"]["challenge"].isObject()) return false;
+    } else if (!record["session_mods"].isObject()) return false;
     if (record["mode"].asString().size() > 256 || record["campaign"].asString().size() > 256 ||
         (record.isMember("local_only") && !record["local_only"].isBool())) return false;
     const std::string id = record["image_id"].asString();
@@ -316,6 +320,7 @@ bool Save(int slot) {
     status = "Saving slot " + std::to_string(slot) + "…";
     return true;
 }
+bool Loading() { return stage != Stage::Idle; }
 bool ResumingGameplay() {
     return stage == Stage::LoadWorld && pending["world"]["cinematic"] == false;
 }
@@ -355,13 +360,12 @@ bool ResumeLobby(const std::string& mode, const std::string& campaign, const std
     if (stage != Stage::WaitingForStart) return false;
     if (mode != pending["mode"].asString() || campaign != pending["campaign"].asString() || MapPath(map) != pending["map"].asString() || build != pending["rules"]["build"].asBool()) {
         LeaveLobby();
+        SessionMods::Clear();
         FriendlyProgression::NewSession();
         return false;
     }
     // Keep roster edits made in the restored lobby, including removal of a unit.
-    const auto edited = FriendlyProgression::Snapshot();
-    pending["progression"]["players"] = edited["players"];
-    pending["progression"]["teams"] = edited["teams"];
+    SessionMods::KeepLobbyEdits(pending["session_mods"]);
     stage = Stage::LoadWorld;
     arena_restore = pending["world"];
     return true;
@@ -370,7 +374,13 @@ bool Load(int slot) {
     auto* net = Online::Instance();
     if (net->IsClient() || net->LobbyMigrationBusy()) return false;
     Json::Value r;
-    if (!Read(slot, r) || !FindFilePath(r["map"].asString(), kAnyPath, false).isValid()) {
+    if (!Read(slot, r)) {
+        status = "The save is unavailable.";
+        return false;
+    }
+    if (r["version"] == 1) SessionMods::MigrateLegacySave(r);
+    if (!SessionMods::Validate(r["session_mods"], SessionMods::Scope::Save, status)) return false;
+    if (!FindFilePath(r["map"].asString(), kAnyPath, false).isValid()) {
         status = "The save or its map is unavailable.";
         return false;
     }
@@ -379,9 +389,7 @@ bool Load(int slot) {
         // Older cards opened a shop after every round. Resume that awarded
         // round at its normal boundary, with shopping reserved for match end.
         r["world"]["arena"]["phase"] = 3;
-        r["progression"]["open"] = false;
-        r["progression"]["ms_left"] = -1.0;
-        r["progression"]["ready"] = Json::Value(Json::arrayValue);
+        SessionMods::CloseLegacyRoundShop(r["session_mods"]);
     }
     std::string campaign_id = r["campaign"].asString();
     if (!campaign_id.empty() && ModLoading::Instance().GetCampaign(campaign_id).id.str().empty()) {
@@ -396,8 +404,8 @@ bool Load(int slot) {
         if (!valid) { status = "The saved campaign transition is unavailable."; return false; }
     }
     const auto& rules = r["rules"];
-    if (!ValidWorld(r["world"]) || !net->ValidateGameRules(rules) || !FriendlyProgression::Restore(r["progression"], true)) {
-        status = "The save contains invalid game settings or progression.";
+    if (!ValidWorld(r["world"]) || !net->ValidateGameRules(rules)) {
+        status = "The save contains invalid game settings or world state.";
         return false;
     }
     if (r["lobby"].asBool() && !net->ValidateLobbySlots(r["slots"])) {
@@ -433,6 +441,7 @@ bool Load(int slot) {
         stage = Stage::LoadWorld;
         arena_restore = pending["world"];
         net->RestoreGameRules(pending["rules"]);
+        SessionMods::Restore(pending["session_mods"], SessionMods::Scope::Save);
         const auto campaign = pending["campaign"].asString();
         if (!campaign.empty()) Engine::Instance()->ScriptableUICallback("set_campaign " + campaign);
         auto lookup = campaign;
@@ -458,7 +467,7 @@ void Update() {
         }
         net->RestoreGameRules(pending["rules"]);
         net->SetLobbySelection(pending["mode"].asString(), pending["campaign"].asString(), pending["map"].asString(), pending["rules"]["build"].asBool(), net->LobbyHostPlayerID());
-        FriendlyProgression::Restore(pending["progression"]);
+        SessionMods::Restore(pending["session_mods"], SessionMods::Scope::Save);
         stage = Stage::WaitingForStart;
         net->BroadcastLobby();
     }
@@ -469,7 +478,7 @@ void Update() {
             // Level entry resets pending XP and shopping time. Restore these once,
             // after deployment, including when Arena is waiting for shoppers.
             if (!pending["lobby"].asBool()) net->RestoreGameRules(pending["rules"]);
-            FriendlyProgression::Restore(pending["progression"]);
+            SessionMods::RestoreGameplay(pending["session_mods"]);
             ledger_applied = true;
         }
         if (arena_restore.get("round", 0).asInt() > 0 && arena_round == 0) return;
@@ -536,7 +545,7 @@ void CaptureFrame() {
             std::copy_n(pixels.data() + from, 3, rgb.data() + (row * kWidth + col) * 3);
         }
     Json::Value record;
-    record["version"] = 1;
+    record["version"] = 2;
     record["date"] = Now();
     record["map"] = CurrentMap();
     auto* campaign = engine->GetCurrentCampaign();
@@ -557,7 +566,7 @@ void CaptureFrame() {
     }
     record["rules"] = net->SaveGameRules();
     if (record["lobby"].asBool()) record["slots"] = net->SaveLobbySlots();
-    record["progression"] = FriendlyProgression::Snapshot();
+    record["session_mods"] = SessionMods::Snapshot(SessionMods::Scope::Save);
     record["world"] = CaptureWorld(graph);
     for (int slot : requested) {
         const bool ok = Commit(slot, record, rgb);

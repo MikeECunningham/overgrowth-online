@@ -38,7 +38,7 @@ extern const char* phoenix_build_timestamp;
 
 namespace {
 // This number describes the wire format, independently of release/build tags.
-constexpr int kOnlineProtocol = 16;
+constexpr int kOnlineProtocol = 17;
 
 std::vector<std::string> Split(const std::string& text, char separator) {
     std::vector<std::string> result;

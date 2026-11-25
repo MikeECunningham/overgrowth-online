@@ -121,6 +121,8 @@ struct LightingPass {
     // pixel traced, not denoised, written as SH into gi_raw and gi_dir (the colour pass reads
     // those)
     bool gi_rr = false;
+    GLuint gi_sh0_prev = 0, gi_sh1_prev = 0;  // Previous frame of the built-in GI filter.
+    bool gi_history = false;
     uint32_t gi_debug = 0;
     float sun_color[3] = {};
     bool gi_cache_reset = false;
@@ -150,10 +152,12 @@ struct LightingPass {
     float view_proj[16] = {}, prev_view_proj[16] = {};
     float nrd_view[16] = {}, nrd_proj[16] = {}, nrd_view_prev[16] = {}, nrd_proj_prev[16] = {};
 };
-// NRD is there to denoise with (built with it, NRD.dll beside the game, the device able)
+// NRD and its native runtime are available on this Vulkan device.
 bool NrdAvailable();
+uint32_t LastNrdDispatchCount();
 // This scene's GI was traced and denoised into LightingPass::gi_sh0 and gi_sh1
 bool GiTraced();
+bool GiSupported();
 
 // Draws can trace too (the colour pass's reflections, rt_reflect.glsl): the device reads a
 // hit's triangle back (position fetch) and the passes are there

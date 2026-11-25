@@ -449,6 +449,7 @@ def mode_challenge(ctx):
     expected(0.12, "campaign goal and level completion each apply once")
     metrics["campaign"] = pressure()
     end()
+    before_modes = host.bridge.status()["online"]["mode_settings"]
     before_transfer = host.bridge.status()["online"]["challenge"]
     assert _probe(host, f'LobbyPromoteHost({guest_human})') == "true"
     wait(lambda: all(not i.bridge.status()["online"]["migration_busy"] and
@@ -456,8 +457,9 @@ def mode_challenge(ctx):
          "host migration restores the authoritative performance state", 70)
     assert guest.bridge.status()["online"]["hosting"] and host.bridge.status()["online"]["client"]
     migrated = guest.bridge.status()["online"]["challenge"]
-    for key in ("version", "pressure", "seconds", "wipes", "wipe_serial", "wipe_latched", "encounters", "completions", "modes"):
+    for key in ("version", "pressure", "seconds", "wipes", "wipe_serial", "wipe_latched", "encounters", "completions"):
         assert migrated[key] == before_transfer[key], (key, before_transfer[key], migrated[key])
+    assert guest.bridge.status()["online"]["mode_settings"] == before_modes
     metrics["migrated_progression"] = migrated
 
     for inst in (host, guest):

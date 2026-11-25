@@ -34,6 +34,7 @@ uniform vec3 cam_pos;
 // depth prepass and denoised (Raytrace): r the sun's visibility (-1: not traced), g the
 // depth it was traced from, b the ambient light left
 uniform sampler2D tex21;
+uniform vec2 rt_lighting_scale;
 #endif
 #if defined(RT_GI) && (defined(PARTICLE) || defined(GPU_PARTICLE_FIELD) || defined(SKY) || defined(DEPTH_ONLY))
     #undef RT_GI  // (Overgrowth Online RT: GI is the main path's draws' alone)
@@ -95,6 +96,13 @@ vec3 RtGiResolve(vec4 sh0, vec3 sh1, vec3 n) {
 #include "object_frag150.glsl"
 #include "object_shared150.glsl"
 #include "ambient_tet_mesh.glsl"
+
+#if defined(RT_LIGHTING)
+ivec2 RtLightingTexel() {
+    ivec2 size = textureSize(tex21, 0);
+    return clamp(ivec2(gl_FragCoord.xy * rt_lighting_scale), ivec2(0), size - 1);
+}
+#endif
 
 #if defined(PARTICLE)
     uniform sampler2D tex0; // Colormap
@@ -1754,7 +1762,7 @@ void main() {
                 // darkened every field)
                 float rt_grass_ao = 1.0;
                 #if defined(RT_LIGHTING)
-                    vec4 rt_grass = texelFetch(tex21, ivec2(gl_FragCoord.xy), 0);
+                    vec4 rt_grass = texelFetch(tex21, RtLightingTexel(), 0);
                     bool rt_grass_here = rt_grass.g > 0.0 && rt_grass.g <= gl_FragCoord.z * 1.001 &&
                                          gl_FragCoord.z - rt_grass.g <= 0.25 * gl_FragCoord.z;
                     if (rt_grass_here) {
@@ -2866,7 +2874,8 @@ void main() {
                     // (the closest depth within a hundredth): falling back there drew every
                     // silhouette in the shadow map's light and the probes' ambient, an outline
                     // of light round characters and ledges in the dark
-                    ivec2 rt_texel = ivec2(gl_FragCoord.xy);
+                    ivec2 rt_center = RtLightingTexel();
+                    ivec2 rt_texel = rt_center;
                     vec4 rt_lighting = texelFetch(tex21, rt_texel, 0);
                     bool rt_here = abs(rt_lighting.g - gl_FragCoord.z) <= 0.001 * rt_lighting.g;
                     #if defined(WATERFALL)
@@ -2900,7 +2909,7 @@ void main() {
                                     if (max(abs(dx), abs(dy)) != ring && !rt_whole) {
                                         continue;  // (the ring's edge: the inside was looked at)
                                     }
-                                    ivec2 q = clamp(ivec2(gl_FragCoord.xy) + ivec2(dx, dy), ivec2(0), rt_size - 1);
+                                    ivec2 q = clamp(rt_center + ivec2(dx, dy), ivec2(0), rt_size - 1);
                                     vec4 n = texelFetch(tex21, q, 0);
                                     float diff = abs(n.g - gl_FragCoord.z);
                                     if (n.g > 0.0 && diff <= rt_best) {  // (not the sky's: nothing traced there)

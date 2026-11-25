@@ -48,6 +48,8 @@ class Timer {
     uint64_t frame_count;
 
     void AddTimedSlowMotionLayer(float target_time_scale, float how_long, float delay = 0.0f);
+    bool HasTimedSlowMotion() const { return !timed_slow_motion_layers.empty(); }
+    void CancelTimedSlowMotion();
     void UpdateWallTime();
     void Update();
     void SetStepFrequency(int sims);

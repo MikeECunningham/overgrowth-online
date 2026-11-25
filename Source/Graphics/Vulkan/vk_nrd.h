@@ -4,12 +4,12 @@
 //    Description: NVIDIA's real-time denoisers (NRD) on the Vulkan renderer, for the
 //                 ray-traced lighting (VkRt::TraceLighting): SIGMA for the sun's shadow
 //                 and for the point lights' (their share of light as its translucency),
-//                 REBLUR for the ambient occlusion. NRD hands out its passes (SPIR-V,
+//                 REBLUR for ambient occlusion and diffuse GI. NRD hands out its passes (SPIR-V,
 //                 resources, constants); this records them, on images of its own at the
 //                 scene's size: the inputs rt_nrd.comp #PREPARE writes, the outputs
 //                 #COMPOSITE reads. Built with NRD only where its SDK was given
 //                 (CMake NRD_SDK: NVIDIA's RTX SDK licence, not in this repository), and
-//                 run only where NRD.dll is beside the game; elsewhere our own denoiser
+//                 run where its runtime library is beside the game.
 //        License: Apache-2.0, like the rest of the engine (see LICENSE)
 //-----------------------------------------------------------------------------
 #pragma once
@@ -20,7 +20,7 @@
 
 namespace VkNrd {
 
-// NRD can run here: built with it, NRD.dll there and the version built against, its
+// NRD can run here: built with it, runtime library present and compatible, its
 // passes made (why not is logged once)
 bool Available();
 
@@ -36,10 +36,6 @@ enum Image {
     kSunShadow,          // R8: SIGMA's (its square: the sun's visibility)
     kLightShadow,        // RGBA8: SIGMA's (y squared: the share of the lights' light)
     kAoOut,              // R8: REBLUR's (the AO)
-    kGiSh0In,            // RGBA16F: REBLUR_FrontEnd_PackSh's SH0 (GI: YCoCg radiance, normalized hit distance)
-    kGiSh1In,            // RGBA16F: ... its SH1 (the direction * Y)
-    kGiSh0Out,           // RGBA16F: REBLUR's SH0
-    kGiSh1Out,           // RGBA16F: REBLUR's SH1
     kImages
 };
 
@@ -53,11 +49,19 @@ struct Frame {
     bool sun_shadow = false, ao = false, lights = false, gi = false;  // the denoisers to run
     bool reset = false;         // the history starts over (a camera cut, NRD off last frame)
     float denoising_range = 100000.0f;
+    // REBLUR reads the ray tracer's packed SH and writes the colour pass's textures directly.
+    VkImageView gi_sh0_in = VK_NULL_HANDLE, gi_sh1_in = VK_NULL_HANDLE;
+    VkImageView gi_sh0_out = VK_NULL_HANDLE, gi_sh1_out = VK_NULL_HANDLE;
 };
 
 // The images at this size (made again on a change, the history then started over),
 // their layouts set in `cmd` the first time; false: NRD isn't available
 bool Prepare(VkCommandBuffer cmd, uint32_t width, uint32_t height);
+void ReleaseImages();
+// Measured VMA image allocations, including deferred frees until the GPU fence signals.
+uint64_t LiveImageBytes();
+// GPU image storage at this render size, including both SDK pools. Call after Available().
+uint64_t EstimatedImageBytes(uint32_t width, uint32_t height);
 VkImageView View(Image image);
 // The frame index the next Denoise hands NRD (GI's checkerboard: the cells traced, BLACK
 // mode, are where (x + y + it) is even)
@@ -66,6 +70,7 @@ uint32_t FrameIndex();
 // The denoisers' passes recorded into `cmd`, after PREPARE wrote the inputs (barriers
 // before, between and after: the outputs ready for compute reads). `ring` (0..3): which
 // part of the constants buffer, one the GPU is done with
-bool Denoise(VkCommandBuffer cmd, const Frame& frame, int ring);
+// Returns the number of NRD GPU dispatches recorded.
+uint32_t Denoise(VkCommandBuffer cmd, const Frame& frame, int ring);
 
 }  // namespace VkNrd

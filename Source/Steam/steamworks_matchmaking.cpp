@@ -171,7 +171,7 @@ static std::string FriendField(const char *text);  // (below)
 // this player and them (see OnlineUtility::CompareMods; fields of names joined by '|')
 static std::string ModFields(const char *list, const std::vector<OnlineUtility::LocalMod> &mine) {
     OnlineUtility::ModDifference difference = OnlineUtility::CompareMods(list, mine);
-    return difference.theirs + "\t" + difference.install + "\t" + difference.enable + "\t" + difference.disable;
+    return difference.theirs + "\t" + difference.install + "\t" + difference.enable + "\t" + difference.disable + "\t" + difference.change_version;
 }
 
 bool SteamworksMatchmaking::WantPublic() {

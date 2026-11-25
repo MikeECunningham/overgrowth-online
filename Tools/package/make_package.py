@@ -45,7 +45,7 @@ for f in ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]:
     shutil.copy2(f"{crt}/{f}", online)
 
 # Our Data overlay: scripts, shaders and the small files at the top
-for d in ["Scripts", "GLSL"]:
+for d in ["Scripts", "GLSL", "Mods/og-online-scaling", "Mods/og-online-progression"]:
     shutil.copytree(f"{ROOT}/Data/{d}", f"{online}/Data/{d}", ignore=shutil.ignore_patterns("*.bytecode"))
 for f in os.listdir(ROOT + "/Data"):
     if os.path.isfile(f"{ROOT}/Data/{f}"):

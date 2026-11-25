@@ -29,9 +29,9 @@ template<> template<> void xp_test::test<1>() {
 }
 template<> template<> void xp_test::test<2>() {
     using namespace FriendlyProgression;
-    ensure("one ordinary Arena victory affords a starting stat", Reward(0,false,.5,0,1,1,0) >= StatPrice(0));
-    ensure("spawn weapons and physical armor raise the bounty", Reward(0,false,.5,.5,1,1,0) > Reward(0,false,.5,0,1,1,0));
-    ensure("effective enemy scaling raises the reward", Reward(3,false,.5,.5,2,1,.25) > Reward(3,false,.5,.5,1,1,0));
+    ensure("one ordinary Arena victory affords a starting stat", Reward(16,.5,0,1,1,0) >= StatPrice(0,16,5,2));
+    ensure("spawn weapons and physical armor raise the bounty", Reward(16,.5,.5,1,1,0) > Reward(16,.5,0,1,1,0));
+    ensure("effective enemy scaling raises the reward", Reward(10,.5,.5,2,1,.25) > Reward(10,.5,.5,1,1,0));
     for (unsigned slot = 0; slot < 9; ++slot) {
         int tier = ArmorProtection::NextShopMaterial(slot, 0);
         ensure_equals(tier, int(slot < 3 ? ArmorProtection::Chitin : ArmorProtection::Wood));
@@ -46,8 +46,8 @@ template<> template<> void xp_test::test<2>() {
     ensure_equals(ArmorPrice(3, ArmorProtection::Chitin), 310);
     ensure_equals(ArmorPrice(3, ArmorProtection::Dog), 465);
     ensure_equals(ArmorPrice(3, ArmorProtection::Grey), 775);
-    ensure("recruit prices more than double for this team", RecruitPrice(2) > 2 * RecruitPrice(1));
-    ensure("stat marginal price accelerates", StatPrice(5)-StatPrice(4) > StatPrice(1)-StatPrice(0));
+    ensure("recruit prices more than double for this team", RecruitPrice(2,2400,2.25) > 2 * RecruitPrice(1,2400,2.25));
+    ensure("stat marginal price accelerates", StatPrice(5,16,5,2)-StatPrice(4,16,5,2) > StatPrice(1,16,5,2)-StatPrice(0,16,5,2));
 }
 template<> template<> void xp_test::test<3>() {
     Json::Value snapshot(Json::objectValue);

@@ -9,6 +9,12 @@ typedef test_group<challenge_scaling_data> challenge_group;
 challenge_group challenge_tests("ChallengeScaling");
 typedef challenge_group::object challenge_test;
 
+static ChallengeScaling::Settings ExampleRules() {
+    ChallengeScaling::Settings rules;
+    rules.five_minute_gain = .05; rules.completion_gain = .08;
+    rules.win_gain = .04; rules.wipe_gain = .05; rules.forced_win_gain = .08; rules.retry_relief = .025;
+    return rules;
+}
 static void PressureNear(const ChallengeScaling::State& state, double expected) {
     ensure("expected general progression pressure", std::fabs(state.Data().pressure - expected) < 1e-9);
 }
@@ -30,7 +36,7 @@ template<> template<> void challenge_test::test<1>() {
     ensure_equals(factors.ai, 0.0f);
 }
 template<> template<> void challenge_test::test<2>() {
-    ChallengeScaling::Settings settings;
+    auto settings = ExampleRules();
     settings.time_rate = settings.round_rate = ChallengeScaling::Standard;
     settings.performance_mode = ChallengeScaling::OnWin;
     ChallengeScaling::State state;
@@ -45,7 +51,7 @@ template<> template<> void challenge_test::test<2>() {
     PressureNear(state, 0.17);
 }
 template<> template<> void challenge_test::test<3>() {
-    ChallengeScaling::Settings settings;
+    auto settings = ExampleRules();
     settings.performance_mode = ChallengeScaling::OnLoss;
     ChallengeScaling::State state;
     ensure(state.Wipe("wipe:one", "fight", settings)); PressureNear(state, 0.05);
@@ -59,7 +65,7 @@ template<> template<> void challenge_test::test<3>() {
     PressureNear(state, ChallengeScaling::kPressureCap);
 }
 template<> template<> void challenge_test::test<4>() {
-    ChallengeScaling::Settings settings;
+    auto settings = ExampleRules();
     settings.performance_mode = ChallengeScaling::Forced50;
     ChallengeScaling::State state;
     state.Wipe("attempt:1", "same-fight", settings);
@@ -79,7 +85,7 @@ template<> template<> void challenge_test::test<4>() {
     Near(state.Data().encounters.at("same-fight").relief, 0);
 }
 template<> template<> void challenge_test::test<5>() {
-    ChallengeScaling::Settings settings;
+    auto settings = ExampleRules();
     settings.performance_mode = ChallengeScaling::Forced50;
     settings.round_rate = ChallengeScaling::Standard;
     ChallengeScaling::State state;
@@ -96,7 +102,7 @@ template<> template<> void challenge_test::test<5>() {
     Near(state.Data().encounters.at("fight").relief, 0);
 }
 template<> template<> void challenge_test::test<6>() {
-    ChallengeScaling::Settings settings;
+    auto settings = ExampleRules();
     settings.performance_mode = ChallengeScaling::Forced50;
     settings.round_rate = ChallengeScaling::Standard;
     ChallengeScaling::State original;
@@ -104,14 +110,14 @@ template<> template<> void challenge_test::test<6>() {
     original.Wipe("attempt:1", "encounter", settings);
     original.Wipe("attempt:2", "encounter", settings);
     ChallengeScaling::State restored;
-    ensure(restored.Restore(original.Capture()));
+    ensure(restored.Restore(original.Capture(), settings));
     Near(ChallengeScaling::EffectivePressure(restored.Data(), settings, "encounter"), 0.03);
     ensure(!restored.Wipe("attempt:2", "encounter", settings));
     ensure(!restored.Completion("round", settings));
     settings.performance_rate = ChallengeScaling::Brisk;
     ensure(restored.Win("encounter", settings)); PressureNear(restored, 0.20);
     const auto credited = restored.Capture();
-    ensure(original.Restore(credited));
+    ensure(original.Restore(credited, settings));
     settings.performance_rate = ChallengeScaling::Gentle;
     ensure(!original.Win("encounter", settings)); PressureNear(original, 0.20);
 }
@@ -149,25 +155,25 @@ template<> template<> void challenge_test::test<8>() {
     ensure_equals(ChallengeScaling::Evaluate(std::numeric_limits<double>::quiet_NaN()).vitality, 1.0f);
 }
 template<> template<> void challenge_test::test<9>() {
-    ChallengeScaling::Settings settings;
+    auto settings = ExampleRules();
     settings.time_rate = ChallengeScaling::Brisk;
     ChallengeScaling::State state;
     state.Advance(1e8, settings); PressureNear(state, ChallengeScaling::kPressureCap);
     ensure(!state.Advance(-1, settings));
     ensure(!state.Advance(std::numeric_limits<double>::quiet_NaN(), settings));
     auto bad = state.Capture(); bad.pressure = std::numeric_limits<double>::infinity();
-    ensure(!state.Restore(bad));
+    ensure(!state.Restore(bad, settings));
     bad = state.Capture(); bad.encounters["unearned"].win_award = 0.04;
-    ensure(!state.Restore(bad));
+    ensure(!state.Restore(bad, settings));
     bad = state.Capture(); bad.encounters["unearned"].relief = 0.1;
-    ensure(!state.Restore(bad));
+    ensure(!state.Restore(bad, settings));
     bad = state.Capture(); bad.wipes.insert("wipe"); bad.encounters["fight"].wipes = 1; bad.encounters["fight"].relief = 0.25;
-    ensure(!state.Restore(bad));
+    ensure(!state.Restore(bad, settings));
     state.Clear(); PressureNear(state, 0);
     ensure(state.Data().encounters.empty());
 }
 template<> template<> void challenge_test::test<10>() {
-    ChallengeScaling::Settings settings;
+    auto settings = ExampleRules();
     ChallengeScaling::State state;
     state.Win("off-win", settings);
     state.Wipe("off-loss", "fight", settings);
@@ -184,7 +190,7 @@ template<> template<> void challenge_test::test<10>() {
     ensure_equals(state.Data().wipes.size(), size_t(2));
 }
 template<> template<> void challenge_test::test<11>() {
-    ChallengeScaling::Settings settings;
+    auto settings = ExampleRules();
     settings.time_rate = settings.round_rate = settings.performance_rate = ChallengeScaling::Nightmare;
     settings.performance_mode = ChallengeScaling::Forced50;
     ChallengeScaling::State state;
@@ -194,8 +200,8 @@ template<> template<> void challenge_test::test<11>() {
     Near(ChallengeScaling::EffectivePressure(state.Data(),settings,"fight"),.21);
     state.Win("fight",settings); PressureNear(state,.42);
     ChallengeScaling::State migrated;
-    ensure("Nightmare awards survive migration validation",migrated.Restore(state.Capture()));
+    ensure("Nightmare awards survive migration validation",migrated.Restore(state.Capture(), settings));
     auto invalid = state.Capture(); invalid.encounters["fight"].win_award = .1601;
-    ensure("awards above the strongest supported rate are rejected",!migrated.Restore(invalid));
+    ensure("awards above the strongest supported rate are rejected",!migrated.Restore(invalid, settings));
 }
 }

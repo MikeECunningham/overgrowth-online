@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from .campaign_scaling_suite import RENDER_KEYS
-from .newcampaign_local_suite import CAMPAIGN, FIRST, _code, _probe, _ready, _skip
+from .newcampaign_local_suite import CAMPAIGN, FIRST, _code, _join_pad, _probe, _ready, _skip
 from .scenarios import script_errors
 
 
@@ -130,7 +130,7 @@ def session_saves(ctx):
     assert _probe(cold, 'LobbyGetModeSetting("challenge_round")') == "4"
     assert _probe(cold, "LobbyGetAllowAllPause()") == "true"
     owner = next(p["id"] for p in players(cold) if p["host"])
-    saved_player = next(p for p in record["progression"]["players"] if p["id"] == owner)
+    saved_player = next(p for p in record["session_mods"]["og-online-progression"]["runtime"]["players"] if p["id"] == owner)
     view = cold.bridge.call("progression", actor=owner)["view"]
     assert view["held"] == saved_player["w"]["held"] and view["held"] > 0, (view, saved_player)
     assert view["stats"]["health_rank"] == 1 and saved_player["health"] == 1
@@ -155,7 +155,7 @@ def session_saves(ctx):
     # and spend through the normal campaign and shop paths.
     large_held = 2**32 + 15
     large_card = json.loads(source(cold, 1).read_text())
-    next(p for p in large_card["progression"]["players"] if p["id"] == owner)["w"]["held"] = large_held
+    next(p for p in large_card["session_mods"]["og-online-progression"]["runtime"]["players"] if p["id"] == owner)["w"]["held"] = large_held
     source(cold, 2).write_text(json.dumps(large_card))
     _code(cold, "SessionLoad(2);")
     wait(cold, lambda: cold.bridge.status()["online"]["lobby_waiting"], "high-balance card opens lobby")
@@ -210,13 +210,15 @@ def session_saves_solo(ctx):
     def card(inst, slot):
         return Path(inst.writedir, "Data", "SessionSaves", f"slot{slot}.json")
 
-    solo = ctx.instance("save_cards_solo", keys={**RENDER_KEYS, "difficulty_scaling": "false"})
+    fixture = Path(__file__).resolve().parents[2] / "test/mods/session-rules"
+    solo = ctx.instance("save_cards_solo", mods=[str(fixture)], keys={**RENDER_KEYS, "difficulty_scaling": "false"})
     solo.bridge.call("load_level", path="set_campaign " + CAMPAIGN)
     solo.bridge.call("load_level", path="load_campaign_level river_village_intro")
     _ready(solo, FIRST)
     _skip(solo)
     assert not solo.bridge.status()["online"]["active"]
     solo.bridge.wait(lambda: card(solo, 0).exists(), 15, what="offline autosave")
+    assert _probe(solo, r'SessionSetModData("session-rules","{\"stage\":2}")') == "true"
     key(solo, "Escape")
     solo.bridge.wait(lambda: bool(solo.bridge.status()["open_menu_players"]), 10, what="offline pause")
     choose(solo, "open_save_cards")
@@ -245,7 +247,8 @@ def session_saves_solo(ctx):
     _code(solo, 'SetConfigValueBool("test_bad_save_accepted", SessionLoad(3));', "player_menu")
     assert _probe(solo, 'GetConfigValueBool("test_bad_save_accepted")') == "false"
     assert card(solo, 2).exists() and solo.bridge.status()["level_loaded"]
-    # Change the current unit, then load the manual card through the pause menu.
+    # Change the current unit and mod state, then load the manual card through the pause menu.
+    assert _probe(solo, 'SessionSetModData("session-rules","{}")') == "true"
     actor = solo.bridge.me()["id"]
     _code(solo, f'ReadCharacterID({actor}).SetFloatVar("permanent_health",0.25f);')
     choose(solo, "save_back")
@@ -269,6 +272,14 @@ def session_saves_solo(ctx):
 
     solo.bridge.wait(health_restored, 20, what="offline unit restored")
     assert not solo.bridge.status()["online"]["active"]
+    assert json.loads(_probe(solo, 'SessionGetModData("session-rules")')) == {"stage": 2}
+    _join_pad(solo, 0, 2)
+    assert solo.bridge.status()["online"]["hosting"]
+    assert json.loads(_probe(solo, 'SessionGetModData("session-rules")')) == {"stage": 2}
+    solo.bridge.call("load_level", path="back_to_main_menu")
+    solo.bridge.wait(lambda: not solo.bridge.status()["level_loaded"], 25, what="leave the run")
+    from .mode_settings_suite import _probe as menu_probe
+    assert menu_probe(solo, 'SessionGetModData("session-rules")') == "{}"
     assert not script_errors(solo), script_errors(solo)
     return {
         "passed": True,

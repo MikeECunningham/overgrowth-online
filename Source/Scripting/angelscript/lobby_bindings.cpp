@@ -4,10 +4,12 @@
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
 #include <Online/online.h>
 #include <Online/session_saves.h>
+#include <Online/session_mods.h>
 #include <Online/online_utility.h>
 #include <Main/engine.h>
 #include <GUI/player_menu_context.h>
 #include <Internal/config.h>
+#include <Internal/modloading.h>
 #include <UserInput/input.h>
 #include <JSON/json.h>
 #include <SDL.h>
@@ -39,6 +41,34 @@ struct LobbyPlayer {
 void ConstructPlayer(void* memory) { new (memory) LobbyPlayer(); }
 void CopyPlayer(const LobbyPlayer& source, void* memory) { new (memory) LobbyPlayer(source); }
 void DestroyPlayer(void* memory) { static_cast<LobbyPlayer*>(memory)->~LobbyPlayer(); }
+
+using LobbyOption = ModInstance::LobbySetting;
+void ConstructOption(void* memory) { new (memory) LobbyOption(); }
+void CopyOption(const LobbyOption& option, void* memory) { new (memory) LobbyOption(option); }
+void DestroyOption(void* memory) { static_cast<LobbyOption*>(memory)->~LobbyOption(); }
+
+CScriptArray* LobbyOptions() {
+    auto* engine = asGetActiveContext()->GetEngine();
+    auto* options = CScriptArray::Create(engine->GetTypeInfoByDecl("array<LobbyOption>"), asUINT(0));
+    const auto* online = Online::Instance();
+    for (const auto* mod : ModLoading::Instance().GetMods()) {
+        if (!mod->IsActive()) continue;
+        for (const auto& option : mod->session.lobby_settings) {
+            if (!option.placement.empty() || !online->ModeSettingAvailable(option.modes)) continue;
+            if (!option.depends_on.empty() && !online->ModeSetting(option.depends_on)) continue;
+            // InsertLast copies the value. Scripts only see a copy of the manifest.
+            options->InsertLast(const_cast<LobbyOption*>(&option));
+        }
+    }
+    return options;
+}
+CScriptArray* OptionChoices(const LobbyOption& option) {
+    auto* engine = asGetActiveContext()->GetEngine();
+    auto* choices = CScriptArray::Create(engine->GetTypeInfoByDecl("array<string>"), asUINT(option.choices.size()));
+    for (asUINT i = 0; i < choices->GetSize(); ++i)
+        *static_cast<std::string*>(choices->At(i)) = option.choices[i];
+    return choices;
+}
 
 unsigned MenuLocalPlayer();
 unsigned MenuPlayerID() { return Online::Instance()->LobbyPlayerIDForLocalIndex(MenuLocalPlayer()); }
@@ -357,7 +387,7 @@ void UpdateLocalLobbyInput() {
     static bool had_session = false;
     if (!engine->IsLevelLoaded()) scaling_adoption_blocked = false;
     else if ((had_session && !online->IsActive()) || online->IsAwaitingShutdown()) scaling_adoption_blocked = true;
-    if (!scaling_adoption_blocked && online->CanAdoptLocalSession() && engine->IsLevelLoaded() && config["difficulty_scaling"].toBool()) {
+    if (!scaling_adoption_blocked && online->CanAdoptLocalSession() && engine->IsLevelLoaded() && online->DifficultyScalingEnabled()) {
         online->EnsureLocalSession();  // reuse the private simulation for solo scaling; no listen socket
     }
     // Explicit Leave must finish its transition out of this world before the
@@ -469,6 +499,16 @@ void UpdateLocalLobbyInput() {
 }
 
 void AttachLobby(ASContext* context) {
+    context->RegisterObjectType("LobbyOption", sizeof(LobbyOption), asOBJ_VALUE | asGetTypeTraits<LobbyOption>());
+    context->RegisterObjectBehaviour("LobbyOption", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ConstructOption), asCALL_CDECL_OBJLAST);
+    context->RegisterObjectBehaviour("LobbyOption", asBEHAVE_CONSTRUCT, "void f(const LobbyOption &in)", asFUNCTION(CopyOption), asCALL_CDECL_OBJLAST);
+    context->RegisterObjectBehaviour("LobbyOption", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(DestroyOption), asCALL_CDECL_OBJLAST);
+    context->RegisterObjectMethod("LobbyOption", "LobbyOption &opAssign(const LobbyOption &in)", asMETHODPR(LobbyOption, operator=, (const LobbyOption&), LobbyOption&), asCALL_THISCALL);
+    context->RegisterObjectProperty("LobbyOption", "string key", asOFFSET(LobbyOption, key));
+    context->RegisterObjectProperty("LobbyOption", "string label", asOFFSET(LobbyOption, label));
+    context->RegisterObjectProperty("LobbyOption", "string description", asOFFSET(LobbyOption, description));
+    context->RegisterObjectMethod("LobbyOption", "array<string>@ Choices() const", asFUNCTION(OptionChoices), asCALL_CDECL_OBJLAST);
+    context->RegisterGlobalFunction("array<LobbyOption>@ LobbyModOptions()", asFUNCTION(LobbyOptions), asCALL_CDECL);
     context->RegisterObjectType("LobbyPlayer", sizeof(LobbyPlayer), asOBJ_VALUE | asGetTypeTraits<LobbyPlayer>());
     context->RegisterObjectBehaviour("LobbyPlayer", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(ConstructPlayer), asCALL_CDECL_OBJLAST);
     context->RegisterObjectBehaviour("LobbyPlayer", asBEHAVE_CONSTRUCT, "void f(const LobbyPlayer &in)", asFUNCTION(CopyPlayer), asCALL_CDECL_OBJLAST);
@@ -489,6 +529,8 @@ void AttachLobby(ASContext* context) {
     context->RegisterObjectProperty("LobbyPlayer", "string slot_uid", asOFFSET(LobbyPlayer, slot_uid));
     context->RegisterObjectProperty("LobbyPlayer", "int slot_index", asOFFSET(LobbyPlayer, slot_index));
 #define LOBBY_FN(declaration, function) context->RegisterGlobalFunction(declaration, asFUNCTION(function), asCALL_CDECL)
+    LOBBY_FN("string SessionGetModData(const string &in)", SessionMods::GetData);
+    LOBBY_FN("bool SessionSetModData(const string &in, const string &in)", SessionMods::SetData);
     LOBBY_FN("bool SessionCanManageSaves()", ManageSaves);
     LOBBY_FN("bool SessionCanSave()", SessionSaves::CanWrite);
     LOBBY_FN("bool SessionSaveExists(int)", SessionSaves::Exists);

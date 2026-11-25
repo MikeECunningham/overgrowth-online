@@ -41,6 +41,7 @@
 #include <GUI/progression_ui.h>
 #include <Online/friendly_progression.h>
 #include <Online/session_saves.h>
+#include <Online/session_mods.h>
 #include <GUI/dimgui/dimgui.h>
 #include <GUI/dimgui/modmenu.h>
 #include <GUI/dimgui/imgui_impl_sdl_gl3.h>
@@ -2080,6 +2081,10 @@ void Engine::Update() {
                         Shaders::Instance()->create_program_warning = false;
                         break;
                     case kEngineScriptableUIState: {
+                        // A standalone world has no network session to tear down.
+                        // Preserve its data across chapters and in-campaign menus.
+                        if (!GetCurrentCampaign() && Online::Instance()->CanAdoptLocalSession() && !SessionSaves::Loading())
+                            SessionMods::Clear();
                         Input::Instance()->SetGrabMouse(false);
                         UIShowCursor(0);
                         scriptable_menu_ = new ScriptableUI((void*)this, &Engine::StaticScriptableUICallback);
@@ -2251,6 +2256,8 @@ void Engine::Update() {
                 }
             }
         } else {
+            if (game_timer.HasTimedSlowMotion() && !Online::Instance()->AllowsSoloCinematics())
+                game_timer.CancelTimedSlowMotion();
             int num_game_timesteps = game_timer.GetStepsNeeded();
             num_game_timesteps = min(num_game_timesteps, _max_steps_per_frame);
             game_timer.updates_since_last_frame = num_game_timesteps;
@@ -4626,6 +4633,7 @@ void Engine::Draw() {
             g_simple_water = true;
         }
         temporal_one_screen = num_screens == 1;
+        if (!temporal_one_screen) Raytrace::ReleaseTargets();
 
         {  // Perform per-frame calculations (like character shadows or LOD)
             PROFILER_GPU_ZONE(g_profiler_ctx, "Pre-draw frame");
@@ -5754,6 +5762,7 @@ void Engine::LoadLevelData(const Path& level_path) {
 }
 
 void Engine::ClearLoadedLevel() {
+    Raytrace::ReleaseTargets();
     SessionSaves::SceneClosed();
     if (player_menus_) player_menus_->Clear();
     tracked_level_focus_ = false;
@@ -6757,6 +6766,10 @@ class NewMenuScenegraph: public SceneGraph{
 */
 
 void Engine::ModActivationChange(const ModInstance* mod) {
+    // An unchanged includer can now resolve to a different mod's script.
+    // Keep existing ASModule source pointers valid until the next compile.
+    for (auto& entry : ScriptFileCache::Instance()->files)
+        entry.second.latest_modification = std::numeric_limits<int64_t>::min();
     ReloadImGui();
 }
 

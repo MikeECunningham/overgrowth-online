@@ -34,6 +34,7 @@
 #include <string>
 #include <iostream>
 #include <set>
+#include <map>
 
 class SteamworksUGCItem;
 class TiXmlElement;
@@ -66,6 +67,23 @@ class ModInstance {
         std::string id;
         std::vector<std::string> versions;
     };
+
+    struct LobbySetting {
+        std::string key, label, description, modes, depends_on, placement;
+        std::vector<std::string> choices;
+        int default_value = 0;
+        bool live = false;
+    };
+
+    struct SessionContract {
+        std::string network_version, save_version, feature;
+        std::vector<LobbySetting> lobby_settings;
+        std::map<std::string, double> rules;
+        double Rule(const std::string& key) const {
+            const auto it = rules.find(key);
+            return it == rules.end() ? 0.0 : it->second;
+        }
+    } session;
 
     struct MenuItem {
         fixed_string<MOD_MENU_ITEM_TITLE_MAX_LENGTH> title;
@@ -443,6 +461,8 @@ class ModLoading {
     std::string GetModID(ModID sid);
     bool IsActive(ModID sid);
     bool IsActive(std::string id);
+    const ModInstance::SessionContract* GetSessionFeature(const std::string& feature) const;
+    bool HasSessionFeature(const std::string& feature) const { return GetSessionFeature(feature) != nullptr; }
 
     ModInstance::Campaign GetCampaign(std::string& campaign_id);
     ModInstance* GetModInstance(const std::string& campaign_id);

@@ -12,17 +12,17 @@ struct Weapon {
     const char* path;
     const char* artwork;
     unsigned ownership;
-    int selection, price, rarity;
+    int selection, rarity;
 };
 constexpr unsigned kWeaponOwnershipMask = 31;
 constexpr int kMaxMainWeapon = 4;
 inline const std::array<Weapon, 5>& Weapons() {
     static const std::array<Weapon, 5> weapons = {{
-        {"dagger", "Offhand dagger", "Data/Items/rabbit_weapons/rabbit_knife.xml", "Object/rabbit_knife", 1, 0, 140, 2},
-        {"sword", "Sword", "Data/Items/DogWeapons/DogSword.xml", "Object/DogSword", 2, 1, 880, 3},
-        {"spear", "Spear", "Data/Items/DogWeapons/DogSpear.xml", "Object/DogSpear", 4, 2, 1040, 3},
-        {"staff", "Staff", "Data/Items/staffbasic.xml", "Interactive Objects/staffbasic", 8, 3, 360, 2},
-        {"broadsword", "Broadsword", "Data/Items/DogWeapons/DogBroadSword.xml", "Object/DogBroadSword", 16, 4, 1280, 4},
+        {"dagger", "Offhand dagger", "Data/Items/rabbit_weapons/rabbit_knife.xml", "Object/rabbit_knife", 1, 0, 2},
+        {"sword", "Sword", "Data/Items/DogWeapons/DogSword.xml", "Object/DogSword", 2, 1, 3},
+        {"spear", "Spear", "Data/Items/DogWeapons/DogSpear.xml", "Object/DogSpear", 4, 2, 3},
+        {"staff", "Staff", "Data/Items/staffbasic.xml", "Interactive Objects/staffbasic", 8, 3, 2},
+        {"broadsword", "Broadsword", "Data/Items/DogWeapons/DogBroadSword.xml", "Object/DogBroadSword", 16, 4, 4},
     }};
     return weapons;
 }

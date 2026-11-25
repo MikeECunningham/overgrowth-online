@@ -19,7 +19,7 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-const uint kSun = 1u, kAo = 2u, kLights = 4u, kGi = 8u;  // (info.z: the signals traced and denoised)
+const uint kSun = 1u, kAo = 2u, kLights = 4u;  // (info.z: the signals traced and denoised)
 const float kFp16Max = 65504.0;                 // (NRD_FP16_MAX: lit)
 
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D raw;  // sun, depth, AO, lights
@@ -34,17 +34,13 @@ layout(set = 0, binding = 5, r16f) uniform writeonly image2D out_sun_penumbra;
 layout(set = 0, binding = 6, r16f) uniform writeonly image2D out_light_penumbra;
 layout(set = 0, binding = 7, rgba8) uniform writeonly image2D out_light_translucency;
 layout(set = 0, binding = 8, r16f) uniform writeonly image2D out_ao;
-layout(set = 0, binding = 9, rgba16f) uniform readonly image2D gi_raw;        // rt_gi.comp's: radiance, hit distance
-layout(set = 0, binding = 10, rgba16f) uniform readonly image2D gi_dir;        // ... the ray's direction
-layout(set = 0, binding = 11, rgba16f) uniform writeonly image2D out_gi_sh0;  // REBLUR's inputs (REBLUR_FrontEnd_PackSh)
-layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D out_gi_sh1;
 
 layout(push_constant) uniform Params {
     mat4 inv_view_proj;  // clip space (depth 0..1) to world, as drawn (jittered)
     mat4 cur;            // world to this frame's clip space, unjittered
     mat4 prev;           // world to last frame's, unjittered
     vec4 params;         // x tan(the sun's angular radius), y the sky's view Z
-    uvec4 info;          // width, height, signals (kSun, kAo, kLights, kGi), GI's checkerboard phase
+    uvec4 info;          // width, height, signals, unused
 } pc;
 
 bool Inside(ivec2 q) {
@@ -85,44 +81,10 @@ vec4 PackNormalRoughness(vec3 n, float roughness) {
     return vec4(r, 0.0);  // (material 0)
 }
 
-// GI's input for REBLUR (REBLUR_FrontEnd_PackSh: YCoCg and the direction * Y, the hit
-// distance normalized as REBLUR_FrontEnd_GetNormHitDist with REBLUR's default parameters,
-// roughness 1). A checkerboard: rt_gi.comp's results packed to the left half, each the
-// pixel (2x + ((y + phase) & 1), y), as NRD's BLACK mode reads them
-void PrepareGi(ivec2 p) {
-    if (uint(p.x) >= (pc.info.x + 1u) / 2u) {
-        return;  // (NRD reads only the left half)
-    }
-    ivec2 s = ivec2(2 * p.x + int((uint(p.y) + pc.info.w) & 1u), p.y);
-    float depth = Inside(s) ? imageLoad(raw, s).g : 0.0;
-    if (depth <= 0.0) {
-        imageStore(out_gi_sh0, p, vec4(0.0));
-        imageStore(out_gi_sh1, p, vec4(0.0));
-        return;
-    }
-    float view_z = -(pc.cur * vec4(WorldPos(s, depth), 1.0)).w;
-    vec4 g = imageLoad(gi_raw, p);
-    vec3 radiance = clamp(g.rgb, vec3(0.0), vec3(65504.0));
-    if (any(isnan(radiance)) || any(isinf(radiance))) {
-        radiance = vec3(0.0);
-    }
-    vec3 dir = clamp(imageLoad(gi_dir, p).xyz, vec3(-1.0), vec3(1.0));
-    if (any(isnan(dir))) {
-        dir = vec3(0.0);
-    }
-    float norm_hit = clamp(g.a / (3.0 + abs(view_z) * 0.1), 0.0, 1.0);
-    vec3 ycocg = vec3(dot(radiance, vec3(0.25, 0.5, 0.25)), dot(radiance, vec3(0.5, 0.0, -0.5)), dot(radiance, vec3(-0.25, 0.5, -0.25)));
-    imageStore(out_gi_sh0, p, vec4(ycocg, norm_hit));
-    imageStore(out_gi_sh1, p, vec4(dir * ycocg.x, 0.0));
-}
-
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     if (!Inside(p)) {
         return;
-    }
-    if ((pc.info.z & kGi) != 0u) {
-        PrepareGi(p);
     }
     vec4 cur = imageLoad(raw, p);
     float depth = cur.g;
@@ -182,10 +144,6 @@ layout(set = 0, binding = 1, r8) uniform readonly image2D sun_shadow;
 layout(set = 0, binding = 2, rgba8) uniform readonly image2D light_shadow;
 layout(set = 0, binding = 3, r8) uniform readonly image2D ao_out;
 layout(set = 0, binding = 4, rgba32f) uniform writeonly image2D mask;
-layout(set = 0, binding = 5, rgba16f) uniform readonly image2D gi_sh0;        // REBLUR's SH0 and SH1
-layout(set = 0, binding = 6, rgba16f) uniform readonly image2D gi_sh1;
-layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D gi_final0;    // ... copied for the colour pass to resolve
-layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D gi_final1;
 
 layout(push_constant) uniform Params {
     uvec4 info;  // width, height, signals denoised (kSun, kAo, kLights)
@@ -199,15 +157,7 @@ void main() {
     vec4 cur = imageLoad(raw, p);
     if (cur.g <= 0.0) {
         imageStore(mask, p, vec4(cur.r, cur.g, 1.0, 1.0));  // (the sky: as traced)
-        if ((pc.info.z & kGi) != 0u) {
-            imageStore(gi_final0, p, vec4(0.0));
-            imageStore(gi_final1, p, vec4(0.0));
-        }
         return;
-    }
-    if ((pc.info.z & kGi) != 0u) {
-        imageStore(gi_final0, p, imageLoad(gi_sh0, p));
-        imageStore(gi_final1, p, imageLoad(gi_sh1, p));
     }
     float sun = cur.r;
     if ((pc.info.z & kSun) != 0u) {

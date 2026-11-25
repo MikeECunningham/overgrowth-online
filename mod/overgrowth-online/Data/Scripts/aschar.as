@@ -6790,10 +6790,12 @@ void ReceiveMessage(string msg) {
 }
 
 void CharacterDefeated() {
+    if(zone_killed != 0) return;
     array<int> player_ids = GetPlayerCharacterIDs();
 
     if(player_ids.size() != 0) {
         MovementObject@ player_char = ReadCharacterID(player_ids[0]);
+        if(player_char.HasVar("online_solo_cinematics") && player_char.GetIntVar("online_solo_cinematics") == 0) return;
 
         int num = GetNumCharacters();
         int num_threats = 0;
@@ -6814,10 +6816,8 @@ void CharacterDefeated() {
         Log(info, "Num_threats: " + num_threats);
         const float kDistanceThreshold = 10.0 * 10.0;
 
-        if(zone_killed == 0) {
-            if(this_mo.controlled || (IsAggro() == 1 && num_threats == 0 && distance_squared(this_mo.position, player_char.position) < kDistanceThreshold)) {
-                TimedSlowMotion(0.1f, 0.7f, 0.05f);
-            }
+        if(this_mo.controlled || (IsAggro() == 1 && num_threats == 0 && distance_squared(this_mo.position, player_char.position) < kDistanceThreshold)) {
+            TimedSlowMotion(0.1f, 0.7f, 0.05f);
         }
     }
 }
@@ -10867,6 +10867,8 @@ array<int> GetPlayerCharacterIDs() {
 
 // Overgrowth Online sets this on characters another machine runs (the stock game never does)
 bool online_remote = false;
+// The fork updates this on controlled characters; stock and older engines leave it unset.
+int online_solo_cinematics = -1;
 
 // The players this machine shows: the shared camera of local two-player frames
 // these, not the other players of an online game
@@ -11609,6 +11611,13 @@ void OcamFinisherBeginShot(const vec3 &in v, const vec3 &in a) {
 float OcamFinisherUpdate() {
     float dt = max(0.0f, min(0.1f, ui_time - ofin_last_ui));
     ofin_last_ui = ui_time;
+    if(online_solo_cinematics == 0) {
+        ofin_victim = -1;
+        ofin_weight = 0.0f;
+        ofin_cut = false;
+        ofin_part = -1;
+        return 0.0f;
+    }
     bool on = ofin_victim != -1;
 
     if(on) {

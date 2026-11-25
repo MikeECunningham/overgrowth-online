@@ -490,22 +490,27 @@ bool LobbyModeIsCampaign() {
            LobbyGetCampaign() != "com-wolfire-sandbox-levels" && LobbyGetMode() != "sandbox";
 }
 
-void DrawModeRate(const string &in key, const string &in label, const string &in hint, bool enabled = true) {
-    ImGui_TextColored(kLobbyTitle, label);
-    int rate = max(0, min(4, LobbyGetModeSetting(key)));
-    ImGui_BeginDisabled(!enabled);
-    int selected = DifficultyRateButtons(key,rate);
-    if(selected >= 0 && !LobbySetModeSetting(key,selected)) notice = "That mode setting could not be changed.";
+void DrawModLobbyOptions() {
+    ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy());
+    array<LobbyOption>@ options = LobbyModOptions();
+    for(uint i = 0; i < options.length(); ++i) {
+        const LobbyOption option = options[i];
+        array<string>@ choices = option.Choices();
+        int value = LobbyGetModeSetting(option.key);
+        ImGui_PushID(option.key);
+        if(choices.length() == 2 && choices[0] == "Off" && choices[1] == "On") {
+            bool enabled = value != 0;
+            if(MPCheckbox(option.label, enabled)) LobbySetModeSetting(option.key, enabled ? 1 : 0);
+        } else {
+            ImGui_TextColored(kLobbyDim, option.label);
+            ImGui_PushItemWidth(-1.0f);
+            if(MPCombo("##choice", value, choices)) LobbySetModeSetting(option.key, value);
+            ImGui_PopItemWidth();
+        }
+        if(option.description != "") LobbyHint(option.description);
+        ImGui_PopID();
+    }
     ImGui_EndDisabled();
-    LobbyHint(hint + "\n\nOff disables it. Gentle: 0.5x. Standard: 1x. Brisk: 1.5x. Nightmare: 2x.");
-}
-
-void DrawProgressionChoice(const string &in key, const string &in label, array<string> choices) {
-    int choice = LobbyGetModeSetting(key);
-    ImGui_TextColored(kLobbyDim, label);
-    ImGui_PushItemWidth(-1.0f);
-    if(MPCombo("##" + key, choice, choices)) LobbySetModeSetting(key, choice);
-    ImGui_PopItemWidth();
 }
 
 void DrawModeSettingsForm(const vec2 &in position, const vec2 &in size, float scale) {
@@ -522,19 +527,8 @@ void DrawModeSettingsForm(const vec2 &in position, const vec2 &in size, float sc
         lobby_difficulty_open = true;
         lobby_difficulty_focus = true;
     }
-    LobbyHint("Choose the starting preset and configure all optional difficulty scaling in one place. The host edits these settings.");
-    if(LobbyModeIsArena() || LobbyModeIsCampaign()) {
-        ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy());
-        bool progression = LobbyGetModeSetting("progression") != 0;
-        if(MPCheckbox("Progression", progression)) LobbySetModeSetting("progression", progression ? 1 : 0);
-        LobbyHint("Earn XP for upgrades between campaign levels or Arena rounds.");
-        if(progression) {
-            DrawProgressionChoice("progression_shared", "Upgrades", {"Independent", "Shared by team"});
-            if(LobbyModeIsArena()) DrawProgressionChoice("progression_combat", "Arena XP", {"Kills", "Combat damage"});
-            DrawProgressionChoice("progression_timer", "Multiplayer shop timer", {"Infinite", "10 seconds", "15 seconds", "30 seconds", "60 seconds", "120 seconds"});
-        }
-        ImGui_EndDisabled();
-    }
+    LobbyHint(ModSessionFeature("scaling") ? "Choose the starting preset and configure optional enemy scaling." : "Choose the starting difficulty preset.");
+    DrawModLobbyOptions();
     if(LobbyModeIsArena()) {
         ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy());
         bool random = ConfigHasKey("oo_arena_random") && GetConfigValueBool("oo_arena_random");
@@ -552,7 +546,7 @@ void DrawLobbySessionActions(float scale, bool can_edit, bool compact = false) {
     if(MPButton("Start game", vec2(compact ? half : -1.0f, (compact ? 40.0f : 48.0f) * scale))) {
         if(!LobbyStart()) notice = "The game could not start. Check the selection and connected players.";
     }
-    LobbyHint("Start the selected mode and map with this roster. Resets difficulty progression.");
+    LobbyHint("Start the selected mode and map with this roster.");
     ImGui_EndDisabled();
     if(compact) ImGui_SameLine(0.0f, 10.0f);
     if(LobbyIsHost() && !LobbyMigrationBusy() && MPButton("Load game",vec2(compact ? half : -1.0f,36.0f*scale)))
@@ -802,7 +796,7 @@ void DrawGUI() {
         LobbyHint("Manage players, names, teams, and this computer's screens.");
         ImGui_SameLine();
         if(MPButton(compact_tabs ? "Rules" : "Mode settings", vec2(tab_w, tab_button_h))) { small_panel = 2; focus_lobby_form = true; }
-        LobbyHint("Set the starting difficulty and optional enemy difficulty increases. Host only.");
+        LobbyHint("Configure the starting difficulty and rules for this mode.");
         ImGui_SameLine();
         if(MPButton(compact_tabs ? "Host" : "Hosting options", vec2(tab_w, tab_button_h))) { small_panel = 3; focus_lobby_form = true; }
         LobbyHint("Manage session permissions, invitations, starting, and leaving.");

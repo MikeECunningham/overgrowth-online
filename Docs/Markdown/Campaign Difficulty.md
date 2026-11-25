@@ -1,6 +1,6 @@
 # Campaign difficulty scaling
 
-The lobby's **Difficulty mode** selects Traditional or Scaling. Open
+The bundled **Difficulty Scaling** mod adds Scaling to the lobby’s **Difficulty mode**. It is enabled by default in **Mods**. Open
 **Difficulty** to choose the original Casual, Hardcore or Expert base and all
 optional scaling factors together. These controls also appear under
 **Settings → Game → Difficulty**. Traditional gates every scaling factor Off

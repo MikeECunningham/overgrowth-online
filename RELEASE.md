@@ -1,7 +1,7 @@
 # Publishing this fork
 
 This fork is published at <https://github.com/MikeECunningham/overgrowth-online>.
-The current version is **0.42.0-alpha.15**, a testing prerelease. See [VERSION](VERSION)
+The current version is **0.42.0-alpha.16**, a testing prerelease. See [VERSION](VERSION)
 for the authoritative version, [FRIENDS.md](FRIENDS.md) for building and playing,
 and [COMPILING.md](COMPILING.md) for dependency details.
 
@@ -15,7 +15,11 @@ Alpha.14 adds four armor materials, stealth upgrades and permission-aware menu p
 Alpha.15 adds host-local save cards, persistent lobby slots, selectable AI rates,
 and an Arena shop after the match-winning camera. Protocol **16** synchronizes slot
 assignments, new loadout choices and Nightmare scaling rates.
-Distribute the matching executable and Data overrides to every participant.
+Alpha.16 packages Difficulty Scaling and Friendly Progression as default-enabled mods.
+Protocol **17** checks gameplay mod network schemas and replicates mod lobby choices
+and state. Save cards now carry per-mod save schemas. Linux Vulkan can render
+ray-traced diffuse global illumination with the built-in denoiser. Distribute the matching
+executable and Data overrides, including Data/Mods, to every participant.
 
 ## Versioning
 
@@ -40,7 +44,7 @@ maintained local-multiplayer protocol revision.
   compatibility is determined by the fork version and protocol, not that ID.
 
 Once a release commit has passed its checks, create its corresponding version
-tag, such as `v0.42.0-alpha.15`. Create a GitHub **prerelease** from that tag and
+tag, such as `v0.42.0-alpha.16`. Create a GitHub **prerelease** from that tag and
 attach the tested artifacts.
 Do not move a published tag to different code; publish another version instead.
 
@@ -85,10 +89,15 @@ clean-machine installation and Steam-specific behavior are separate checks.
    python3 Tools/ogmp.py run performance_solo campaign_equipment campaign_menu_resume
    python3 Tools/ogmp.py run session_slots session_saves session_saves_solo arena_saves
    python3 Tools/ogmp.py run difficulty_rates progression_weapons_xp ice_cliffs_retries
+   python3 Tools/ogmp.py run gameplay_mods session_mod_state
+   python3 Tools/ogmp.py run solo_kill_camera overhaul_solo_kill_camera
    ```
 
    Close a normally running game before using the test runner. Repeat relevant
-   rendering tests with `OGMP_KEYS=renderer=vulkan`; enable the installed Vulkan
+   rendering tests with `OGMP_KEYS=renderer=vulkan`. On ray-query hardware,
+   exercise the final frame with `python3 Tools/ogmp.py run vk_ray_tracing`. Builds with
+   NVIDIA NRD should also pass `python3 Tools/ogmp.py run vk_nrd`, which checks GPU
+   dispatches and the effect on the final frame. Enable the installed Vulkan
    validation layer when checking synchronization. Windows uses the executable
    under `Build/Release/` and the same Python test runner.
 4. **Test the packaged layout.** Use a fresh profile and a clean machine/VM with

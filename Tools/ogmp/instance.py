@@ -255,13 +255,17 @@ class Instance:
 
     # Set-up ---------------------------------------------------------------------------
 
-    def prepare(self):
+    def prepare(self, reuse_profile=False):
         if not _inside_run_dir(self.dir):
             raise ValueError("Instance profile no longer belongs to test/run")
         for pid, command in our_processes():
             argv = _windows_argv(command) if IS_WINDOWS else shlex.split(command)
             if _profile_path(argv) == os.path.normcase(os.path.realpath(self.writedir)):
                 raise RuntimeError(f"{self.name}: profile is still in use by PID {pid}")
+        if reuse_profile:
+            if not os.path.isfile(self.writedir + "Data/config.txt"):
+                raise ValueError("Cannot restart an unprepared test profile")
+            return
         if os.path.isdir(self.dir):
             shutil.rmtree(self.dir)
         os.makedirs(self.writedir + "Data", exist_ok=True)
@@ -298,8 +302,8 @@ class Instance:
 
     # Life cycle -----------------------------------------------------------------------
 
-    def start(self, bridge_timeout=150.0):
-        self.prepare()
+    def start(self, bridge_timeout=150.0, *, reuse_profile=False):
+        self.prepare(reuse_profile)
         exe, work = exe_and_dir()
         if not IS_WINDOWS:
             args = [exe, "--write-dir", self.writedir, "--working-dir", work + "/", "--clear-log", "--no-dialogues", "--test-bridge", str(self.port)]

@@ -31,6 +31,7 @@
 #include <Graphics/pxdebugdraw.h>
 
 #include <Internal/config.h>
+#include <Internal/modloading.h>
 #include <Internal/timer.h>
 #include <Internal/filesystem.h>
 #include <Internal/common.h>
@@ -703,10 +704,11 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
         const bool can_edit_match = !Online::Instance()->IsActive() || Online::Instance()->IsLobbyHost(MatchSettingsActor());
         if (!can_edit_match) ImGui::TextDisabled("The host controls match difficulty.");
         ImGui::BeginDisabled(!can_edit_match);
+        const bool scaling_available = ModLoading::Instance().HasSessionFeature("scaling");
         if (ImGui::BeginMenu("Difficulty")) {
             int difficulty_mode = config["difficulty_scaling"].toBool() ? 1 : 0;
             const char* difficulty_modes[] = {"Traditional", "Scaling"};
-            if (ImGui::Combo("Difficulty mode", &difficulty_mode, difficulty_modes, 2))
+            if (scaling_available && ImGui::Combo("Difficulty mode", &difficulty_mode, difficulty_modes, 2))
                 SetMatchSetting("difficulty_scaling", difficulty_mode ? "true" : "false");
             const auto presets = config.GetDifficultyPresets();
             std::vector<const char*> choices;
@@ -724,7 +726,7 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
             int armor_choice = rule == 2 ? 1 : rule == 1 ? 2 : 0;
             if (ImGui::Combo("Armor protection", &armor_choice, models, 3))
                 SetMatchSetting("armor_localized", armor_choice == 1 ? "2" : armor_choice == 2 ? "1" : "0");
-            if (config["difficulty_scaling"].toBool()) {
+            if (scaling_available && config["difficulty_scaling"].toBool()) {
                 auto factor = [](const char* label, const char* key) {
                     bool enabled = config[key].toBool();
                     if (ImGui::Checkbox(label, &enabled)) SetMatchSetting(key, enabled ? "true" : "false");
@@ -776,9 +778,11 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
             if (ImGui::Checkbox("Automatic ledge grab", &ledges)) SetMatchSetting("auto_ledge_grab", ledges ? "true" : "false");
             ImGui::EndMenu();
         }
-        checkbox_val = config["show_difficulty_readout"].toBool();
-        if (ImGui::Checkbox("Show difficulty readout", &checkbox_val)) config.GetRef("show_difficulty_readout") = checkbox_val;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Host screen only; hidden when difficulty is not scaled.");
+        if (scaling_available) {
+            checkbox_val = config["show_difficulty_readout"].toBool();
+            if (ImGui::Checkbox("Show difficulty readout", &checkbox_val)) config.GetRef("show_difficulty_readout") = checkbox_val;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show encounter difficulty on the host screen during scaled play.");
+        }
         ImGui::EndDisabled();
 
         ImGui::EndMenu();

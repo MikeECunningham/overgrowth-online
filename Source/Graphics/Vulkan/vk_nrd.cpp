@@ -13,11 +13,10 @@
 
 #if defined(OG_NRD)
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+#include <SDL.h>
 
 #include <NRD.h>
+#include <vulkan/utility/vk_format_utils.h>
 
 #include <Graphics/Vulkan/vk_backend.h>
 
@@ -39,7 +38,9 @@ struct Img {
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation alloc = NULL;
     VkImageView view = VK_NULL_HANDLE;
+    VkDeviceSize bytes = 0;
 };
+uint64_t live_image_bytes = 0;  // includes images awaiting a frame fence
 
 struct Pipeline {
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;  // (the resources: pushed)
@@ -47,7 +48,52 @@ struct Pipeline {
     VkPipeline pipeline = VK_NULL_HANDLE;
 };
 
+// SDL loads the optional SDK from the executable directory on both platforms.
+// Keep the signatures and calling convention in sync with the SDK headers.
+struct NrdApi {
+    void* module = nullptr;
+    decltype(&nrd::GetLibraryDesc) GetLibraryDesc = nullptr;
+    decltype(&nrd::CreateInstance) CreateInstance = nullptr;
+    decltype(&nrd::DestroyInstance) DestroyInstance = nullptr;
+    decltype(&nrd::GetInstanceDesc) GetInstanceDesc = nullptr;
+    decltype(&nrd::SetCommonSettings) SetCommonSettings = nullptr;
+    decltype(&nrd::SetDenoiserSettings) SetDenoiserSettings = nullptr;
+    decltype(&nrd::GetComputeDispatches) GetComputeDispatches = nullptr;
+};
+
+template <typename F>
+bool LoadFunction(void* module, const char* name, F& function) {
+    function = reinterpret_cast<F>(SDL_LoadFunction(module, name));
+    if (!function) LOGE << "NRD: missing " << name << ": " << SDL_GetError() << std::endl;
+    return function != nullptr;
+}
+
+bool LoadNrdLibrary(NrdApi& api) {
+#ifdef _WIN32
+    const char* filename = "NRD.dll";
+#else
+    const char* filename = "libNRD.so";
+#endif
+    char* base = SDL_GetBasePath();
+    if (!base) return false;
+    const std::string path = std::string(base) + filename;
+    SDL_free(base);
+    api.module = SDL_LoadObject(path.c_str());
+    if (!api.module) {
+        LOGI << "NRD: " << SDL_GetError() << "; using the built-in denoiser" << std::endl;
+        return false;
+    }
+    return LoadFunction(api.module, "GetLibraryDesc", api.GetLibraryDesc) &&
+           LoadFunction(api.module, "CreateInstance", api.CreateInstance) &&
+           LoadFunction(api.module, "DestroyInstance", api.DestroyInstance) &&
+           LoadFunction(api.module, "GetInstanceDesc", api.GetInstanceDesc) &&
+           LoadFunction(api.module, "SetCommonSettings", api.SetCommonSettings) &&
+           LoadFunction(api.module, "SetDenoiserSettings", api.SetDenoiserSettings) &&
+           LoadFunction(api.module, "GetComputeDispatches", api.GetComputeDispatches);
+}
+
 struct State {
+    NrdApi api;
     bool tried = false;
     bool available = false;
     nrd::Instance* instance = NULL;
@@ -66,7 +112,8 @@ struct State {
     Img images[kImages];
     std::vector<Img> permanent, transient;
     bool fresh = false;         // images made, their layouts not set yet
-    bool clear_history = true;  // (new images: their contents cleared too)
+    uint32_t initialized_signals = 0;
+    uint32_t previous_signals = 0;
     uint32_t frame_index = 0;
 };
 State s;
@@ -89,11 +136,6 @@ VkFormat ImageFormat(Image image) {
         case kSunShadow:
         case kAoOut:
             return VK_FORMAT_R8_UNORM;
-        case kGiSh0In:
-        case kGiSh1In:
-        case kGiSh0Out:
-        case kGiSh1Out:
-            return VK_FORMAT_R16G16B16A16_SFLOAT;
         default:
             return VK_FORMAT_UNDEFINED;
     }
@@ -162,7 +204,8 @@ bool MakeImage(uint32_t width, uint32_t height, VkFormat format, Img* out) {
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VmaAllocationCreateInfo ai = {};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    if (vmaCreateImage(VkBackend::Allocator(), &ii, &ai, &out->image, &out->alloc, NULL) != VK_SUCCESS) {
+    VmaAllocationInfo allocation = {};
+    if (vmaCreateImage(VkBackend::Allocator(), &ii, &ai, &out->image, &out->alloc, &allocation) != VK_SUCCESS) {
         *out = Img();
         return false;
     }
@@ -176,6 +219,8 @@ bool MakeImage(uint32_t width, uint32_t height, VkFormat format, Img* out) {
         *out = Img();
         return false;
     }
+    out->bytes = allocation.size;
+    live_image_bytes += out->bytes;
     return true;
 }
 
@@ -185,9 +230,11 @@ void FreeImage(Img* img, bool now) {
         VkImage image = img->image;
         VmaAllocation alloc = img->alloc;
         VkImageView view = img->view;
-        auto destroy = [image, alloc, view]() {
+        const VkDeviceSize bytes = img->bytes;
+        auto destroy = [image, alloc, view, bytes]() {
             vkDestroyImageView(VkBackend::Device(), view, NULL);
             vmaDestroyImage(VkBackend::Allocator(), image, alloc);
+            live_image_bytes -= bytes;
         };
         if (now) {
             destroy();
@@ -244,33 +291,21 @@ void Shutdown() {
         vmaDestroyBuffer(VkBackend::Allocator(), s.constants, s.constants_alloc);
     }
     if (s.instance != NULL) {
-        nrd::DestroyInstance(*s.instance);
+        s.api.DestroyInstance(*s.instance);
     }
+    if (s.api.module) SDL_UnloadObject(s.api.module);
     s = State();
     s.tried = true;  // (not again: the device is going)
 }
 
-// The library (delay-loaded: the game starts without it), the denoisers, their passes
+// Load the SDK only when a Vulkan device needs the denoisers.
 bool Start() {
     s.tried = true;
-    // (from the game's own folder, not the DLL search path: the delay-load helper then finds
-    // this module already loaded by its name)
-    char exe[MAX_PATH] = {};
-    const DWORD n = GetModuleFileNameA(NULL, exe, MAX_PATH);
-    std::string dll = "NRD.dll";
-    if (n > 0 && n < MAX_PATH) {
-        dll = exe;
-        const size_t slash = dll.find_last_of("\\/");
-        dll = (slash == std::string::npos ? std::string() : dll.substr(0, slash + 1)) + "NRD.dll";
-    }
-    if (LoadLibraryExA(dll.c_str(), NULL, LOAD_WITH_ALTERED_SEARCH_PATH) == NULL) {
-        LOGI << "NRD: no NRD.dll beside the game: our own denoiser" << std::endl;
-        return false;
-    }
-    s.library = nrd::GetLibraryDesc();
+    if (!LoadNrdLibrary(s.api)) return false;
+    s.library = s.api.GetLibraryDesc();
     if (s.library == NULL || s.library->versionMajor != NRD_VERSION_MAJOR || s.library->versionMinor != NRD_VERSION_MINOR ||
         s.library->normalEncoding != nrd::NormalEncoding::R10_G10_B10_A2_UNORM || s.library->roughnessEncoding != nrd::RoughnessEncoding::LINEAR) {
-        LOGE << "NRD: NRD.dll isn't the version or encoding built against (" << NRD_VERSION_MAJOR << "." << NRD_VERSION_MINOR
+        LOGE << "NRD: incompatible library version or encoding (expected " << NRD_VERSION_MAJOR << "." << NRD_VERSION_MINOR
              << ", R10G10B10A2 normals, linear roughness)" << std::endl;
         return false;
     }
@@ -287,7 +322,7 @@ bool Start() {
     nrd::InstanceCreationDesc ci = {};
     ci.denoisers = denoisers;
     ci.denoisersNum = 4;
-    if (nrd::CreateInstance(ci, s.instance) != nrd::Result::SUCCESS || s.instance == NULL) {
+    if (s.api.CreateInstance(ci, s.instance) != nrd::Result::SUCCESS || s.instance == NULL) {
         LOGE << "NRD: couldn't make its instance" << std::endl;
         s.instance = NULL;
         return false;
@@ -297,14 +332,12 @@ bool Start() {
         hooked = true;
         VkBackend::OnShutdown(&Shutdown);
     }
-    s.desc = nrd::GetInstanceDesc(*s.instance);
+    s.desc = s.api.GetInstanceDesc(*s.instance);
     const nrd::InstanceDesc& d = *s.desc;
     if (!((d.resourcesSpaceIndex == 0 && d.constantBufferAndSamplersSpaceIndex == 1) ||
           (d.resourcesSpaceIndex == 1 && d.constantBufferAndSamplersSpaceIndex == 0)) ||
         d.samplersNum > (uint32_t)nrd::Sampler::MAX_NUM) {
         LOGE << "NRD: register spaces not as expected" << std::endl;
-        Shutdown();
-        s.tried = true;
         return false;
     }
     VkDevice dev = VkBackend::Device();
@@ -320,8 +353,6 @@ bool Start() {
         si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.maxLod = 0.0f;
         if (vkCreateSampler(dev, &si, NULL, &s.samplers[i]) != VK_SUCCESS) {
-            Shutdown();
-            s.tried = true;
             return false;
         }
         VkDescriptorSetLayoutBinding b = {};
@@ -358,8 +389,6 @@ bool Start() {
     if (vkCreateDescriptorSetLayout(dev, &sli, NULL, &s.shared_layout) != VK_SUCCESS || vkCreateDescriptorPool(dev, &pi, NULL, &s.pool) != VK_SUCCESS ||
         vmaCreateBuffer(VkBackend::Allocator(), &bi, &bai, &s.constants, &s.constants_alloc, &bainfo) != VK_SUCCESS || bainfo.pMappedData == NULL) {
         LOGE << "NRD: couldn't make its constants" << std::endl;
-        Shutdown();
-        s.tried = true;
         return false;
     }
     s.constants_mapped = (uint8_t*)bainfo.pMappedData;
@@ -368,8 +397,6 @@ bool Start() {
     dai.descriptorSetCount = 1;
     dai.pSetLayouts = &s.shared_layout;
     if (vkAllocateDescriptorSets(dev, &dai, &s.shared_set) != VK_SUCCESS) {
-        Shutdown();
-        s.tried = true;
         return false;
     }
     VkDescriptorBufferInfo cbi = {s.constants, 0, std::max<VkDeviceSize>(d.constantBufferMaxDataSize, 16)};
@@ -401,8 +428,6 @@ bool Start() {
         }
         if (bindings.size() > VkBackend::MaxPushDescriptors()) {
             LOGE << "NRD: a pass needs more pushed descriptors than the device has (" << bindings.size() << ")" << std::endl;
-            Shutdown();
-            s.tried = true;
             return false;
         }
         VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -412,8 +437,6 @@ bool Start() {
         VkDescriptorSetLayout sets[2];
         sets[d.resourcesSpaceIndex] = VK_NULL_HANDLE;
         if (vkCreateDescriptorSetLayout(dev, &li, NULL, &out.set_layout) != VK_SUCCESS) {
-            Shutdown();
-            s.tried = true;
             return false;
         }
         sets[d.resourcesSpaceIndex] = out.set_layout;
@@ -428,8 +451,6 @@ bool Start() {
         if (pd.computeShaderSPIRV.bytecode == NULL || vkCreatePipelineLayout(dev, &pli, NULL, &out.layout) != VK_SUCCESS ||
             vkCreateShaderModule(dev, &mi, NULL, &module) != VK_SUCCESS) {
             LOGE << "NRD: couldn't make pass " << pd.shaderIdentifier << std::endl;
-            Shutdown();
-            s.tried = true;
             return false;
         }
         VkComputePipelineCreateInfo cpi = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
@@ -443,8 +464,6 @@ bool Start() {
         if (made != VK_SUCCESS) {
             LOGE << "NRD: couldn't make pass " << pd.shaderIdentifier << std::endl;
             out.pipeline = VK_NULL_HANDLE;
-            Shutdown();
-            s.tried = true;
             return false;
         }
     }
@@ -455,7 +474,7 @@ bool Start() {
 }
 
 // The image a pass's resource names (NULL: none)
-VkImageView Resolve(nrd::Identifier id, const nrd::ResourceDesc& r) {
+VkImageView Resolve(nrd::Identifier id, const nrd::ResourceDesc& r, const Frame& frame) {
     switch (r.type) {
         case nrd::ResourceType::IN_MV:
             return s.images[kMotion].view;
@@ -474,13 +493,13 @@ VkImageView Resolve(nrd::Identifier id, const nrd::ResourceDesc& r) {
         case nrd::ResourceType::OUT_DIFF_HITDIST:
             return s.images[kAoOut].view;
         case nrd::ResourceType::IN_DIFF_SH0:
-            return s.images[kGiSh0In].view;
+            return frame.gi_sh0_in;
         case nrd::ResourceType::IN_DIFF_SH1:
-            return s.images[kGiSh1In].view;
+            return frame.gi_sh1_in;
         case nrd::ResourceType::OUT_DIFF_SH0:
-            return s.images[kGiSh0Out].view;
+            return frame.gi_sh0_out;
         case nrd::ResourceType::OUT_DIFF_SH1:
-            return s.images[kGiSh1Out].view;
+            return frame.gi_sh1_out;
         case nrd::ResourceType::TRANSIENT_POOL:
             return r.indexInPool < s.transient.size() ? s.transient[r.indexInPool].view : VK_NULL_HANDLE;
         case nrd::ResourceType::PERMANENT_POOL:
@@ -505,10 +524,33 @@ void ComputeBarrier(VkCommandBuffer cmd) {
 }  // namespace
 
 bool Available() {
-    if (!s.tried) {
-        Start();
-    }
+    if (!s.tried && !Start()) Shutdown();
     return s.available;
+}
+
+void ReleaseImages() {
+    if (s.width) FreeImages(false);
+}
+
+uint64_t LiveImageBytes() { return live_image_bytes; }
+
+uint64_t EstimatedImageBytes(uint32_t width, uint32_t height) {
+    if (!s.available) return 0;
+    uint64_t bytes = 0;
+    for (int i = 0; i < kImages; ++i) {
+        bytes += uint64_t(width) * height * vkuFormatTexelBlockSize(ImageFormat((Image)i));
+    }
+    auto pool_bytes = [width, height](const nrd::TextureDesc* pool, uint32_t count) {
+        uint64_t size = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t divisor = std::max<uint32_t>(1, pool[i].downsampleFactor);
+            const uint32_t w = (width + divisor - 1) / divisor, h = (height + divisor - 1) / divisor;
+            size += uint64_t(w) * h * vkuFormatTexelBlockSize(PoolFormat(pool[i].format));
+        }
+        return size;
+    };
+    return bytes + pool_bytes(s.desc->permanentPool, s.desc->permanentPoolSize) +
+           pool_bytes(s.desc->transientPool, s.desc->transientPoolSize);
 }
 
 bool Prepare(VkCommandBuffer cmd, uint32_t width, uint32_t height) {
@@ -540,7 +582,7 @@ bool Prepare(VkCommandBuffer cmd, uint32_t width, uint32_t height) {
         s.width = width;
         s.height = height;
         s.fresh = true;
-        s.clear_history = true;
+        s.initialized_signals = s.previous_signals = 0;
     }
     if (s.fresh) {
         // (every image to GENERAL, where it stays; NRD clears its history the first time)
@@ -583,9 +625,9 @@ uint32_t FrameIndex() {
     return s.frame_index;
 }
 
-bool Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
+uint32_t Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
     if (!s.available || s.width != f.width || s.height != f.height || (!f.sun_shadow && !f.ao && !f.lights && !f.gi)) {
-        return false;
+        return 0;
     }
     nrd::CommonSettings common = {};
     memcpy(common.viewToClipMatrix, f.proj, sizeof(common.viewToClipMatrix));
@@ -600,11 +642,16 @@ bool Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
     common.resourceSize[1] = common.resourceSizePrev[1] = common.rectSize[1] = common.rectSizePrev[1] = (uint16_t)f.height;
     common.denoisingRange = f.denoising_range;
     common.frameIndex = s.frame_index++;
-    common.accumulationMode = s.clear_history ? nrd::AccumulationMode::CLEAR_AND_RESTART
-                                              : f.reset ? nrd::AccumulationMode::RESTART : nrd::AccumulationMode::CONTINUE;
-    s.clear_history = false;
-    if (nrd::SetCommonSettings(*s.instance, common) != nrd::Result::SUCCESS) {
-        return false;
+    const uint32_t signals = (f.sun_shadow ? 1u : 0u) | (f.ao ? 2u : 0u) | (f.lights ? 4u : 0u) | (f.gi ? 8u : 0u);
+    // NRD clears only the denoisers passed to GetComputeDispatches. A signal
+    // enabled after a resize still has uninitialized textures on its first use.
+    if (signals & ~s.initialized_signals) {
+        common.accumulationMode = nrd::AccumulationMode::CLEAR_AND_RESTART;
+    } else if (f.reset || (signals & ~s.previous_signals)) {
+        common.accumulationMode = nrd::AccumulationMode::RESTART;
+    }
+    if (s.api.SetCommonSettings(*s.instance, common) != nrd::Result::SUCCESS) {
+        return 0;
     }
     nrd::SigmaSettings sun = {};
     sun.lightDirection[0] = f.sun[0];
@@ -616,12 +663,12 @@ bool Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
     ao.hitDistanceParameters.A = std::max(0.01f, f.ao_range);
     ao.hitDistanceParameters.B = 0.0f;
     ao.hitDistanceParameters.C = 1.0f;
-    nrd::SetDenoiserSettings(*s.instance, kSun, &sun);
-    nrd::SetDenoiserSettings(*s.instance, kLights, &lights);
-    nrd::SetDenoiserSettings(*s.instance, kAo, &ao);
+    s.api.SetDenoiserSettings(*s.instance, kSun, &sun);
+    s.api.SetDenoiserSettings(*s.instance, kLights, &lights);
+    s.api.SetDenoiserSettings(*s.instance, kAo, &ao);
     nrd::ReblurSettings gi = {};  // (its hit distances normalized as rt_nrd.comp #PREPARE does: the defaults)
     gi.checkerboardMode = nrd::CheckerboardMode::BLACK;  // (rt_gi.comp traces half the pixels, packed to the left half)
-    nrd::SetDenoiserSettings(*s.instance, kGi, &gi);
+    s.api.SetDenoiserSettings(*s.instance, kGi, &gi);
 
     nrd::Identifier ids[4];
     uint32_t n = 0;
@@ -639,12 +686,12 @@ bool Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
     }
     const nrd::DispatchDesc* dispatches = NULL;
     uint32_t count = 0;
-    if (nrd::GetComputeDispatches(*s.instance, ids, n, dispatches, count) != nrd::Result::SUCCESS) {
-        return false;
+    if (s.api.GetComputeDispatches(*s.instance, ids, n, dispatches, count) != nrd::Result::SUCCESS) {
+        return 0;
     }
     if (count > kPassesPerPart) {
         LOGE << "NRD: more passes than its constants hold (" << count << ")" << std::endl;
-        return false;
+        return 0;
     }
     const nrd::InstanceDesc& d = *s.desc;
     const nrd::SPIRVBindingOffsets& offsets = s.library->spirvBindingOffsets;
@@ -654,13 +701,13 @@ bool Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
     for (uint32_t i = 0; i < count; ++i) {
         const nrd::DispatchDesc& dd = dispatches[i];
         for (uint32_t r = 0; r < dd.resourcesNum; ++r) {
-            if (Resolve(dd.identifier, dd.resources[r]) == VK_NULL_HANDLE) {
+            if (Resolve(dd.identifier, dd.resources[r], f) == VK_NULL_HANDLE) {
                 static bool logged = false;
                 if (!logged) {
                     logged = true;
                     LOGE << "NRD: pass " << (dd.name ? dd.name : "?") << " names a resource we don't have: our own denoiser" << std::endl;
                 }
-                return false;
+                return 0;
             }
         }
     }
@@ -668,6 +715,7 @@ bool Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
     ComputeBarrier(cmd);  // (the inputs written)
     std::vector<VkDescriptorImageInfo> infos;
     std::vector<VkWriteDescriptorSet> writes;
+    uint32_t dispatched = 0;
     for (uint32_t i = 0; i < count; ++i) {
         const nrd::DispatchDesc& dd = dispatches[i];
         const Pipeline& p = s.pipelines[dd.pipelineIndex];
@@ -682,7 +730,7 @@ bool Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
         for (uint32_t r = 0; r < dd.resourcesNum; ++r) {
             const nrd::ResourceDesc& rd = dd.resources[r];
             const bool storage = rd.descriptorType == nrd::DescriptorType::STORAGE_TEXTURE;
-            infos[r] = {VK_NULL_HANDLE, Resolve(dd.identifier, rd), VK_IMAGE_LAYOUT_GENERAL};
+            infos[r] = {VK_NULL_HANDLE, Resolve(dd.identifier, rd, f), VK_IMAGE_LAYOUT_GENERAL};
             ok = ok && infos[r].imageView != VK_NULL_HANDLE;
             VkWriteDescriptorSet& w = writes[r];
             w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -707,11 +755,14 @@ bool Denoise(VkCommandBuffer cmd, const Frame& f, int ring) {
             vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, d.resourcesSpaceIndex, (uint32_t)writes.size(), writes.data());
         }
         vkCmdDispatch(cmd, dd.gridWidth, dd.gridHeight, 1);
+        ++dispatched;
         ComputeBarrier(cmd);
     }
     vmaFlushAllocation(VkBackend::Allocator(), s.constants_alloc, part, (VkDeviceSize)count * s.constants_stride);
+    s.initialized_signals |= signals;
+    s.previous_signals = signals;
     VkBackend::EndLabel();
-    return true;
+    return dispatched;
 }
 
 }  // namespace VkNrd
@@ -728,6 +779,10 @@ bool Prepare(VkCommandBuffer, uint32_t, uint32_t) {
     return false;
 }
 
+void ReleaseImages() {}
+uint64_t LiveImageBytes() { return 0; }
+uint64_t EstimatedImageBytes(uint32_t, uint32_t) { return 0; }
+
 VkImageView View(Image) {
     return VK_NULL_HANDLE;
 }
@@ -736,8 +791,8 @@ uint32_t FrameIndex() {
     return 0;
 }
 
-bool Denoise(VkCommandBuffer, const Frame&, int) {
-    return false;
+uint32_t Denoise(VkCommandBuffer, const Frame&, int) {
+    return 0;
 }
 
 }  // namespace VkNrd

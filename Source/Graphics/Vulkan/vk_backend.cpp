@@ -60,6 +60,7 @@ struct State {
     // has them, with buffer device addresses)
     bool ray_query = false;
     bool rt_position_fetch = false;  // (Overgrowth Online RT: a hit's triangle read from its BLAS: reflections)
+    bool memory_budget = false;  // VK_EXT_memory_budget is enabled on this device
     uint64_t present_id = 0;
     uint64_t swapchain_first_id = 1;  // (the first id presented on the current swapchain)
     FrameDiag diag, last_diag;
@@ -207,17 +208,6 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBits
         static std::atomic<int> seen_storage(0);
         if (seen_storage++ == 0) {
             LOGW << "Vulkan (FSR's or NGX's shaders; not counted): " << (data->pMessage ? data->pMessage : "") << std::endl;
-        }
-        return VK_FALSE;
-    }
-    // Overgrowth Online (RT): NRD's REBLUR writes its spherical harmonics as float3
-    // (REBLUR_SH_TYPE) into the RGBA16F images it asks for (there's no RGB16F storage
-    // format): the fourth channel is left undefined and nothing reads it
-    if (data->pMessageIdName != NULL && strcmp(data->pMessageIdName, "VUID-vkCmdDispatch-OpImageWrite-08795") == 0 &&
-        data->pMessage != NULL && strstr(data->pMessage, "variable \"gOut_") != NULL) {
-        static std::atomic<int> seen_nrd(0);
-        if (seen_nrd++ == 0) {
-            LOGW << "Vulkan (NRD's REBLUR, its SH written as float3; not counted): " << data->pMessage << std::endl;
         }
         return VK_FALSE;
     }
@@ -540,6 +530,10 @@ bool CreateDevice() {
     std::vector<const char*> extensions;
     extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    s.memory_budget = HasExtension(available, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    if (s.memory_budget) {
+        extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    }
     // (vsync pacing, where the device has it: see State::present_wait)
     VkPhysicalDevicePresentIdFeaturesKHR present_id = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
     VkPhysicalDevicePresentWaitFeaturesKHR present_wait = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
@@ -642,6 +636,9 @@ bool CreateDevice() {
 
     VmaAllocatorCreateInfo allocator_info = {};
     allocator_info.vulkanApiVersion = VK_API_VERSION_1_3;
+    if (s.memory_budget) {
+        allocator_info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+    }
     if (f12.bufferDeviceAddress) {
         // (Overgrowth Online RT: acceleration structures and their inputs are found by address)
         allocator_info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
@@ -864,6 +861,7 @@ bool BeginFrame() {
     VK_CHECK(vkResetCommandPool(s.device, f.pool, 0));
     f.used = 0;
     RunDeferred();
+    vmaSetCurrentFrameIndex(s.allocator, static_cast<uint32_t>(s.presented));
     if (!BeginCommandBuffer()) {
         return false;
     }
@@ -1294,25 +1292,52 @@ void InsertLabel(const char* name) {
     }
 }
 
+struct DeviceLocalBudget {
+    uint64_t available = 0;
+    uint64_t budget = 0;
+    uint64_t allocated = 0;
+};
+
+static DeviceLocalBudget ReadDeviceLocalBudget() {
+    const VkPhysicalDeviceMemoryProperties* memory;
+    vmaGetMemoryProperties(s.allocator, &memory);
+    VmaBudget heaps[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(s.allocator, heaps);
+    DeviceLocalBudget result;
+    for (uint32_t i = 0; i < memory->memoryHeapCount; ++i) {
+        if (memory->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+            const VmaBudget& heap = heaps[i];
+            result.budget += heap.budget;
+            if (heap.usage < heap.budget) {
+                result.available += heap.budget - heap.usage;
+            }
+            result.allocated += heap.statistics.blockBytes;
+        }
+    }
+    return result;
+}
+
+bool DeviceLocalMemoryAvailable(uint64_t& bytes) {
+    if (!s.memory_budget || s.allocator == VK_NULL_HANDLE) {
+        bytes = 0;
+        return false;
+    }
+    bytes = ReadDeviceLocalBudget().available;
+    return true;
+}
+
 std::string MemoryDescription() {
     if (s.allocator == VK_NULL_HANDLE) {
         return std::string();
     }
-    VkPhysicalDeviceMemoryProperties memory;
-    vkGetPhysicalDeviceMemoryProperties(s.physical, &memory);
-    std::vector<VmaBudget> budgets(memory.memoryHeapCount);
-    vmaGetHeapBudgets(s.allocator, budgets.data());
-    uint64_t usage = 0, budget = 0, ours = 0;
-    for (uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
-        if (memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-            usage += budgets[i].usage;
-            budget += budgets[i].budget;
-            ours += budgets[i].statistics.blockBytes;
-        }
-    }
+    const DeviceLocalBudget memory = ReadDeviceLocalBudget();
     std::ostringstream oss;
-    oss << (budget > usage ? (budget - usage) >> 20 : 0) << " of " << (budget >> 20) << " MB free (device-local), " << (ours >> 20)
-        << " MB ours";
+    if (s.memory_budget) {
+        oss << (memory.available >> 20) << " MiB available of " << (memory.budget >> 20) << " MiB device-local budget";
+    } else {
+        oss << "device-local budget unavailable";
+    }
+    oss << ", " << (memory.allocated >> 20) << " MiB reserved by the game allocator";
     return oss.str();
 }
 

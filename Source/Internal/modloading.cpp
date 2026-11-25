@@ -27,6 +27,8 @@
 #include <Internal/common.h>
 #include <Internal/modid.h>
 #include <Internal/locale.h>
+#include <Online/online.h>
+#include <Online/session_saves.h>
 
 #include <Utility/strings.h>
 #include <Utility/set.h>
@@ -48,6 +50,8 @@
 #include <iostream>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdlib>
 #include <set>
 
 #define PARSE_ERROR(elem, flag)                                                                                                                 \
@@ -641,11 +645,119 @@ void ModInstance::ParseParameter(ModInstance::Parameter* parameter, TiXmlElement
     }
 }
 
+namespace {
+std::string SessionAttribute(const TiXmlElement* element, const char* name) {
+    const char* value = element->Attribute(name);
+    return value ? value : "";
+}
+
+bool SessionToken(const std::string& value, size_t maximum) {
+    return !value.empty() && value.size() <= maximum &&
+           value.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-_.") == std::string::npos;
+}
+
+bool OwnsSettingKey(const std::string& id, const std::string& key) {
+    if (key.size() > id.size() + 1 && key.compare(0, id.size() + 1, id + ".") == 0) return true;
+    // Old saves and scripts refer to these unqualified setting names.
+    if (id == "og-online-scaling")
+        return key == "challenge_time" || key == "challenge_round" || key == "challenge_performance" || key == "challenge_performance_rate";
+    if (id == "og-online-progression")
+        return key == "progression" || key == "progression_shared" || key == "progression_combat" || key == "progression_timer";
+    return false;
+}
+
+bool ParseSession(const TiXmlElement* element, const std::string& id, const std::string& version, ModInstance::SessionContract& out) {
+    if (element->NextSiblingElement("Session")) return false;
+    ModInstance::SessionContract session;
+    session.network_version = SessionAttribute(element, "network_version");
+    session.save_version = SessionAttribute(element, "save_version");
+    session.feature = SessionAttribute(element, "feature");
+    for (const auto* token : {&session.network_version, &session.save_version, &session.feature})
+        if (!token->empty() && !SessionToken(*token, 32)) return false;
+
+    // Native feature providers carry built-in runtime state. Reserve those
+    // names so two mods cannot serialize the same gameplay object twice.
+    if ((session.feature == "scaling" && id != "og-online-scaling") ||
+        (session.feature == "progression" && id != "og-online-progression")) return false;
+    for (const auto* rule = element->FirstChildElement("Rule"); rule; rule = rule->NextSiblingElement("Rule")) {
+        const std::string key = SessionAttribute(rule, "key");
+        const std::string value = SessionAttribute(rule, "value");
+        char* end = nullptr;
+        const double number = std::strtod(value.c_str(), &end);
+        if (!SessionToken(key, 64) || value.empty() || *end || !std::isfinite(number) || number < 0 || number > 100000 ||
+            session.rules.size() >= 128 || !session.rules.emplace(key, number).second) return false;
+    }
+    std::set<std::string> keys;
+    for (const auto* row = element->FirstChildElement("LobbySetting"); row; row = row->NextSiblingElement("LobbySetting")) {
+        ModInstance::LobbySetting setting;
+        setting.key = SessionAttribute(row, "key");
+        setting.label = SessionAttribute(row, "label");
+        setting.description = SessionAttribute(row, "description");
+        setting.modes = SessionAttribute(row, "modes");
+        setting.depends_on = SessionAttribute(row, "depends_on");
+        setting.placement = SessionAttribute(row, "placement");
+        if (keys.size() >= 64 || !SessionToken(setting.key, 96) || !OwnsSettingKey(id, setting.key) ||
+            !keys.insert(setting.key).second || setting.label.empty() || setting.label.size() > 96 ||
+            setting.description.size() > 512 ||
+            (!setting.placement.empty() && !(setting.placement == "difficulty" && id == "og-online-scaling"))) return false;
+        if (!setting.modes.empty()) {
+            if (setting.modes.back() == ',') return false;
+            std::istringstream modes(setting.modes);
+            std::string mode;
+            while (std::getline(modes, mode, ','))
+                if (mode != "campaign" && mode != "arena" && mode != "sandbox") return false;
+        }
+        const std::string live = SessionAttribute(row, "live");
+        if (!live.empty() && live != "true" && live != "false") return false;
+        setting.live = live == "true";
+        if (row->Attribute("default") && row->QueryIntAttribute("default", &setting.default_value) != TIXML_SUCCESS) return false;
+        for (const auto* choice = row->FirstChildElement("Choice"); choice; choice = choice->NextSiblingElement("Choice")) {
+            const char* text = choice->GetText();
+            if (!text || !text[0] || strlen(text) > 96 || setting.choices.size() >= 32) return false;
+            setting.choices.emplace_back(text);
+        }
+        if (setting.choices.size() < 2 || setting.default_value < 0 ||
+            static_cast<size_t>(setting.default_value) >= setting.choices.size()) return false;
+        session.lobby_settings.push_back(std::move(setting));
+    }
+    for (const auto& setting : session.lobby_settings)
+        if (!setting.depends_on.empty() && (!keys.count(setting.depends_on) || setting.depends_on == setting.key)) return false;
+    if (!session.lobby_settings.empty() || session.feature == "scaling" || session.feature == "progression") {
+        if (session.network_version.empty()) session.network_version = version;
+        if (session.save_version.empty()) session.save_version = version;
+    }
+    out = std::move(session);
+    return true;
+}
+
+bool SessionContractLocked(const ModInstance& mod) {
+    return (!mod.session.network_version.empty() || !mod.session.save_version.empty()) &&
+           (Online::Instance()->IsActive() || SessionSaves::Loading());
+}
+
+bool IsBundledMod(const std::string& path) {
+    const size_t end = path.find_last_not_of("/\\");
+    if (end == std::string::npos) return false;
+    const size_t start = path.find_last_of("/\\", end) + 1;
+    const std::string relative = AssemblePath("Data/Mods", path.substr(start, end + 1 - start), "mod.xml");
+    const std::string manifest = AssemblePath(path, "mod.xml");
+    for (int i = 0; i < vanilla_data_paths.num_paths; ++i) {
+        const std::string installed = AssemblePath(vanilla_data_paths.paths[i], relative.c_str());
+        if (CheckFileAccess(installed.c_str()) && AreSame(manifest.c_str(), installed.c_str())) return true;
+    }
+    return false;
+}
+}
+
 void ModInstance::Reload() {
+    // Active peers and save restoration already agreed on this schema.
+    if (active && SessionContractLocked(*this)) return;
     LOGD << "Reloading mod data" << std::endl;
     valid = kValidityValid;
 
     bool load_from_disk = false;
+    bool enabled_by_default = false;
+    session = SessionContract{};
 
     id.set("");
     name.set("");
@@ -1078,6 +1190,17 @@ void ModInstance::Reload() {
                         needs_restart = true;
                     }
 
+                    pElem = hRoot.FirstChild("EnabledByDefault").Element();
+                    if (pElem) {
+                        if (!pElem->GetText() || saysTrue(pElem->GetText()) == -1) { PARSE_ERROR(pElem, kValidityBrokenXml); }
+                        else enabled_by_default = saysTrue(pElem->GetText()) == 1;
+                    }
+                    pElem = hRoot.FirstChild("Session").Element();
+                    if (pElem && !ParseSession(pElem, id.str(), version.str(), session)) {
+                        LOGE << "Invalid session contract or lobby setting declaration in " << modxmlpath << std::endl;
+                        PARSE_ERROR(pElem, kValidityBrokenXml);
+                    }
+
                     pElem = hRoot.FirstChild("SupportsOnline").Element();
                     if (pElem) {
                         if (pElem->GetText()) {
@@ -1374,7 +1497,7 @@ void ModInstance::Reload() {
             } else {
                 switch (modsource) {
                     case ModSourceLocalModFolder:
-                        Activate(false);
+                        Activate(enabled_by_default && IsBundledMod(path));
                         break;
                     case ModSourceSteamworks:
                         Activate(true);
@@ -1419,16 +1542,21 @@ bool ModInstance::Activate(bool value) {
         value = true;
     }
 
+    if (value != active && SessionContractLocked(*this)) {
+        LOGW << "Leave the current session before changing " << name << std::endl;
+        return false;
+    }
     if (value == active) {
         ret_value = true;
     } else if (value == false) {
         RemovePath(path.c_str(), kModPaths);
         active = false;
+        ret_value = true;
     } else if (CanActivate()) {
         if (AddModPath(path.c_str(), GetSid())) {
             LOGI << "Added mod path to filesystem" << std::endl;
             active = true;
-            ret_value = false;
+            ret_value = true;
         } else {
             LOGE << "Can't activate mod, can't add path to filesystem" << std::endl;
             active = false;
@@ -2364,6 +2492,13 @@ bool ModLoading::IsActive(ModID sid) {
     return false;
 }
 
+const ModInstance::SessionContract* ModLoading::GetSessionFeature(const std::string& feature) const {
+    if (feature.empty()) return nullptr;
+    for (const auto* mod : mods)
+        if (mod->IsActive() && mod->session.feature == feature) return &mod->session;
+    return nullptr;
+}
+
 bool ModLoading::IsActive(std::string id) {
     std::vector<ModInstance*>::iterator modit = mods.begin();
 
@@ -2494,8 +2629,9 @@ std::string ModLoading::WhichCampaignLevelBelongsTo(const std::string& level_pat
 
 void ModLoading::RemoveMod(const std::string& path) {
     std::vector<ModInstance*>::iterator modit = GetMod(path);
-    LOGI << "Removed mod: " << path << std::endl;
     if (modit != mods.end()) {
+        if ((*modit)->IsActive() && SessionContractLocked(**modit)) return;
+        LOGI << "Removed mod: " << path << std::endl;
         delete *modit;
         mods.erase(modit);
     }

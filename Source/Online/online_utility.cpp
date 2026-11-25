@@ -113,11 +113,9 @@ std::string OnlineUtility::GetActiveModsString() {
     vector<std::string> entries;
     for (ModInstance* mod : ModLoading::Instance().GetAllMods()) {
         if (CountsOnline(mod)) {
-            if (mod->SupportsOnline()) {
-                entries.push_back(mod->id.str());
-            } else {
-                entries.push_back("[" + mod->id.str() + "]");
-            }
+            const auto& version = mod->session.network_version;
+            const auto entry = mod->id.str() + (version.empty() ? "" : "@" + version);
+            entries.push_back(mod->SupportsOnline() ? entry : "[" + entry + "]");
         }
     }
     std::sort(entries.begin(), entries.end());
@@ -158,7 +156,7 @@ std::vector<OnlineUtility::LocalMod> OnlineUtility::GetLocalMods() {
     vector<LocalMod> mods;
     for (ModInstance* mod : ModLoading::Instance().GetAllMods()) {
         if (!mod->IsCore() && mod->id.str() != "com-wolfire-machine-translations") {
-            mods.push_back({mod->id.str(), mod->name.str(), CountsOnline(mod)});
+            mods.push_back({mod->id.str(), mod->name.str(), CountsOnline(mod), mod->session.network_version});
         }
     }
     return mods;
@@ -170,7 +168,9 @@ std::string OnlineUtility::MakeModsList(vector<LocalMod> mods, size_t max_bytes)
 
     std::string list;
     for (size_t i = 0; i < mods.size(); ++i) {
-        std::string entry = ModsListField(mods[i].id) + "=" + ModsListField(mods[i].name);
+        const auto& mod = mods[i];
+        const auto schema = mod.network_version.empty() ? "" : "@" + ModsListField(mod.network_version);
+        std::string entry = ModsListField(mod.id) + schema + "=" + ModsListField(mod.name);
         if (list.size() + entry.size() + 8 > max_bytes) {  // (and room for what didn't fit)
             AddModName(&list, "+" + std::to_string(mods.size() - i));
             break;
@@ -211,7 +211,10 @@ OnlineUtility::ModDifference OnlineUtility::CompareMods(const std::string& list,
             continue;
         }
         size_t equals = entry.find('=');
-        std::string id = ModsListField(entry.substr(0, equals));
+        const auto key = entry.substr(0, equals);
+        const auto delimiter = key.find('@');
+        const auto id = ModsListField(key.substr(0, delimiter));
+        const auto schema = delimiter == std::string::npos ? "" : ModsListField(key.substr(delimiter + 1));
         std::string name = equals == std::string::npos ? "" : ModsListField(entry.substr(equals + 1));
         if (id.empty()) {
             continue;
@@ -225,8 +228,11 @@ OnlineUtility::ModDifference OnlineUtility::CompareMods(const std::string& list,
         auto it = here.find(id);
         if (it == here.end()) {
             AddModName(&difference.install, name);
-        } else if (!it->second->active) {
-            AddModName(&difference.enable, it->second->name.empty() ? name : ModsListField(it->second->name));
+        } else {
+            if (!it->second->active)
+                AddModName(&difference.enable, it->second->name.empty() ? name : ModsListField(it->second->name));
+            if (schema != it->second->network_version)
+                AddModName(&difference.change_version, name + (schema.empty() ? " (original schema)" : " (network " + schema + ")"));
         }
     }
 

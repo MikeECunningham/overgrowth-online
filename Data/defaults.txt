@@ -45,6 +45,7 @@ rt_light_size:          0.15
 rt_light_clearance:     0.25
 rt_light_shadows_fill:  0
 rt_nrd:                 1
+rt_nrd_percent:         0
 rt_reflections:         0
 rt_gi:                  0
 rt_gi_voxel:            0.25

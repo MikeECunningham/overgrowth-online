@@ -6,7 +6,7 @@ unofficial continuation of [Overgrowth] built on Wolfire's open-source engine.
 It combines the upstream online multiplayer and renderer with native Linux
 support, local multiplayer lobbies, and multiple local players per online client.
 
-Current version: **0.42.0-alpha.15** ([VERSION](VERSION)). This is an optimized
+Current version: **0.42.0-alpha.16** ([VERSION](VERSION)). This is an optimized
 testing prerelease. Native Linux standalone networking has been exercised;
 the new changes still need Windows and Steam-enabled release validation.
 
@@ -43,16 +43,16 @@ and the remaining Steam friends/relay checks.
 - Campaign faction teams: opposing lobby players and bots deploy at encounters,
   with NPC faction affiliations and independent hostile wildcard teams. Friendly
   bots count toward scaling and spread their escorts across teammates.
-- Mode-specific challenge settings for active time, level/match progression, encounter wins,
-  complete-party losses and Forced-50 retry relief. See [Mode challenge settings](Docs/Markdown/Mode%20Challenge.md).
-- Optional **Progression** gives campaign and Arena players XP, equipment,
-  recruits and between-fight shops. Campaigns can loop with their upgrades.
-  See [XP, shops and equipment](Docs/Markdown/Mode%20Challenge.md#player-progression).
-- A readable host-view difficulty readout shows encounter modifiers, reinforcements,
-  progression conditions and an estimated threat relative to the unscaled encounter.
-- Optional campaign party scaling with logarithmic same-species reinforcements, stronger bosses,
-  physical armor, staged weapons for extra enemies, and selectable AI scaling rates. See
-  [Campaign difficulty](Docs/Markdown/Campaign%20Difficulty.md) for rules and limits.
+- Two bundled gameplay mods, **Difficulty Scaling** and **Friendly Progression**.
+  Both start enabled in **Mods**. The host chooses Scaling in **Difficulty** or
+  turns on **Progression** in **Mode settings** for a particular game.
+  Each mod can be disabled independently. Slots, split-screen, save cards
+  and the armor protection models are engine features.
+  See [campaign scaling](Docs/Markdown/Campaign%20Difficulty.md) and
+  [XP, shops and equipment](Docs/Markdown/Mode%20Challenge.md#player-progression).
+- Mods can declare per-mode lobby controls, synchronize host-owned state and
+  include versioned data in save cards and Continue.
+  See [session mods](Docs/Markdown/Mod%20Loading%20Design.md#session-mods).
 - Font rasterization, controller focus, GUI texture loading and Linux
   compatibility fixes. The lobby uses the game's menu artwork and fonts.
 
@@ -79,9 +79,11 @@ The renderer is being rebuilt under the original look. Every step is checked aga
 | Noise (dithering, grain) | A sine-based hash that comes out differently on each GPU and driver | An integer hash (PCG2D): the same on every GPU, on OpenGL and Vulkan |
 | Errors | OpenGL errors hidden in release builds (an unused display list built for every item) | None on the test levels, checked with an OpenGL debug context and the Vulkan validation layer |
 
-Next: GPU culling with multi-draw indirect and compute particles, then Intel XeSS and ray tracing on Vulkan.
+Vulkan ray tracing is available in single-viewport play on Windows and Linux. Choose **Settings → Screen → Renderer → Vulkan**, restart the game, then choose a preset in **Settings → Ray Tracing**. Low enables sun shadows and ambient occlusion. Medium adds local-light shadows and reflections. High enables diffuse global illumination. The hardware needs Vulkan ray queries and bindless sampled images. Reflections and GI additionally require position fetch, and GI needs at least 176 bytes of push constants.
 
-The Linux build includes the core OpenGL/Vulkan renderer and TAA. The current DLSS, FSR and NRD integrations use Windows SDK binaries and are not included on Linux. Standalone Linux networking supports direct IP over UDP; Steam friends, lobby discovery, invites and Valve relays require a Steamworks build.
+Linux supports the built-in GPU denoiser and optional NVIDIA NRD for ray-traced shadows, ambient occlusion and diffuse global illumination. When installed, NRD is selected by default and appears under **Settings → Ray Tracing → Denoiser**. **NRD lighting resolution** defaults to **Auto**, which sizes these effects using the GPU's available memory budget at setup. Select **Native** or a fixed percentage to override it. The scene and interface keep their configured resolutions. [Linux NRD build instructions](COMPILING.md#optional-nvidia-real-time-denoisers-nrd)
+
+DLSS and FSR currently require a Windows build. Standalone Linux networking supports direct IP over UDP. Steam friends, lobby discovery, invites and Valve relays require a Steamworks build.
 
 ## Compared to Wolfire's multiplayer prototype
 
@@ -100,7 +102,7 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 | Who may change what | Any connected player could delete, spawn or move any object and rewrite player states and settings | The host checks every message: a player can only affect their own character; hits and grabs must be in reach |
 | Malformed packets | Could crash the game | Dropped unread; tested with forged attacks |
 
-See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **16** requires matching updated binaries on every computer.
+See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for authority, traffic priorities, campaign consistency and current scaling limits. Native protocol **17** checks the build and the network schemas of active gameplay mods when a player joins.
 
 ## Multiplayer lobby
 

@@ -40,8 +40,8 @@ void CoopStoryUpdate() {
     }
 
     // What the host's character holds as the level starts
+    MovementObject@ host = ReadCharacterID(coop_host_char);
     if(the_time - coop_level_start < kCoopStartRead) {
-        MovementObject@ host = ReadCharacterID(coop_host_char);
         for(int slot = 0; slot < 4; ++slot) {
             int item = host.GetArrayIntVar("weapon_slots", slot);
             if(item != -1 && ObjectExists(item) && coop_start_slots.find(slot) < 0 && coop_start_items.find(item) < 0) {
@@ -60,7 +60,7 @@ void CoopStoryUpdate() {
         }
         return;
     }
-    ReadCharacterID(coop_host_char).SetBoolVar("coop_story_loadout_ready", true);
+    if(host.HasVar("coop_story_loadout_ready")) host.SetBoolVar("coop_story_loadout_ready", true);
     // Each guest, a moment after their character appears
     array<PlayerState>@ states = GetPlayerStates();
     for(uint k = 0; k < states.length(); ++k) {
@@ -80,7 +80,8 @@ void CoopStoryUpdate() {
         coop_armed_ids.insertLast(id);
         if(!states[k].is_bot) CoopShield(id);  // bots keep their authored durability
         CoopArm(id);
-        ReadCharacterID(id).SetBoolVar("coop_story_loadout_ready", true);
+        MovementObject@ guest = ReadCharacterID(id);
+        if(guest.HasVar("coop_story_loadout_ready")) guest.SetBoolVar("coop_story_loadout_ready", true);
     }
 }
 

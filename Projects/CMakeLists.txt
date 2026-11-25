@@ -1245,24 +1245,29 @@ IF(BUILD_OVERGROWTH)
             # (its licence goes with it: whoever passes the DLL on, under terms as protective)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DLSS_SDK}/LICENSE.txt" "$<TARGET_FILE_DIR:Overgrowth>/nvngx_dlss_LICENSE.txt")
     ENDIF()
-    # Overgrowth Online (RT): NVIDIA's real-time denoisers (NRD) for the ray-traced
-    # lighting. Not in this repository either (NVIDIA's RTX SDK licence): NRD_SDK is a
-    # github.com/NVIDIA-RTX/NRD checkout built with its CMake (NRD.dll in _Bin/Release,
-    # SPIR-V shaders, NRD_NORMAL_ENCODING 2). Tested with v4.18.0, configured with
-    # -DNRD_SUPPORTS_QUAD_INTRINSICS=OFF (on, its shaders need VK_KHR_compute_shader_derivatives,
-    # which the device isn't asked for) -DNRD_EMBEDS_DXIL_SHADERS=OFF -DNRD_EMBEDS_DXBC_SHADERS=OFF
-    # (Vulkan only). NRD.dll is delay-loaded, so the game starts
-    # without it (our own denoiser then); without NRD_SDK it's built without NRD
-    SET(NRD_SDK "" CACHE PATH "NVIDIA's NRD, built (Include/, _Bin/Release/NRD.lib and NRD.dll), for the ray tracing's denoisers on Vulkan")
-    IF(WIN32 AND NOT NRD_SDK STREQUAL "" AND EXISTS "${NRD_SDK}/Include/NRD.h" AND EXISTS "${NRD_SDK}/_Bin/Release/NRD.lib")
-        MESSAGE(STATUS "NRD: in ${NRD_SDK}")
-        target_include_directories(Overgrowth PRIVATE "${NRD_SDK}/Include")
-        target_link_libraries(Overgrowth "${NRD_SDK}/_Bin/Release/NRD.lib" delayimp.lib)
-        target_link_options(Overgrowth PRIVATE "/DELAYLOAD:NRD.dll")
-        target_compile_definitions(Overgrowth PRIVATE OG_NRD=1)
-        add_custom_command(TARGET Overgrowth POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NRD_SDK}/_Bin/Release/NRD.dll" "$<TARGET_FILE_DIR:Overgrowth>/"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NRD_SDK}/LICENSE.txt" "$<TARGET_FILE_DIR:Overgrowth>/NRD_LICENSE.txt")
+    # Optional NRD SDK with embedded Vulkan shaders. VkNrd loads its shared
+    # library on demand, so a missing runtime can fall back to the native filter.
+    SET(NRD_SDK "" CACHE PATH "Built NVIDIA NRD SDK with Include/, _Bin/ and embedded SPIR-V")
+    SET(NRD_RUNTIME "")
+    IF(WIN32)
+        SET(NRD_RUNTIME "${NRD_SDK}/_Bin/Release/NRD.dll")
+    ELSEIF(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        SET(NRD_RUNTIME "${NRD_SDK}/_Bin/libNRD.so")
+    ENDIF()
+    IF(NOT NRD_SDK STREQUAL "" AND NRD_RUNTIME)
+        IF(NOT EXISTS "${NRD_SDK}/Include/NRD.h" OR NOT EXISTS "${NRD_RUNTIME}")
+            MESSAGE(FATAL_ERROR "NRD_SDK requires Include/NRD.h and ${NRD_RUNTIME}")
+        ENDIF()
+        MESSAGE(STATUS "NRD Vulkan denoising: ${NRD_RUNTIME}")
+        SET(NRD_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../Source/Graphics/Vulkan/vk_nrd.cpp")
+        SET_PROPERTY(SOURCE "${NRD_SOURCE}" APPEND PROPERTY INCLUDE_DIRECTORIES "${NRD_SDK}/Include")
+        SET_PROPERTY(SOURCE "${NRD_SOURCE}" APPEND PROPERTY COMPILE_DEFINITIONS OG_NRD=1)
+        # Refresh the runtime even when only the independently built SDK changes.
+        SET_PROPERTY(TARGET Overgrowth APPEND PROPERTY LINK_DEPENDS "${NRD_RUNTIME}")
+        ADD_CUSTOM_COMMAND(TARGET Overgrowth POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NRD_RUNTIME}" "$<TARGET_FILE_DIR:Overgrowth>/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NRD_SDK}/LICENSE.txt" "$<TARGET_FILE_DIR:Overgrowth>/NRD_LICENSE.txt"
+            VERBATIM)
     ENDIF()
     # Overgrowth Online (FSR): FSR 3.1 on the Vulkan renderer through AMD's FidelityFX API
     # (MIT): FIDELITYFX_SDK is a copy of the FidelityFX SDK 1.1 (ffx-api/include, the

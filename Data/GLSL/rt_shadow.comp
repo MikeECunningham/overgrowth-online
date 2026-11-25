@@ -93,7 +93,13 @@ const uint kGrass = 0x10u;
 const float kGrassShadow = 1.5;  // (how far along a sun ray grass still shadows, metres)
 
 float Depth(ivec2 p) {
-    return texelFetch(depth_tex, p, 0).r;
+    #if defined(MSAA_DEPTH)
+    ivec2 size = textureSize(depth_tex);
+    #else
+    ivec2 size = textureSize(depth_tex, 0);
+    #endif
+    ivec2 source = ivec2((vec2(p) + 0.5) * (vec2(size) / vec2(pc.info.xy)));
+    return texelFetch(depth_tex, min(source, size - 1), 0).r;
 }
 
 vec3 WorldPos(ivec2 p, float depth) {

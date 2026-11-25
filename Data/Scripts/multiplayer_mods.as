@@ -14,6 +14,7 @@ class GameMods {
     string version;          // theirs ("" unknown)
     array<string> theirs;    // every mod of theirs
     array<string> install;   // theirs, not on this machine
+    array<string> change_version;
     array<string> enable;    // theirs, off here
     array<string> disable;   // on here, not theirs
 }
@@ -29,7 +30,7 @@ array<string> ModNames(const string &in field) {
     return names;
 }
 
-// The last four fields of a row, from `at`
+// Mod fields start at `at`; older rows omit the schema differences.
 GameMods@ ReadGameMods(array<string>@ fields, uint at, const string &in match, const string &in version) {
     GameMods@ m = GameMods();
     m.match = match;
@@ -40,6 +41,7 @@ GameMods@ ReadGameMods(array<string>@ fields, uint at, const string &in match, c
         m.enable = ModNames(fields[at + 2]);
         m.disable = ModNames(fields[at + 3]);
     }
+    if(fields.length() > at + 4) m.change_version = ModNames(fields[at + 4]);
     return m;
 }
 
@@ -90,7 +92,8 @@ void DrawGameMods(GameMods@ m) {
         if(m.disable.length() > 0) {
             DrawModNames("Turn off", m.disable, kWarnColor);
         }
-        if(m.install.length() + m.enable.length() + m.disable.length() == 0) {
+        if(m.change_version.length() > 0) DrawModNames("Match mod version", m.change_version, kWarnColor);
+        if(m.install.length() + m.enable.length() + m.disable.length() + m.change_version.length() == 0) {
             ImGui_TextColored(kWarnColor, "Different mods: this game would turn you away");
         }
     }

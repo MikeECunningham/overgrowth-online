@@ -12,6 +12,7 @@
 #include <Objects/hotspot.h>
 #include <JSON/json.h>
 #include <Internal/config.h>
+#include <Internal/modloading.h>
 #include <algorithm>
 #include <cmath>
 
@@ -29,21 +30,6 @@ struct ChallengeRuntimeState {
     double last_tick = 0, last_publish = 0;
 };
 namespace {
-const char* const keys[] = {"challenge_time", "challenge_round", "challenge_performance", "challenge_performance_rate",
-    "progression", "progression_shared", "progression_combat", "progression_timer"};
-int MaxModeValue(const std::string& key) {
-    if (key == "progression_timer") return 5;
-    if (key == "progression" || key == "progression_shared" || key == "progression_combat") return 1;
-    return key == "challenge_performance" ? 3 : 4;
-}
-int DefaultModeValue(const std::string& key) {
-    return key == "challenge_time" || key == "challenge_round" || key == "challenge_performance_rate" ? ChallengeScaling::Standard : 0;
-}
-bool Known(const std::string& key) { for (const char* candidate : keys) if (key == candidate) return true; return false; }
-bool CampaignMode(const Online* online) {
-    return !online->LobbyCampaign().empty() && online->LobbyMode() != "com-wolfire-arena" &&
-        online->LobbyMode() != "sandbox" && online->LobbyCampaign() != "com-wolfire-sandbox-levels" && !online->LobbyBuild();
-}
 MovementObject* ChallengeActor(SceneGraph* graph, ObjectID id) {
     Object* object = graph ? graph->GetObjectFromID(id) : nullptr;
     return object && object->GetType() == _movement_object ? static_cast<MovementObject*>(object) : nullptr;
@@ -53,6 +39,14 @@ bool Awake(MovementObject* character) {
 }
 ChallengeScaling::Settings Settings(const Online* online) {
     ChallengeScaling::Settings settings;
+    const auto* rules = ModLoading::Instance().GetSessionFeature("scaling");
+    if (!rules) return settings;
+    settings.five_minute_gain = rules->Rule("five_minute_gain");
+    settings.completion_gain = rules->Rule("completion_gain");
+    settings.win_gain = rules->Rule("win_gain");
+    settings.wipe_gain = rules->Rule("wipe_gain");
+    settings.forced_win_gain = rules->Rule("forced_win_gain");
+    settings.retry_relief = rules->Rule("retry_relief");
     if (!online->DifficultyScalingEnabled()) return settings;
     settings.time_rate = online->ModeSetting("challenge_time");
     settings.round_rate = online->ModeSetting("challenge_round");
@@ -63,7 +57,7 @@ ChallengeScaling::Settings Settings(const Online* online) {
 bool Playable(Online* online) {
     Engine* engine = Engine::Instance();
     SceneGraph* graph = engine->GetSceneGraph();
-    return online->IsHosting() && !online->LobbyWaiting() && !online->LobbyBuild() && !online->BuildSession() &&
+    return online->IsHosting() && ModLoading::Instance().HasSessionFeature("scaling") && !online->LobbyWaiting() && !online->LobbyBuild() && !online->BuildSession() &&
         online->host_started_level && engine->IsLevelLoaded() && graph && graph->level && graph->map_editor &&
         graph->map_editor->state_ == MapEditor::kInGame;
 }
@@ -97,45 +91,20 @@ bool Attacking(MovementObject* actor, ObjectID target) {
         (!actor->ASHasVar("combat_allowed") || actor->ASGetBoolVar("combat_allowed"));
 }
 }
-std::string Online::ModeSettingsKey() const { return lobby_build_ ? "build" : lobby_mode_; }
-int Online::ModeSetting(const std::string& key) const {
-    const auto mode = mode_settings_.find(ModeSettingsKey());
-    if (mode == mode_settings_.end()) return DefaultModeValue(key);
-    const auto setting = mode->second.find(key);
-    return setting == mode->second.end() ? DefaultModeValue(key) : setting->second;
-}
-bool Online::SetModeSetting(const std::string& key, int value, PlayerID actor) {
-    actor = ResolveLobbyActor(actor);
-    if (!IsActive() || LobbyMigrationBusy() || !IsLobbyHost(actor) || lobby_build_ || lobby_mode_.empty() ||
-        !Known(key) || value < 0 || value > MaxModeValue(key)) return false;
-    if (key.compare(0, 11, "progression") == 0) {
-        if (!LobbyWaiting() || (!CampaignMode(this) && lobby_mode_ != "com-wolfire-arena")) return false;
-        if (key == "progression_combat" && lobby_mode_ != "com-wolfire-arena") return false;
-    }
-    if (key == "challenge_round" && !CampaignMode(this) && lobby_mode_ != "com-wolfire-arena") return false;
-    if (IsClient()) {
-        Json::Value request; request["action"] = "mode_setting"; request["actor"] = actor;
-        request["key"] = key; request["value"] = value;
-        SubmitLobbyRequest(Json::FastWriter().write(request)); return true;
-    }
-    // Close any just-finished attempt under its existing rules before a live
-    // edit. Enabling a driver cannot retroactively price an earlier defeat.
-    if (Playable(this)) {
-        if (!mode_challenge_state) ResetModeChallenge();
-        SampleWipes(this, *mode_challenge_state);
-    }
-    auto& settings = mode_settings_[ModeSettingsKey()];
-    settings[key] = value;
-    BroadcastLobby(); return true;
+void Online::BeforeChallengeRateChange() {
+    // Count a completed attempt under the previous rates before the host edits them.
+    if (!Playable(this)) return;
+    if (!mode_challenge_state) ResetModeChallenge();
+    SampleWipes(this, *mode_challenge_state);
 }
 void Online::ResetModeChallenge() { mode_challenge_state = std::make_shared<ChallengeRuntimeState>(); }
 CampaignDifficulty::Sample Online::EnemyDifficulty() const {
-    if (mode_challenge_state && mode_challenge_state->enemy_level == level_name)
+    if (ModLoading::Instance().HasSessionFeature("scaling") && mode_challenge_state && mode_challenge_state->enemy_level == level_name)
         return mode_challenge_state->enemy;
     return {};
 }
 void Online::CaptureEnemyDifficulty(bool new_match) {
-    if (!IsHosting() || LobbyWaiting() || !online_session || level_name.empty()) return;
+    if (!IsHosting() || !ModLoading::Instance().HasSessionFeature("scaling") || LobbyWaiting() || !online_session || level_name.empty()) return;
     if (!mode_challenge_state) ResetModeChallenge();
     auto& state = *mode_challenge_state;
     // A manually requested restart can reach here before the ordinary wipe poll.
@@ -164,7 +133,7 @@ void Online::CaptureEnemyDifficulty(bool new_match) {
     BroadcastLobby();
 }
 void Online::BeginChallengeCampaignLoop() {
-    if (!IsHosting() || !mode_challenge_state) return;
+    if (!IsHosting() || !ModLoading::Instance().HasSessionFeature("scaling") || !mode_challenge_state) return;
     ++mode_challenge_state->campaign_loop;
     mode_challenge_state->encounter.clear();
     BroadcastLobby();
@@ -187,7 +156,9 @@ ObjectID Online::ChallengeReferenceAvatar() const {
         if (!entry.second.is_bot && ChallengeActor(graph, entry.second.object_id)) return entry.second.object_id;
     return static_cast<ObjectID>(-1);
 }
-bool Online::DifficultyScalingEnabled() const { return config["difficulty_scaling"].toBool(); }
+bool Online::DifficultyScalingEnabled() const {
+    return config["difficulty_scaling"].toBool() && ModLoading::Instance().HasSessionFeature("scaling");
+}
 float Online::ModeChallengeGeneralPressure() const {
     return DifficultyScalingEnabled() && mode_challenge_state ? static_cast<float>(mode_challenge_state->progress.Data().pressure) : 0.0f;
 }
@@ -219,7 +190,7 @@ void Online::DescribeChallengeHUD(Json::Value& result) const {
     result["completion_award"] = preview.completion_award; result["wipe_award"] = preview.wipe_award;
     result["rates"]["time"] = settings.time_rate; result["rates"]["completion"] = settings.round_rate;
     result["rates"]["performance"] = settings.performance_rate;
-    result["completion_supported"] = session && (CampaignMode(this) || lobby_mode_ == "com-wolfire-arena");
+    result["completion_supported"] = session && (IsCampaignPlayMode() || lobby_mode_ == "com-wolfire-arena");
     result["preview_basis"] = preview.pending ? "After the current win; no extra time, party defeat or level/match award" : "Same pressure; no unfinished encounter award";
     Engine* engine = Engine::Instance();
     SceneGraph* graph = engine->GetSceneGraph();
@@ -235,7 +206,7 @@ void Online::ChallengeEncounterBegin(const std::string& key) {
     if (!Playable(this) || key.empty() || key.size() > 512) return;
     // A campaign map may also be hosted as sandbox. Its legacy level script
     // must not replace sandbox combat groups with a campaign-wide objective.
-    if (key.compare(0, 9, "campaign:") == 0 && !CampaignMode(this)) return;
+    if (key.compare(0, 9, "campaign:") == 0 && !IsCampaignPlayMode()) return;
     if (!mode_challenge_state) ResetModeChallenge();
     mode_challenge_state->graph = Engine::Instance()->GetSceneGraph();
     mode_challenge_state->level = level_name;
@@ -249,20 +220,20 @@ void Online::ChallengeEncounterBegin(const std::string& key) {
 }
 void Online::ChallengeEncounterWin(const std::string& key) {
     if (!Playable(this) || key.empty() || key.size() > 512) return;
-    if (key.compare(0, 9, "campaign:") == 0 && !CampaignMode(this)) return;
+    if (key.compare(0, 9, "campaign:") == 0 && !IsCampaignPlayMode()) return;
     if (!mode_challenge_state) ResetModeChallenge();
     SampleWipes(this, *mode_challenge_state);
     if (mode_challenge_state->progress.Win(Key(this, key), Settings(this))) BroadcastLobby();
 }
 void Online::ChallengeCompletion(const std::string& key) {
     if (!Playable(this) || key.empty() || key.size() > 512) return;
-    if (!CampaignMode(this) && lobby_mode_ != "com-wolfire-arena") return;
+    if (!IsCampaignPlayMode() && lobby_mode_ != "com-wolfire-arena") return;
     if (!mode_challenge_state) ResetModeChallenge();
     SampleWipes(this, *mode_challenge_state);
     if (mode_challenge_state->progress.Completion(Key(this, key), Settings(this))) BroadcastLobby();
 }
 void Online::UpdateModeChallenge(SceneGraph* graph) {
-    if (!IsHosting()) return;
+    if (!IsHosting() || !ModLoading::Instance().HasSessionFeature("scaling")) return;
     if (!mode_challenge_state) ResetModeChallenge();
     auto& state = *mode_challenge_state;
     const double now = OnlineClockMs();
@@ -289,7 +260,7 @@ void Online::UpdateModeChallenge(SceneGraph* graph) {
     state.progress.Advance(elapsed, settings);
     // Modes without authored round/goal events use the current combat group.
     bool authored = false;
-    if (CampaignMode(this)) for (Object* object : graph->hotspots_)
+    if (IsCampaignPlayMode()) for (Object* object : graph->hotspots_)
         if (static_cast<Hotspot*>(object)->GetScriptFile().find("overgrowth_level") != std::string::npos) { authored = true; break; }
     const auto encounter = state.progress.Data().encounters.find(state.encounter);
     const bool explicit_encounter = !state.encounter.empty() && state.encounter.find("|combat:") == std::string::npos &&
@@ -326,8 +297,6 @@ void Online::UpdateModeChallenge(SceneGraph* graph) {
 std::string Online::ModeChallengePayload() const {
     Json::Value root;
     root["version"] = 2;
-    root["modes"] = Json::Value(Json::objectValue);
-    for (const auto& mode : mode_settings_) for (const auto& setting : mode.second) root["modes"][mode.first][setting.first] = setting.second;
     if (mode_challenge_state) {
         const auto& state = *mode_challenge_state;
         const auto& data = state.progress.Data();
@@ -363,19 +332,10 @@ bool Online::ReceiveModeChallenge(const std::string& payload, bool validate_only
     if (payload.size() > 512 * 1024) return false;
     Json::Reader reader; Json::Value root;
     if (!reader.parse(payload, root, false) || !root.isObject() || !root["version"].isInt() || root["version"].asInt() != 2) return false;
-    std::map<std::string, std::map<std::string, int>> incoming;
-    if (!root["modes"].isObject() || root["modes"].size() > 128) return false;
-    for (const auto& mode : root["modes"].getMemberNames()) {
-        if (mode.size() > 256 || !root["modes"][mode].isObject()) return false;
-        for (const char* key : keys) {
-            const auto& value = root["modes"][mode][key];
-            if (value.isNull()) continue;
-            if (!value.isInt() || value.asInt() < 0 || value.asInt() > MaxModeValue(key)) return false;
-            incoming[mode][key] = value.asInt();
-        }
+    if (root["pressure"].isNull()) {
+        if (!validate_only) mode_challenge_state.reset();
+        return true;
     }
-    // A lobby with no started challenge still carries per-mode preferences.
-    if (root["pressure"].isNull()) { if (!validate_only) mode_settings_ = incoming; return true; }
     if (!root["pressure"].isNumeric() || !root["seconds"].isNumeric() || !root["completions"].isArray() ||
         !root["wipes"].isArray() || !root["encounters"].isObject() || !root["encounter"].isString() || !root["level"].isString() ||
         !root["wipe_latched"].isBool() || !root["wipe_serial"].isUInt64() || !root["combat_serial"].isUInt64() ||
@@ -407,11 +367,11 @@ bool Online::ReceiveModeChallenge(const std::string& payload, bool validate_only
         enemy.ai_rate = rate.asInt();
     }
     ChallengeScaling::State validated;
-    if (!validated.Restore(data) || root["wipe_serial"].asUInt64() < data.wipes.size()) return false;
+    if (!validated.Restore(data, Settings(this)) || root["wipe_serial"].asUInt64() < data.wipes.size()) return false;
     if (validate_only) return true;
     if (!mode_challenge_state) ResetModeChallenge();
     auto& state = *mode_challenge_state;
-    state.progress = validated; mode_settings_ = incoming;
+    state.progress = validated;
     state.enemy = enemy; state.enemy_level = e.get("level","").asString();
     state.campaign_loop = root["loop"].isUInt() ? root["loop"].asUInt() : 0;
     state.encounter = root["encounter"].asString(); state.level = root["level"].asString();

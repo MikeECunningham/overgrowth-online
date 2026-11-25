@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Mod>
+    <Id>og-online-progression</Id>
+    <Name>Friendly Progression</Name>
+    <Author>Overgrowth Online</Author>
+    <Description>Earn XP, shop for upgrades and equip your fighters between campaign levels or Arena matches. The host enables progression in the lobby and chooses team sharing, Arena rewards, and shop timing. Peers match this mod and receive the host’s balances and builds. Session saves keep these with each roster slot and restore open shops.</Description>
+    <Category>Gameplay</Category>
+    <Thumbnail>Data/Images/og-online-progression.jpg</Thumbnail>
+    <Version>1.0.0</Version>
+    <SupportedVersion>0.41.36</SupportedVersion>
+    <EnabledByDefault>true</EnabledByDefault>
+    <SupportsOnline>true</SupportsOnline>
+    <NeedsRestart>false</NeedsRestart>
+    <Session feature="progression" network_version="1" save_version="1">
+        <Rule key="stat_base" value="16"/>
+        <Rule key="stat_linear" value="5"/>
+        <Rule key="stat_quadratic" value="2"/>
+        <Rule key="bounty_rabbit" value="16"/>
+        <Rule key="bounty_wolf" value="48"/>
+        <Rule key="bounty_dog" value="24"/>
+        <Rule key="bounty_large_dog" value="34"/>
+        <Rule key="bounty_rat" value="10"/>
+        <Rule key="bounty_cat" value="24"/>
+        <Rule key="weapon_dagger" value="140"/>
+        <Rule key="weapon_sword" value="880"/>
+        <Rule key="weapon_spear" value="1040"/>
+        <Rule key="weapon_staff" value="360"/>
+        <Rule key="weapon_broadsword" value="1280"/>
+        <Rule key="ai_hardcore" value="1800"/>
+        <Rule key="ai_expert" value="3400"/>
+        <Rule key="ai_nightmare" value="8600"/>
+        <Rule key="recruit_base" value="2400"/>
+        <Rule key="recruit_growth" value="2.25"/>
+        <LobbySetting key="progression" label="Progression" description="Earn XP for upgrades between campaign levels or Arena matches." default="0" modes="campaign,arena">
+            <Choice>Off</Choice>
+            <Choice>On</Choice>
+        </LobbySetting>
+        <LobbySetting key="progression_shared" label="Upgrades" description="Buy upgrades independently or share them across a team." default="0" modes="campaign,arena" depends_on="progression">
+            <Choice>Independent</Choice>
+            <Choice>Shared by team</Choice>
+        </LobbySetting>
+        <LobbySetting key="progression_combat" label="Arena XP" description="Choose how Arena fighters earn XP." default="0" modes="arena" depends_on="progression">
+            <Choice>Kills</Choice>
+            <Choice>Combat damage</Choice>
+        </LobbySetting>
+        <LobbySetting key="progression_timer" label="Multiplayer shop timer" description="Set how long players have to choose their purchases." default="0" modes="campaign,arena" depends_on="progression">
+            <Choice>Infinite</Choice>
+            <Choice>10 seconds</Choice>
+            <Choice>15 seconds</Choice>
+            <Choice>30 seconds</Choice>
+            <Choice>60 seconds</Choice>
+            <Choice>120 seconds</Choice>
+        </LobbySetting>
+    </Session>
+</Mod>

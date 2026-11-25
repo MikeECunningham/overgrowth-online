@@ -1,10 +1,22 @@
 """Explicit bot seats survive a real server handoff without becoming local users."""
 from pathlib import Path
+import shutil
+import tempfile
+import xml.etree.ElementTree as ET
 
 
 def bot_migration(ctx):
-    h = ctx.instance('bot_migration_host', keys={'mp_port': '27744', 'playername': 'Original human'})
-    c = ctx.instance('bot_migration_candidate', keys={'mp_port': '27745', 'playername': 'New host human'})
+    # Save-only mod data belongs to the current host, including after promotion.
+    with tempfile.TemporaryDirectory() as temporary:
+        mod = Path(temporary, 'session-rules')
+        shutil.copytree(Path(__file__).resolve().parents[2] / 'test/mods/session-rules', mod)
+        manifest = ET.parse(mod / 'mod.xml')
+        contract = manifest.getroot().find('Session')
+        contract.attrib.pop('network_version')
+        contract.remove(contract.find('LobbySetting'))
+        manifest.write(mod / 'mod.xml', encoding='utf-8', xml_declaration=True)
+        h = ctx.instance('bot_migration_host', mods=[str(mod)], keys={'mp_port': '27744', 'playername': 'Original human'})
+        c = ctx.instance('bot_migration_candidate', mods=[str(mod)], keys={'mp_port': '27745', 'playername': 'New host human'})
     machines = [h, c]
     metrics = {}
     serial = 0
@@ -32,6 +44,8 @@ def bot_migration(ctx):
         return config['bot_migration_probe'] in ('1', 'true')
 
     assert probe(h, 'LobbyBeginHost() && LobbyAddBot() && LobbyAddBot()')
+    secret = r'"{\"host_seat\":255}"'
+    assert probe(h, f'SessionSetModData("session-rules",{secret})')
     bots = sorted([p for p in rows(h) if p['bot']], key=lambda p: p['id'])
     assert len(bots) == 2
     for bot, name, team in zip(bots, ['North Bot', 'South Bot'], [2, 3]):
@@ -45,6 +59,7 @@ def bot_migration(ctx):
         for bot in [p for p in rows(i) if p['bot']]:
             assert bot['peer_id'] == 255 and bot['screen'] == 0
             assert not bot['host'] and not bot['leader']
+    assert probe(c, 'SessionGetModData("session-rules") == "{}"')
     first = bots[0]['id']
     assert not probe(c, 'LobbyAddBot()')
     assert not probe(c, f'LobbySetPlayerName({first},"Stolen") || LobbySetPlayerTeam({first},1) || LobbyRemovePlayer({first})')
@@ -59,6 +74,9 @@ def bot_migration(ctx):
         assert status(i)['local_inputs'] == 1 and status(i)['local_players'] == 1
     assert status(c)['online']['hosting'] and status(h)['online']['client']
     assert probe(h, 'Online_GetOwnPlayerID() == 255 && Online_GetPlayerName(255) == "Original human"')
+    assert probe(c, f'SessionGetModData("session-rules") == {secret}')
+    assert probe(h, 'SessionGetModData("session-rules") == "{}"')
+    metrics['save_only_data_transferred'] = True
     metrics['migrated_roster'] = rows(c)
     print('bot_migration: actual transfer and human-only admission PASS', flush=True)
     h.stop()

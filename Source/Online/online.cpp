@@ -26,6 +26,7 @@
 #include "online.h"
 #include <Online/friendly_progression.h>
 #include <Online/session_saves.h>
+#include <Online/session_mods.h>
 #include <Scripting/angelscript/ascontext.h>
 #include <algorithm>
 
@@ -916,7 +917,7 @@ bool Online::IsAwaitingShutdown() const {
     return mode == MultiplayerMode::AwaitingShutdown;
 }
 
-void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
+void Online::StartMultiplayer(MultiplayerMode multiplayerMode, bool adopting_world) {
     local_only_session_ = false;
     campaign_main_player_id_ = LobbyAuthority::InvalidPlayer;
     campaign_main_avatar_id_ = static_cast<ObjectID>(-1);
@@ -946,6 +947,7 @@ void Online::StartMultiplayer(MultiplayerMode multiplayerMode) {
         LOGE << "Incompatible mods: " << OnlineUtility::GetActiveIncompatibleModsString() << std::endl;
     }
 
+    if (!adopting_world && !SessionSaves::Loading()) SessionMods::Clear();
     FriendlyProgression::NewSession();
     lobby_slots_.clear();
     lobby_auto_admission_ = true;
@@ -1070,6 +1072,7 @@ void Online::QueueStopMultiplayer(bool transport_lost) {
 }
 
 void Online::StopMultiplayer() {
+    SessionMods::Clear();
     SessionSaves::LeaveLobby();
     OnLobbySessionStopping();
     lobby_waiting_ = false;

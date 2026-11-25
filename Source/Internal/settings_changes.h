@@ -6,12 +6,16 @@
 // Personal controls and settings consumed directly at runtime do not require
 // rebuilding render targets or preloading the scene's shaders.
 namespace SettingsChanges {
+inline bool ScalingMatchSetting(const std::string& key) {
+    return key == "campaign_mp_scaling" || key == "campaign_mp_nightmare" || key == "difficulty_scaling" ||
+           key == "campaign_ai_scaling_rate" || key == "campaign_ai_scaling" ||
+           key == "campaign_armor_scaling" || key == "campaign_weapon_scaling";
+}
+
 inline bool CampaignMatchSetting(const std::string& key) {
     return key == "difficulty_preset" || key == "game_difficulty" ||
            key == "global_time_scale_mult" || key == "tutorials" || key == "auto_ledge_grab" ||
-           key == "campaign_mp_scaling" || key == "campaign_mp_nightmare" || key == "difficulty_scaling" ||
-           key == "campaign_ai_scaling_rate" || key == "campaign_ai_scaling" || key == "campaign_armor_scaling" || key == "campaign_weapon_scaling" ||
-           key == "armor_localized" || key == "oo_arena_random";
+           ScalingMatchSetting(key) || key == "armor_localized" || key == "oo_arena_random";
 }
 
 inline bool StartsWith(const std::string& value, const char* prefix) {

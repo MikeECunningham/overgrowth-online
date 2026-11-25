@@ -1,0 +1,18 @@
+diff --git a/Shaders/REBLUR_Config.hlsli b/Shaders/REBLUR_Config.hlsli
+--- a/Shaders/REBLUR_Config.hlsli
++++ b/Shaders/REBLUR_Config.hlsli
+@@ -119,7 +119,14 @@
+     #define REBLUR_TYPE                                         float4
+ #endif
+ 
++#ifdef __spirv__
++// This software contains source code provided by NVIDIA Corporation.
++// REBLUR stores its three SH coefficients in RGBA16F. Vulkan image writes
++// must supply all four components, including the unused fourth channel.
++#define REBLUR_SH_TYPE                                          float4
++#else
+ #define REBLUR_SH_TYPE                                          float3
++#endif
+ #define REBLUR_FAST_TYPE                                        float
+ #define REBLUR_DATA1_TYPE                                       float2
+ #define REBLUR_TILE_TYPE                                        float

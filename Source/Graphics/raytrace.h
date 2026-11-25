@@ -13,6 +13,7 @@
 #pragma once
 
 #include <Math/mat4.h>
+#include <Math/ivec2.h>
 
 class Camera;
 class SceneGraph;
@@ -29,15 +30,18 @@ bool GrassInPrepass();
 float GrassRange();
 
 // Engine::DrawScene, after the depth prepass of a single screen's final frame: the scene
-// gathered, traced and denoised at the scene's size, the mask bound for the colour pass
+// gathered, traced and denoised at the lighting resolution, the mask bound for the colour pass
 void TraceLighting(SceneGraph* scenegraph, Camera* camera, const mat4& proj, const mat4& view, int width, int height);
 // The colour pass of this scene reads the mask (SceneGraph's shader suffix: #RT_LIGHTING)
 bool MaskReady();
+ivec2 LightingSize();
 // ... and traces its reflections (rt_reflections: #RT_REFLECTIONS, rt_reflect.glsl)
 bool ReflectionsReady();
 // ... and takes its ambient light from the traced GI (rt_gi: #RT_GI, TEX_RT_GI)
 bool GiReady();
 // The scene drawn: the next one traces again
 void EndScene();
+// Release full-screen lighting targets when a level or single-viewport RT ends.
+void ReleaseTargets();
 
 }  // namespace Raytrace

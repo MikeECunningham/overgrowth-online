@@ -16,6 +16,7 @@
 #include <Graphics/temporal.h>
 #include <Graphics/Vulkan/vk_backend.h>
 #include <Graphics/Vulkan/vk_gl.h>
+#include <Graphics/Vulkan/vk_nrd.h>
 #include <Graphics/Vulkan/vk_rt.h>
 #include <Editors/entity_type.h>
 #include <Internal/config.h>
@@ -48,15 +49,15 @@ namespace Raytrace {
 namespace {
 
 struct State {
-    // At the scene's size (VkRt::LightingPass): the raw result and the denoiser's history,
+    // At the lighting resolution (VkRt::LightingPass): the raw result and the denoiser's history,
     // this frame's [current] and last frame's; the mask the colour pass reads; what sizes
     // the penumbras
     TextureRef raw[2], history[2], mask, extra;
     // GI's (rt_gi): its raw result and directions (NRD's input), what the colour pass reads
     // (REBLUR's SH0 and SH1)
-    TextureRef gi_raw, gi_dir, gi_sh0, gi_sh1;
+    TextureRef gi_raw, gi_dir, gi_sh0[2], gi_sh1[2];
     bool gi_ready = false;
-    bool gi_rr = false;  // (this scene's GI is raw, for DLSS Ray Reconstruction: gi_raw and gi_dir)
+    bool builtin_gi_last = false;
     std::string gi_level;  // (the level the radiance cache holds: another empties it)
     std::vector<float> lights;  // (the scene's point lights in view, LightingPass::lights)
     std::vector<float> grass;   // (a grass surface's instances' transforms, this frame's)
@@ -70,6 +71,9 @@ struct State {
     std::vector<Emitter> emitters;
     int current = 0;
     int width = 0, height = 0;
+    int auto_scene_width = 0, auto_scene_height = 0;
+    bool auto_gi = false;
+    int auto_percent = 100;
     bool ready = false;
     uint32_t frame = 0;
     // Last frame's trace, if there was one: where its history goes on from
@@ -663,6 +667,48 @@ void UpdateGameAmbient(SceneGraph* scenegraph) {
     ++s.ambient_version;
 }
 
+// Choose once on entering Auto, resizing the scene or changing the GI workload.
+// Rechecking free VRAM every frame would count our live images against the next frame.
+int NrdLightingPercent(int width, int height, bool gi) {
+    const int fixed = config["rt_nrd_percent"].toNumber<int>();
+    if (fixed > 0) {
+        s.auto_scene_width = 0;
+        return std::max(25, std::min(100, fixed));
+    }
+    if (s.auto_scene_width == width && s.auto_scene_height == height && s.auto_gi == gi && s.mask.valid()) {
+        return s.auto_percent;
+    }
+    s.auto_scene_width = width;
+    s.auto_scene_height = height;
+    s.auto_gi = gi;
+    s.auto_percent = 100;
+    uint64_t available = 0;
+    if (VkBackend::DeviceLocalMemoryAvailable(available)) {
+        for (int percent : {100, 75, 50, 33, 25}) {
+            const int w = std::max(1, (width * percent + 50) / 100);
+            const int h = std::max(1, (height * percent + 50) / 100);
+            // Two raw RGBA32F, two RGBA16F histories, one RGBA32F mask and RG16F penumbra.
+            // GI adds four RGBA16F images shared with REBLUR.
+            const uint64_t pixel_count = uint64_t(w) * h;
+            const uint64_t nrd_images = VkNrd::EstimatedImageBytes(w, h);
+            const uint64_t targets = pixel_count * (68 + (gi ? 32 : 0)) + nrd_images;
+            uint64_t budget = available;
+            if (s.width == w && s.height == h && s.mask.valid()) {
+                // These allocations already count against the driver's available budget.
+                budget += pixel_count * 68;
+                if (gi && s.gi_raw.valid() && s.gi_dir.valid() && s.gi_sh0[0].valid() && s.gi_sh1[0].valid()) {
+                    budget += pixel_count * 32;
+                }
+                if (s.nrd_last) budget += nrd_images;
+            }
+            s.auto_percent = percent;
+            // Leave room for geometry and material textures still being uploaded.
+            if (targets <= budget - budget / 4) break;
+        }
+    }
+    return s.auto_percent;
+}
+
 }  // namespace
 
 bool GrassInPrepass() {
@@ -680,25 +726,52 @@ bool Wanted() {
            VkRt::Available();
 }
 
+void ReleaseTargets() {
+    VkNrd::ReleaseImages();
+    if (!s.width) return;
+    for (int i = 0; i < 2; ++i) {
+        s.raw[i].clear();
+        s.history[i].clear();
+        s.gi_sh0[i].clear();
+        s.gi_sh1[i].clear();
+    }
+    s.mask.clear();
+    s.extra.clear();
+    s.gi_raw.clear();
+    s.gi_dir.clear();
+    s.width = s.height = 0;
+    s.have_prev = s.nrd_last = s.builtin_gi_last = false;
+    s.gi_level.clear();
+    Textures::Instance()->DeleteUnusedTextures();
+}
+
 void TraceLighting(SceneGraph* scenegraph, Camera* camera, const mat4& proj, const mat4& view, int width, int height) {
     s.ready = false;
     s.gi_ready = false;
     if (!Wanted() || width <= 0 || height <= 0) {
-        s.have_prev = false;
+        ReleaseTargets();
         return;
+    }
+    const bool nrd = config["rt_denoise"].toNumber<bool>() && config["rt_nrd"].toNumber<bool>() && VkRt::NrdAvailable();
+    if (!nrd) VkNrd::ReleaseImages();
+    const bool gi = config["rt_gi"].toNumber<bool>() && VkRt::GiSupported();
+    if (nrd && !Temporal::RayReconstruction()) {
+        const int percent = NrdLightingPercent(width, height, gi);
+        width = std::max(1, (width * percent + 50) / 100);
+        height = std::max(1, (height * percent + 50) / 100);
+    } else {
+        s.auto_scene_width = 0;
     }
     Textures* textures = Textures::Instance();
     if (!s.mask.valid() || s.width != width || s.height != height) {
+        ReleaseTargets();
+        LOGI << "Ray-traced lighting resolution: " << width << "x" << height << std::endl;
         for (int i = 0; i < 2; ++i) {
             s.raw[i] = MakeTarget(width, height, GL_RGBA32F, GL_RGBA, "RT::Raw");
             s.history[i] = MakeTarget(width, height, GL_RGBA16F, GL_RGBA, "RT::History");
         }
         s.mask = MakeTarget(width, height, GL_RGBA32F, GL_RGBA, "RT::Lighting");
         s.extra = MakeTarget(width, height, GL_RG16F, GL_RG, "RT::Penumbra");
-        s.gi_raw = TextureRef();
-        s.gi_dir = TextureRef();
-        s.gi_sh0 = TextureRef();
-        s.gi_sh1 = TextureRef();
         s.width = width;
         s.height = height;
         s.have_prev = false;
@@ -761,7 +834,7 @@ void TraceLighting(SceneGraph* scenegraph, Camera* camera, const mat4& proj, con
     p.time = game_timer.GetRenderTime();
     // NVIDIA's denoisers (NRD) where they're there: the camera unjittered (the motion), the
     // matrices NRD takes, its rows flipped so its first image row is ours (the bottom)
-    p.nrd = p.denoise && config["rt_nrd"].toNumber<bool>() && VkRt::NrdAvailable();
+    p.nrd = nrd;
     const mat4 unjittered = Temporal::InScene() ? Temporal::ViewProj() : proj_view;
     mat4 nrd_proj = unjittered * invert(view);
     for (int c = 0; c < 4; ++c) {
@@ -778,24 +851,32 @@ void TraceLighting(SceneGraph* scenegraph, Camera* camera, const mat4& proj, con
         memcpy(p.nrd_view_prev, (go_on ? s.prev_view : view).entries, sizeof(p.nrd_view_prev));
         memcpy(p.nrd_proj_prev, (go_on ? s.prev_nrd_proj : nrd_proj).entries, sizeof(p.nrd_proj_prev));
     }
-    // Global illumination (NRD denoises it: no NRD, none): the sky's cube map for the rays
-    // that meet nothing, the sun's light as the colour pass has it
-    // (or DLSS Ray Reconstruction denoises it, in the frame)
+    // GI uses the sky radiance for misses and the same sun light as the colour pass.
     p.gi_rr = Temporal::RayReconstruction();
-    if ((p.nrd || p.gi_rr) && config["rt_gi"].toNumber<bool>() && scenegraph->sky != NULL) {
+    const bool builtin_gi = !p.nrd && !p.gi_rr;
+    const int gi_index = builtin_gi ? s.current : 0;
+    if (gi && scenegraph->sky != NULL) {
         TextureRef sky = scenegraph->sky->GetSpecularCubeMapTexture();
         if (sky.valid()) {
-            if (!s.gi_sh0.valid()) {
+            if (!s.gi_raw.valid()) {
                 s.gi_raw = MakeTarget(width, height, GL_RGBA16F, GL_RGBA, "RT::GiRaw");
                 s.gi_dir = MakeTarget(width, height, GL_RGBA16F, GL_RGBA, "RT::GiDirection");
-                s.gi_sh0 = MakeTarget(width, height, GL_RGBA16F, GL_RGBA, "RT::GiSh0");
-                s.gi_sh1 = MakeTarget(width, height, GL_RGBA16F, GL_RGBA, "RT::GiSh1");
+            }
+            for (int i = 0; i < (builtin_gi ? 2 : 1); ++i) {
+                if (!s.gi_sh0[i].valid()) {
+                    s.gi_sh0[i] = MakeTarget(width, height, GL_RGBA16F, GL_RGBA, "RT::GiSh0");
+                    s.gi_sh1[i] = MakeTarget(width, height, GL_RGBA16F, GL_RGBA, "RT::GiSh1");
+                }
             }
             p.gi = true;
             p.gi_raw = textures->returnTexture(s.gi_raw);
             p.gi_dir = textures->returnTexture(s.gi_dir);
-            p.gi_sh0 = textures->returnTexture(s.gi_sh0);
-            p.gi_sh1 = textures->returnTexture(s.gi_sh1);
+            p.gi_sh0 = textures->returnTexture(s.gi_sh0[gi_index]);
+            p.gi_sh1 = textures->returnTexture(s.gi_sh1[gi_index]);
+            if (builtin_gi) {
+                p.gi_sh0_prev = textures->returnTexture(s.gi_sh0[gi_index ^ 1]);
+                p.gi_sh1_prev = textures->returnTexture(s.gi_sh1[gi_index ^ 1]);
+            }
             p.gi_debug = (uint32_t)std::max(0, std::min(5, config["rt_gi_debug"].toNumber<int>()));
             p.sky = textures->returnTexture(sky);
             const vec3 sun_color = scenegraph->primary_light.color * scenegraph->primary_light.intensity;
@@ -804,6 +885,7 @@ void TraceLighting(SceneGraph* scenegraph, Camera* camera, const mat4& proj, con
             p.sun_color[2] = sun_color[2];
             const std::string level = scenegraph->level_path_.GetFullPathStr();
             p.gi_cache_reset = level != s.gi_level;
+            p.gi_history = has_history && !p.gi_cache_reset && s.builtin_gi_last;
             s.gi_level = level;
             p.gi_voxel = std::max(0.05f, std::min(4.0f, config["rt_gi_voxel"].toNumber<float>()));
             p.gi_emission = std::max(0.0f, std::min(100.0f, config["rt_gi_emission"].toNumber<float>()));
@@ -845,7 +927,7 @@ void TraceLighting(SceneGraph* scenegraph, Camera* camera, const mat4& proj, con
     }
     s.ready = VkRt::TraceLighting(p);
     s.have_prev = s.ready;
-    s.nrd_last = s.ready && p.nrd;
+    s.nrd_last = s.ready && VkRt::LastNrdDispatchCount() > 0;
     s.prev_unjittered = unjittered;
     s.prev_view = view;
     s.prev_nrd_proj = nrd_proj;
@@ -857,16 +939,22 @@ void TraceLighting(SceneGraph* scenegraph, Camera* camera, const mat4& proj, con
         textures->bindTexture(s.mask, TEX_RT_LIGHTING);
         textures->PinUnit(TEX_RT_LIGHTING, true);
         s.gi_ready = p.gi && VkRt::GiTraced();
-        s.gi_rr = p.gi_rr;
+        s.builtin_gi_last = s.gi_ready && builtin_gi && p.denoise;
         if (s.gi_ready) {
-            textures->bindTexture(p.gi_rr ? s.gi_raw : s.gi_sh0, TEX_RT_GI);
-            textures->bindTexture(p.gi_rr ? s.gi_dir : s.gi_sh1, TEX_RT_GI_SH1);
+            textures->bindTexture(p.gi_rr ? s.gi_raw : s.gi_sh0[gi_index], TEX_RT_GI);
+            textures->bindTexture(p.gi_rr ? s.gi_dir : s.gi_sh1[gi_index], TEX_RT_GI_SH1);
             textures->PinUnit(TEX_RT_GI, true);
             textures->PinUnit(TEX_RT_GI_SH1, true);
         }
-    } else if (!p.gi) {
-        s.gi_level.clear();  // (not traced: the cache may go stale meanwhile)
     }
+    if (!s.gi_ready) {
+        s.gi_level.clear();
+        s.builtin_gi_last = false;
+    }
+}
+
+ivec2 LightingSize() {
+    return ivec2(s.width, s.height);
 }
 
 bool MaskReady() {

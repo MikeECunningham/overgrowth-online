@@ -58,7 +58,7 @@ def campaign_shop_saves(ctx):
     _code(source,'SessionSave(1);')
     wait(source,lambda:record(source,1).get("world",{}).get("campaign_transition")=="slaver_camp",
          "manual shop card stores its destination")
-    assert record(source,1)["progression"]["open"]
+    assert record(source,1)["session_mods"]["og-online-progression"]["runtime"]["open"]
     resumed=cold_resume(source,"campaign_shop_chapter_resume",28832,1,FIRST)
     source.stop()
     act(resumed,"ready")
@@ -75,9 +75,9 @@ def campaign_shop_saves(ctx):
     wait(resumed,lambda:view(resumed).get("shop_open",False) and view(resumed).get("final",False),"real final shop")
     act(resumed,"loop","yes")
     _code(resumed,'SessionAutosave();SessionSave(2);')
-    wait(resumed,lambda:record(resumed,0).get("progression",{}).get("loop",False) and
+    wait(resumed,lambda:record(resumed,0).get("session_mods",{}).get("og-online-progression",{}).get("runtime",{}).get("loop",False) and
          record(resumed,0).get("world",{}).get("campaign_transition") == "", "final autosave includes pending loop")
-    wait(resumed,lambda:record(resumed,2).get("progression",{}).get("loop",False),"final manual card includes loop")
+    wait(resumed,lambda:record(resumed,2).get("session_mods",{}).get("og-online-progression",{}).get("runtime",{}).get("loop",False),"final manual card includes loop")
     final=cold_resume(resumed,"campaign_shop_final_resume",28833,0,"27_Sky_Ark.xml")
     resumed.stop()
     assert view(final)["final"] and view(final)["loop"]

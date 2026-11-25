@@ -127,4 +127,15 @@ void modslist::test<8>() {
     ensure_equals(d.theirs, std::string(""));
     ensure_equals(d.disable, std::string("Mine"));
 }
+template <>
+template <>
+void modslist::test<9>() {
+    set_test_name("server browser identifies an incompatible network schema on an installed mod");
+    Mods mine = {{"quest", "Quest", true, "1"}};
+    ensure_equals(OnlineUtility::MakeModsList(mine), std::string("quest@1=Quest"));
+    auto mismatch = OnlineUtility::CompareMods("quest@2=Quest", mine);
+    ensure_equals(mismatch.change_version, std::string("Quest (network 2)"));
+    ensure(mismatch.install.empty() && mismatch.disable.empty());
+    ensure(OnlineUtility::CompareMods("quest@1=Quest", mine).change_version.empty());
+}
 }  // namespace tut

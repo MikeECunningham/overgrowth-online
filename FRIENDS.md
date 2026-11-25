@@ -13,11 +13,11 @@ cd overgrowth-online
 
 Use the same release tag or commit as the host. The inherited private Wolfire submodules are not required; clone without `--recurse-submodules`. Game assets are read from each player's installed game and are not included in the source.
 
-The current local-multiplayer prerelease is `0.42.0-alpha.15`. Once its tag has been
+The current local-multiplayer prerelease is `0.42.0-alpha.16`. Once its tag has been
 published, select that exact source revision before configuring:
 
 ```sh
-git switch --detach v0.42.0-alpha.15
+git switch --detach v0.42.0-alpha.16
 ```
 
 Until a tag is published, ask the host for the commit to use. The in-game version
@@ -43,7 +43,7 @@ cmake --build Build --parallel 6
 ./Build/OvergrowthOnline.bin.x86_64 --working-dir "$PWD/"
 ```
 
-Use a current OpenGL 4.6 GPU driver. OpenGL is the default; optional Vulkan setup is described in [COMPILING.md](COMPILING.md#optional-vulkan-shader-runtime).
+OpenGL is the default. For ray tracing, set up Vulkan, select **Vulkan** under **Settings → Screen**, and restart the game. In **Settings → Ray Tracing**, choose **High** for diffuse global illumination. Use one local viewport. [Vulkan setup](COMPILING.md#optional-vulkan-shader-runtime)
 
 The current development Linux binary requires **glibc 2.43**, so copying that executable to an older distribution may fail. Build locally for now; portable Linux downloads need a separate release build and runtime layout.
 

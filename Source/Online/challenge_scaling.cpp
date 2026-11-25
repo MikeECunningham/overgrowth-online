@@ -5,19 +5,13 @@
 
 namespace ChallengeScaling {
 namespace {
-constexpr double kTimePerSecond = 0.05 / 300.0;
-constexpr double kRoundAward = 0.08;
-constexpr double kWinAward = 0.04;
-constexpr double kLossAward = 0.05;
-constexpr double kForcedWinAward = 0.08;
-constexpr double kRetryRelief = 0.025;
 constexpr size_t kMaximumEvents = 8192;
 constexpr size_t kMaximumKeyBytes = 1024;
 
 bool ValidID(const std::string& id) { return !id.empty() && id.size() <= kMaximumKeyBytes; }
 double Bounded(double pressure) { return std::max(0.0, std::min(kPressureCap, pressure)); }
 double WinAward(const Settings& settings) {
-    return (settings.performance_mode == OnWin ? kWinAward : settings.performance_mode == Forced50 ? kForcedWinAward : 0.0) *
+    return (settings.performance_mode == OnWin ? settings.win_gain : settings.performance_mode == Forced50 ? settings.forced_win_gain : 0.0) *
         RateMultiplier(settings.performance_rate);
 }
 }
@@ -54,10 +48,10 @@ WinPreview PreviewWin(const Snapshot& snapshot, const Settings& settings, const 
     result.pressure = EffectivePressure(snapshot, settings, encounter);
     result.encounter_relief = result.general_pressure - result.pressure;
     result.next_pressure = result.pressure;
-    result.time_per_second = kTimePerSecond * RateMultiplier(settings.time_rate);
-    result.completion_award = kRoundAward * RateMultiplier(settings.round_rate);
+    result.time_per_second = (settings.five_minute_gain / 300.0) * RateMultiplier(settings.time_rate);
+    result.completion_award = settings.completion_gain * RateMultiplier(settings.round_rate);
     const double rate = RateMultiplier(settings.performance_rate);
-    result.wipe_award = settings.performance_mode == OnLoss ? kLossAward * rate : settings.performance_mode == Forced50 ? -kRetryRelief * rate : 0;
+    result.wipe_award = settings.performance_mode == OnLoss ? settings.wipe_gain * rate : settings.performance_mode == Forced50 ? -settings.retry_relief * rate : 0;
     const auto record = snapshot.encounters.find(encounter);
     result.encounter_wipes = record == snapshot.encounters.end() ? 0 : record->second.wipes;
     result.pending = ValidID(encounter) && (record == snapshot.encounters.end() || !record->second.won) &&
@@ -86,14 +80,14 @@ bool WipeTracker::Observe(uint32_t humans, uint32_t awake, double now_ms) {
 bool State::Advance(double seconds, const Settings& settings) {
     if (!std::isfinite(seconds) || seconds <= 0 || !std::isfinite(snapshot_.active_seconds + seconds)) return false;
     snapshot_.active_seconds += seconds;
-    snapshot_.pressure = Bounded(snapshot_.pressure + seconds * kTimePerSecond * RateMultiplier(settings.time_rate));
+    snapshot_.pressure = Bounded(snapshot_.pressure + seconds * (settings.five_minute_gain / 300.0) * RateMultiplier(settings.time_rate));
     return true;
 }
 
 bool State::Completion(const std::string& event_id, const Settings& settings) {
     if (!ValidID(event_id) || snapshot_.completions.count(event_id) || snapshot_.completions.size() >= kMaximumEvents) return false;
     snapshot_.completions.insert(event_id);
-    snapshot_.pressure = Bounded(snapshot_.pressure + kRoundAward * RateMultiplier(settings.round_rate));
+    snapshot_.pressure = Bounded(snapshot_.pressure + settings.completion_gain * RateMultiplier(settings.round_rate));
     return true;
 }
 
@@ -106,11 +100,11 @@ bool State::Wipe(const std::string& event_id, const std::string& encounter_id, c
         EncounterRecord& record = snapshot_.encounters[encounter_id];
         ++record.wipes;
         if (settings.performance_mode == Forced50 && !record.won)
-            record.relief = std::min(kRetryReliefCap, record.relief + kRetryRelief * RateMultiplier(settings.performance_rate));
+            record.relief = std::min(kRetryReliefCap, record.relief + settings.retry_relief * RateMultiplier(settings.performance_rate));
     }
     snapshot_.wipes.insert(event_id);
     if (settings.performance_mode == OnLoss)
-        snapshot_.pressure = Bounded(snapshot_.pressure + kLossAward * RateMultiplier(settings.performance_rate));
+        snapshot_.pressure = Bounded(snapshot_.pressure + settings.wipe_gain * RateMultiplier(settings.performance_rate));
     return true;
 }
 
@@ -129,7 +123,7 @@ bool State::Win(const std::string& encounter_id, const Settings& settings) {
 
 void State::Clear() { snapshot_ = Snapshot(); }
 
-bool State::Restore(const Snapshot& snapshot) {
+bool State::Restore(const Snapshot& snapshot, const Settings& settings) {
     if (!std::isfinite(snapshot.active_seconds) || snapshot.active_seconds < 0 ||
         !std::isfinite(snapshot.pressure) || snapshot.pressure < 0 || snapshot.pressure > kPressureCap ||
         snapshot.completions.size() > kMaximumEvents || snapshot.wipes.size() > kMaximumEvents ||
@@ -140,9 +134,9 @@ bool State::Restore(const Snapshot& snapshot) {
     for (const auto& entry : snapshot.encounters) {
         const EncounterRecord& encounter = entry.second;
         if (!ValidID(entry.first) || !std::isfinite(encounter.win_award) || encounter.win_award < 0 ||
-            encounter.win_award > kForcedWinAward * RateMultiplier(Nightmare) + 1e-9 || (!encounter.won && encounter.win_award != 0) ||
+            encounter.win_award > std::max(settings.forced_win_gain, settings.win_gain) * RateMultiplier(Nightmare) + 1e-9 || (!encounter.won && encounter.win_award != 0) ||
             !std::isfinite(encounter.relief) || encounter.relief < 0 || encounter.relief > kRetryReliefCap ||
-            encounter.relief > encounter.wipes * kRetryRelief * RateMultiplier(Nightmare) + 1e-9 ||
+            encounter.relief > encounter.wipes * settings.retry_relief * RateMultiplier(Nightmare) + 1e-9 ||
             (encounter.won && encounter.relief != 0) || (encounter.wipes == 0 && encounter.relief != 0)) return false;
         recorded_wipes += encounter.wipes;
     }

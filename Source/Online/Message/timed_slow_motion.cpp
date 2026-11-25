@@ -54,7 +54,7 @@ void TimedSlowMotion::Deserialize(void* object, binn* l) {
 }
 
 void TimedSlowMotion::Execute(const OnlineMessageRef& ref, void* object, PeerID peer) {
-    // Overgrowth Online: no slow motion online (an older host may still send it)
+    // Overgrowth Online: timed cinematics are local to a sole human; ignore legacy network requests
     (void)object;
 }
 

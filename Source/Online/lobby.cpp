@@ -1,6 +1,7 @@
 // Session roster and pre-game lobby control. Apache-2.0.
 #include <Online/online.h>
 #include <Online/session_saves.h>
+#include <Online/session_mods.h>
 #include <Online/friendly_progression.h>
 #include <Online/online_utility.h>
 #include <Main/engine.h>
@@ -79,6 +80,10 @@ const char* const campaign_match_settings[] = {
     "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_ai_scaling_rate", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized", "oo_arena_random"
 };
 
+bool MatchSettingAvailable(const std::string& key) {
+    return !SettingsChanges::ScalingMatchSetting(key) || ModLoading::Instance().HasSessionFeature("scaling");
+}
+
 bool NormalizeCampaignMatchSetting(const std::string& key, const std::string& value, std::string* normalized) {
     if (!SettingsChanges::CampaignMatchSetting(key) || value.size() > 64) return false;
     if (key == "difficulty_preset") {
@@ -110,7 +115,7 @@ void ApplyCampaignMatchSnapshot(const Json::Value& settings) {
     bool changed = false;
     for (const char* key : campaign_match_settings) {
         std::string value;
-        if (!settings[key].isString() || !NormalizeCampaignMatchSetting(key, settings[key].asString(), &value)) continue;
+        if (!MatchSettingAvailable(key) || !settings[key].isString() || !NormalizeCampaignMatchSetting(key, settings[key].asString(), &value)) continue;
         if (config[key].str() != value) {
             config.GetRef(key) = value;
             changed = true;
@@ -249,6 +254,13 @@ bool Online::HasMultipleLobbyHumans() const {
     return false;
 }
 
+bool Online::AllowsSoloCinematics() const {
+    if (!IsActive()) return !IsAwaitingShutdown();
+    if (!IsHosting() || LobbyWaiting()) return false;
+    return std::count_if(online_session->player_states.begin(), online_session->player_states.end(),
+        [](const auto& entry) { return entry.second.connected && !entry.second.is_bot; }) == 1;
+}
+
 unsigned Online::LocalLobbyPlayerCount() const {
     const unsigned profiles = std::max(1u, static_cast<unsigned>(local_lobby_profiles_.size()));
     if (IsActive() && !lobby_waiting_ && online_session != nullptr) {
@@ -292,7 +304,7 @@ bool Online::EnsureLocalSession() {
     }
     lobby_waiting_ = false;
     lobby_authority_ = LobbyAuthority::State();
-    StartMultiplayer(MultiplayerMode::Host);  // simulation only; no listen socket
+    StartMultiplayer(MultiplayerMode::Host, true);  // adopt the current world, without opening a listen socket
     ResetModeChallenge();  // a fresh private run must not inherit a closed session's ledger
     local_only_session_ = true;
     loading = !loaded;
@@ -770,13 +782,13 @@ std::string Online::LobbyPayload() const {
     message["mode"] = lobby_mode_; message["campaign"] = lobby_campaign_; message["map"] = lobby_map_;
     message["build"] = lobby_build_; message["allow_all_pause"] = lobby_allow_all_pause_;
     message["force_teams"] = lobby_force_teams_;
-    Json::Reader challenge_reader;
-    challenge_reader.parse(ModeChallengePayload(), message["mode_challenge"], false);
-    message["progression"] = FriendlyProgression::Snapshot();
+    message["mode_settings"] = LobbyModeSettings();
+    message["session_mods"] = SessionMods::Snapshot(SessionMods::Scope::Network);
     message["host_controls_teams"] = lobby_host_controls_teams_;
     message["slot_definitions"] = SaveLobbySlots();
     message["match_settings"] = Json::Value(Json::objectValue);
-    for (const char* key : campaign_match_settings) message["match_settings"][key] = config[key].str();
+    for (const char* key : campaign_match_settings)
+        if (MatchSettingAvailable(key)) message["match_settings"][key] = config[key].str();
     message["decision_host"] = lobby_authority_.host;
     SceneGraph* scene = Engine::Instance()->GetSceneGraph();
     message["cutscene"] = host_started_level && !loading && scene && scene->level && scene->level->DialogueCameraControl();
@@ -829,8 +841,9 @@ std::string Online::ExportLobbyForMigration() const {
     reader.parse(LobbyPayload(), message, false);
     message["match_settings"] = Json::Value(Json::objectValue);
     for (const char* key : migration_match_settings)
-        if (config.HasKey(key)) message["match_settings"][key] = config.map_.at(key).data.str();
+        if (MatchSettingAvailable(key) && config.HasKey(key)) message["match_settings"][key] = config.map_.at(key).data.str();
     message["default_hot_join_character"] = default_hot_join_characte_path;
+    message["saved_mods"] = SessionMods::Snapshot(SessionMods::Scope::Handoff);
     return Encode(message);
 }
 
@@ -838,6 +851,10 @@ bool Online::RestoreLobbyForMigration(const std::string& payload, PeerID origin_
     if (!IsHosting() || !online_session) return false;
     Json::Value message; Json::Reader reader;
     if (!reader.parse(payload, message, false) || !message["players"].isArray() || !message.get("waiting", false).asBool()) return false;
+    std::string mod_error;
+    if (!ReceiveLobbyModeSettings(message["mode_settings"], true) ||
+        !SessionMods::Validate(message["session_mods"], SessionMods::Scope::Network, mod_error) ||
+        !SessionMods::Validate(message["saved_mods"], SessionMods::Scope::Handoff, mod_error)) return false;
     std::map<PlayerID, LobbySlot> slot_definitions;
     PlayerID slot_next = 256;
     if (message.isMember("slot_definitions") && !DecodeSlotDefinitions(message["slot_definitions"], slot_definitions, slot_next)) return false;
@@ -873,12 +890,13 @@ bool Online::RestoreLobbyForMigration(const std::string& payload, PeerID origin_
     lobby_allow_all_pause_ = message.get("allow_all_pause", false).asBool();
     lobby_force_teams_ = message.get("force_teams", false).asBool();
     lobby_host_controls_teams_ = message.get("host_controls_teams", true).asBool();
-    ReceiveModeChallenge(Encode(message["mode_challenge"]));
-    FriendlyProgression::Restore(message["progression"]);
+    ReceiveLobbyModeSettings(message["mode_settings"]);
+    SessionMods::Restore(message["saved_mods"], SessionMods::Scope::Handoff);
+    SessionMods::Restore(message["session_mods"], SessionMods::Scope::Network);
     const Json::Value& settings = message["match_settings"];
     if (settings.isObject()) {
         for (const char* key : migration_match_settings)
-            if (settings[key].isString() && settings[key].asString().size() <= 128)
+            if (MatchSettingAvailable(key) && settings[key].isString() && settings[key].asString().size() <= 128)
                 config.GetRef(key) = settings[key].asString();
         config.ReloadDynamicSettings();
     }
@@ -1262,7 +1280,7 @@ bool Online::SetCampaignMatchSetting(const std::string& key, const std::string& 
     actor = ResolveLobbyActor(actor);
     std::string normalized;
     if (!IsActive() || LobbyMigrationBusy() || !IsLobbyHost(actor) ||
-        !NormalizeCampaignMatchSetting(key, value, &normalized)) return false;
+        !MatchSettingAvailable(key) || !NormalizeCampaignMatchSetting(key, value, &normalized)) return false;
     if (IsClient()) {
         Json::Value request;
         request["action"] = "match_setting"; request["actor"] = actor;
@@ -1378,7 +1396,7 @@ Json::Value Online::SaveGameRules() const {
     Json::Value rules;
     rules["match"] = Json::Value(Json::objectValue);
     for (const char* key : migration_match_settings)
-        if (config.HasKey(key)) rules["match"][key] = config[key].str();
+        if (MatchSettingAvailable(key) && config.HasKey(key)) rules["match"][key] = config[key].str();
     if (!rules["match"].isMember("oo_arena_random")) rules["match"]["oo_arena_random"] = "0";
     if (!rules["match"].isMember("oo_public_game")) rules["match"]["oo_public_game"] = "1";
     rules["preset"] = config.GetDifficultyPreset();
@@ -1387,14 +1405,14 @@ Json::Value Online::SaveGameRules() const {
     rules["force_teams"] = lobby_force_teams_;
     rules["host_teams"] = lobby_host_controls_teams_;
     rules["build"] = lobby_build_;
-    Json::Reader().parse(ModeChallengePayload(), rules["challenge"], false);
+    rules["mode_settings"] = LobbyModeSettings();
     return rules;
 }
 
 bool Online::ValidateGameRules(const Json::Value& rules) {
     if (!rules.isObject() || !rules["match"].isObject() || !rules["preset"].isString() ||
         !rules["allow_pause"].isBool() || !rules["force_teams"].isBool() || !rules["host_teams"].isBool() ||
-        !rules["build"].isBool() || !ReceiveModeChallenge(Encode(rules["challenge"]), true)) return false;
+        !rules["build"].isBool() || !ReceiveLobbyModeSettings(rules["mode_settings"], true)) return false;
     if (rules.isMember("join_character") && (!rules["join_character"].isString() ||
         !OnlineUtility::IsSafeCharacterPath(rules["join_character"].asString()))) return false;
     for (const auto& key : rules["match"].getMemberNames()) {
@@ -1420,13 +1438,13 @@ void Online::RestoreGameRules(const Json::Value& rules) {
         config.SetDifficultyPreset(preset);
     for (const char* key : migration_match_settings) {
         const auto& value = rules["match"][key];
-        if (value.isString()) config.GetRef(key) = value.asString();
+        if (MatchSettingAvailable(key) && value.isString()) config.GetRef(key) = value.asString();
     }
     config.ReloadDynamicSettings();
     lobby_allow_all_pause_ = rules["allow_pause"].asBool();
     lobby_force_teams_ = rules["force_teams"].asBool();
     lobby_host_controls_teams_ = rules["host_teams"].asBool();
-    ReceiveModeChallenge(Encode(rules["challenge"]));
+    ReceiveLobbyModeSettings(rules["mode_settings"]);
 }
 
 bool Online::StartLobbyGame(const std::string& level, const std::string& campaign, bool build, PlayerID actor) {
@@ -1481,11 +1499,14 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
             if (index < local_lobby_profiles_.size() && index >= GetLocalPlayerStates().size()) RemoveLocalLobbyProfile(index);
             return;
         }
-        if (from == 0 && action == "progress_snapshot") {
-            FriendlyProgression::Restore(message["progression"]);
+        if (from == 0 && action == "mod_state") {
+            SessionMods::ReceiveUpdate(message["session_mods"]);
             return;
         }
         if (from != 0 || action != "snapshot" || !message["players"].isArray()) return;
+        std::string mod_error;
+        if (!ReceiveLobbyModeSettings(message["mode_settings"], true) ||
+            !SessionMods::Validate(message["session_mods"], SessionMods::Scope::Network, mod_error)) return;
         const bool returning = !lobby_waiting_ && message.get("waiting", false).asBool();
         if (returning) PrepareReturnToLobby();
         std::set<PlayerID> incoming_local;
@@ -1516,8 +1537,8 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
             lobby_auto_admission_ = message["slot_definitions"]["auto_admit"].asBool();
             next_local_player_id_ = next_slot;
         }
-        ReceiveModeChallenge(Encode(message["mode_challenge"]));
-        FriendlyProgression::Restore(message["progression"]);
+        ReceiveLobbyModeSettings(message["mode_settings"]);
+        SessionMods::Restore(message["session_mods"], SessionMods::Scope::Network);
         ApplyCampaignMatchSnapshot(message["match_settings"]);
         lobby_authority_.host = message.get("decision_host", 255).asUInt();
         remote_cutscene_active_ = message.get("cutscene", false).asBool();

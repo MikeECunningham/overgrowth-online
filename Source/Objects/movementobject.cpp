@@ -1289,6 +1289,10 @@ bool MovementObject::UpdateBeforePose(float timestep) {
         if (ASHasVar("online_remote") && ASGetBoolVar("online_remote") != network_proxy) {
             ASSetBoolVar("online_remote", network_proxy);
         }
+        // Stock-compatible camera mods can read this on the controlled character.
+        if (controlled && ASHasVar("online_solo_cinematics")) {
+            ASSetIntVar("online_solo_cinematics", Online::Instance()->AllowsSoloCinematics() ? 1 : 0);
+        }
         if (network_proxy) {
             // Overgrowth Online: its owner runs it; the engine keeps its game
             // state here (ApplyNetworkVitals), only the script's clock moves

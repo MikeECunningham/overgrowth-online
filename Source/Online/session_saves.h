@@ -10,6 +10,7 @@ bool CanWrite();
 bool Save(int slot);
 bool Load(int slot);
 std::string Status();
+bool Loading();
 bool ResumingGameplay();
 void SetCampaignTransition(bool pending, const std::string& destination);
 bool CampaignTransition(std::string& destination);

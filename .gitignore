@@ -20,6 +20,8 @@ _git_version.inc
 *Data/version.xml
 Data/short_version
 Data/Mods/*
+!Data/Mods/og-online-scaling/
+!Data/Mods/og-online-progression/
 !Data/Mods/wolfire_*
 !Data/Mods/example_tcp_socket_mod/
 !Data/Mods/example_mod

@@ -470,6 +470,9 @@ void AddRayTracingScreen(){
             denoisers += ", DLSS Ray Reconstruction";
         }
         AddSection("Status: ready (" + denoisers + ")", settings_content);
+        if(GetLocalPlayerCount() > 1) {
+            AddNote("Ray tracing runs when one local viewport is active.", settings_content);
+        }
     }
 
     // The preset: every effect, and the rays a pixel each takes (sun, AO, lights)
@@ -494,12 +497,27 @@ void AddRayTracingScreen(){
     AddDropDown("Global illumination", settings_content, DropdownConfiguration(on_off_values, on_off, "rt_gi"));
     AddDropDown("Grass in ray tracing", settings_content, DropdownConfiguration(on_off_values, on_off, "rt_grass"));
 
-    // One denoiser: NRD, DLSS Ray Reconstruction (NRD's settings kept under it) or the
-    // built-in one (no GI)
-    array<array<int>> denoiser_values = { { 1, 0 }, { 1, 1 }, { 0, 0 } };
+    array<array<int>> denoiser_values = { { 0, 0 } };
     array<string> denoiser_names = { "rt_nrd", "rt_rr" };
-    array<string> denoiser_options = { "NVIDIA NRD", "DLSS Ray Reconstruction", "Built-in" };
-    AddDropDown("Denoiser", settings_content, DropdownConfiguration(denoiser_values, denoiser_options, denoiser_names));
+    array<string> denoiser_options = { "Built-in" };
+    if(has_nrd) {
+        array<int> nrd = { 1, 0 };
+        denoiser_values.insertLast(nrd);
+        denoiser_options.insertLast("NVIDIA NRD");
+    }
+    if(has_rr) {
+        array<int> reconstruction = { 1, 1 };
+        denoiser_values.insertLast(reconstruction);
+        denoiser_options.insertLast("DLSS Ray Reconstruction");
+    }
+    if(denoiser_options.length() > 1) {
+        AddDropDown("Denoiser", settings_content, DropdownConfiguration(denoiser_values, denoiser_options, denoiser_names));
+    }
+    if(has_nrd && GetConfigValueBool("rt_nrd") && !(has_rr && GetConfigValueBool("rt_rr") && GetConfigValueInt("upscaler") == 1)) {
+        array<int> percentages = { 0, 100, 75, 50, 33, 25 };
+        array<string> sizes = { "Auto (VRAM budget)", "Native", "75%", "50%", "33%", "25%" };
+        AddDropDown("NRD lighting resolution", settings_content, DropdownConfiguration(percentages, sizes, "rt_nrd_percent"));
+    }
 
     // The tuning, for the effects that are on
     const bool shadows = GetConfigValueBool("rt_shadows");
@@ -535,16 +553,16 @@ void AddRayTracingScreen(){
         AddNote("Set the renderer to Vulkan (Screen tab) for ray tracing", settings_content);
     }
     const bool rr = GetConfigValueBool("rt_rr");
-    if(gi && !rr && !GetConfigValueBool("rt_nrd")) {
-        AddNote("Global illumination needs NVIDIA NRD or Ray Reconstruction as the denoiser", settings_content);
+    if(can_trace && gi && (support & 32) == 0) {
+        AddNote("Global illumination needs Vulkan position fetch and a larger push constant limit", settings_content);
     }
-    if(rr && GetConfigValueInt("upscaler") != 1) {
+    if(can_trace && GetConfigValueBool("rt_reflections") && (support & 16) == 0) {
+        AddNote("Reflections need Vulkan position fetch on this GPU", settings_content);
+    }
+    if(has_rr && rr && GetConfigValueInt("upscaler") != 1) {
         AddNote("Ray Reconstruction needs DLSS as the upscaler (Screen tab)", settings_content);
-    } else if(rr && (support & 1) != 0 && !has_rr) {
-        AddNote("Ray Reconstruction isn't available on this PC: NRD is used", settings_content);
-    }
-    if(!rr && GetConfigValueBool("rt_nrd") && (support & 1) != 0 && can_trace && !has_nrd) {
-        AddNote("NVIDIA NRD isn't available: the built-in denoiser is used", settings_content);
+    } else if(rr && !has_rr && has_nrd) {
+        AddNote("Ray Reconstruction is unavailable on this GPU. Using NVIDIA NRD.", settings_content);
     }
 }
 
@@ -552,6 +570,7 @@ void AddRayTracingScreen(){
 void AddSection(string text, IMDivider@ parent){
     IMContainer section_container("section_container" + text, DOHorizontal);
     IMText section(text, button_font_small);
+    section.setZOrdering(4);
     section_container.setAlignment(CALeft, CACenter);
     section_container.setElement(section);
     section_container.setSizeY(60.0f);
@@ -563,6 +582,7 @@ void AddSection(string text, IMDivider@ parent){
 void AddNote(string text, IMDivider@ parent){
     IMContainer note_container("note_container" + text, DOHorizontal);
     IMText note(text, button_font_extra_small);
+    note.setZOrdering(4);
     note_container.setAlignment(CARight, CACenter);
     note_container.setElement(note);
     note_container.setSizeY(40.0f);
@@ -588,8 +608,10 @@ void AddGameScreen(){
     }
     if(CanEditCampaignSettings()) {
         AddBasicButton("Difficulty", "open_difficulty_settings", 500, settings_content);
-        AddCheckBox("Show difficulty readout", settings_content, "show_difficulty_readout");
-        AddNote("Host view; visible only during scaled play.", settings_content);
+        if(ModSessionFeature("scaling")) {
+            AddCheckBox("Show difficulty readout", settings_content, "show_difficulty_readout");
+            AddNote("Host view; visible only during scaled play.", settings_content);
+        }
     } else {
         settings_content.append(IMText("The host controls match difficulty.", button_font_small));
         settings_content.append(IMText("Difficulty: " + GetConfigValueString("difficulty_preset"), button_font_small));
@@ -662,7 +684,7 @@ void AddDifficultyScreen() {
         settings_content.append(IMText("The host controls match difficulty.", button_font_small));
         return;
     }
-    AddDropDown("Difficulty mode", settings_content, DropdownConfiguration(DifficultyModeConfiguration()));
+    if(ModSessionFeature("scaling")) AddDropDown("Difficulty mode", settings_content, DropdownConfiguration(DifficultyModeConfiguration()));
     array<string> presets = GetConfigValueOptions("difficulty_preset");
     AddDropDown("Starting preset", settings_content, DropdownConfiguration(presets, presets, "difficulty_preset"));
     AddSlider("Game Speed", settings_content, "global_time_scale_mult", 1.0f, 100.0f, 0.5f, 50.0f);
@@ -672,7 +694,7 @@ void AddDifficultyScreen() {
     array<int> armor_values = {0, 2, 1};
     array<string> armor_labels = {"Legacy", "Weighted", "Localized"};
     AddDropDown("Armor protection", settings_content, DropdownConfiguration(armor_values, armor_labels, "armor_localized"));
-    if(GetConfigValueBool("difficulty_scaling")) {
+    if(ModSessionFeature("scaling") && GetConfigValueBool("difficulty_scaling")) {
         AddCheckBox("Party stats and reinforcements", settings_content, "campaign_mp_scaling");
         AddCheckBox("Physical armor", settings_content, "campaign_armor_scaling");
         AddCheckBox("Weapons for extra enemies", settings_content, "campaign_weapon_scaling");

@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<Mod>
+    <Id>session-rules</Id>
+    <Name>Session rules test</Name>
+    <Author>Overgrowth Online</Author>
+    <Category>Test</Category>
+    <Description>Test a host-selected round length, replication, and save data.</Description>
+    <Thumbnail>Data/Images/session-rules.png</Thumbnail>
+    <Version>0.1.0</Version>
+    <SupportedVersion>0.41.36</SupportedVersion>
+    <SupportsOnline>true</SupportsOnline>
+    <Session network_version="1" save_version="1">
+        <LobbySetting key="session-rules.duration" label="Round length" modes="campaign,arena" description="Choose the length of a round." default="1">
+            <Choice>Short</Choice>
+            <Choice>Normal</Choice>
+            <Choice>Long</Choice>
+        </LobbySetting>
+    </Session>
+</Mod>

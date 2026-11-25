@@ -14,9 +14,8 @@
 //                 direction each) gathers what these hits give back, a quarter of the
 //                 pixels a frame, and rt_cache.comp averages it over time: so the bounces
 //                 add up frame by frame. The other pixels take their hit's light from
-//                 the cache where it has it (SHaRC's query: cheaper, steadier). Writes the
-//                 raw result NRD's REBLUR denoises (the
-//                 radiance and how far the ray went)
+//                 the cache where it has it (SHaRC's query: cheaper, steadier). Writes
+//                 spherical harmonics directly into the denoiser's GI input textures.
 //        License: Apache-2.0, like the rest of the engine (see LICENSE)
 //-----------------------------------------------------------------------------
 #version 460
@@ -63,7 +62,7 @@ layout(set = 0, binding = 3, std430) readonly buffer Lights {
     Light lights[];
 };
 layout(set = 0, binding = 4) uniform samplerCube sky;
-layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D gi_out;  // the radiance that came, how far its ray went (world)
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D gi_out;  // SH0: YCoCg radiance and normalized hit distance for REBLUR
 // The radiance cache: a voxel's key (0: free), this frame's sum of what it gave back
 // (fixed point, kCacheScale, and how many), its average (rgb, frames in it)
 layout(set = 0, binding = 6, std430) coherent buffer CacheKeys {
@@ -75,7 +74,7 @@ layout(set = 0, binding = 7, std430) buffer CacheAccum {
 layout(set = 0, binding = 8, std430) readonly buffer CacheValues {
     vec4 cache_values[];
 };
-layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D gi_dir;  // the ray's direction (NRD's SH)
+layout(set = 0, binding = 9, rgba16f) uniform writeonly image2D gi_dir;  // SH1: ray direction times luminance
 layout(set = 1, binding = 0) uniform sampler2D textures[];
 // The game's ambient light (raytrace.cpp's State::ambient). The level's light probes as a
 // grid: points a side (x, y, z, 1: there is one), the first point, 1 / the step; then 12
@@ -100,8 +99,6 @@ layout(push_constant) uniform Params {
     vec4 params;         // x the cache's smallest voxel (world units), y the glows' strength (by their draws'), z the sky's lod, w the sky's strength
     uvec4 debug;         // x: 1 no cache lookups (one bounce), 2 the cache itself at each pixel, 3 where rays meet the sky; y the
                          // checkerboard's phase, z 1: a checkerboard (half the pixels, packed to the left);
-                         // w 1: for DLSS Ray Reconstruction, not NRD: every pixel, written as the colour
-                         // pass reads REBLUR's (SH0 YCoCg; SH1 the direction * Y), raw
     vec4 look;           // x the strength of the light a pixel receives (rt_gi_strength: the cache's stays as traced), y the colour pass's GetAmbientContrib(1), z the bounce's gain (rt_gi_bounce), w how much of the game's rasterized ambient lights the second bounce's hits (rt_gi_raster_ambient)
 } pc;
 
@@ -112,12 +109,22 @@ const float kCacheClamp = 16.0;    // (a sample's most: no overflow from a thous
 const uint kCacheProbes = 8u;
 
 float Depth(ivec2 p) {
-    return texelFetch(depth_tex, p, 0).r;
+    #if defined(MSAA_DEPTH)
+    ivec2 size = textureSize(depth_tex);
+    #else
+    ivec2 size = textureSize(depth_tex, 0);
+    #endif
+    ivec2 source = ivec2((vec2(p) + 0.5) * (vec2(size) / vec2(pc.info.xy)));
+    return texelFetch(depth_tex, min(source, size - 1), 0).r;
+}
+
+vec4 WorldPoint(ivec2 p, float depth) {
+    vec2 ndc = (vec2(p) + 0.5) / vec2(pc.info.xy) * 2.0 - 1.0;
+    return pc.inv_view_proj * vec4(ndc, depth, 1.0);
 }
 
 vec3 WorldPos(ivec2 p, float depth) {
-    vec2 ndc = (vec2(p) + 0.5) / vec2(pc.info.xy) * 2.0 - 1.0;
-    vec4 w = pc.inv_view_proj * vec4(ndc, depth, 1.0);
+    vec4 w = WorldPoint(p, depth);
     return w.xyz / w.w;
 }
 
@@ -555,21 +562,24 @@ vec3 Direct(Hit h, vec3 lit_normal, inout uint seed) {
     return light;
 }
 
-// A pixel's result: for NRD the radiance, its ray's length and direction; for Ray
-// Reconstruction the same as spherical harmonics (REBLUR's SH0 and SH1), a sample's
-// brightest channel at most 16 (one lucky ray is a speck RR can't average away)
-void Store(ivec2 q, vec3 radiance, float hit, vec3 dir) {
+// Pack SH directly for both the colour pass and the denoiser. NRD needs a
+// normalized hit distance in W. The built-in filter and RR use raw lighting.
+void Store(ivec2 q, vec3 radiance, float hit, vec3 dir, float view_z) {
     radiance *= pc.debug.x == 0u ? pc.look.x : 1.0;
-    if (pc.debug.w != 0u) {
+    float norm_hit = 0.0;
+    if (pc.debug.z != 0u) {
+        radiance = clamp(radiance, vec3(0.0), vec3(65504.0));
+        if (any(isnan(radiance))) radiance = vec3(0.0);
+        dir = clamp(dir, vec3(-1.0), vec3(1.0));
+        if (any(isnan(dir))) dir = vec3(0.0);
+        norm_hit = clamp(hit / (3.0 + abs(view_z) * 0.1), 0.0, 1.0);
+    } else {
         float peak = max(radiance.r, max(radiance.g, radiance.b));
         radiance *= peak > 16.0 ? 16.0 / peak : 1.0;
-        vec3 ycocg = vec3(dot(radiance, vec3(0.25, 0.5, 0.25)), dot(radiance, vec3(0.5, 0.0, -0.5)), dot(radiance, vec3(-0.25, 0.5, -0.25)));
-        imageStore(gi_out, q, vec4(ycocg, 0.0));
-        imageStore(gi_dir, q, vec4(dir * ycocg.x, 0.0));
-    } else {
-        imageStore(gi_out, q, vec4(radiance, hit));
-        imageStore(gi_dir, q, vec4(dir, 0.0));
     }
+    vec3 ycocg = vec3(dot(radiance, vec3(0.25, 0.5, 0.25)), dot(radiance, vec3(0.5, 0.0, -0.5)), dot(radiance, vec3(-0.25, 0.5, -0.25)));
+    imageStore(gi_out, q, vec4(ycocg, norm_hit));
+    imageStore(gi_dir, q, vec4(dir * ycocg.x, 0.0));
 }
 
 void main() {
@@ -587,7 +597,9 @@ void main() {
         imageStore(gi_dir, q, vec4(0.0));
         return;
     }
-    vec3 pos = WorldPos(p, depth);
+    vec4 w = WorldPoint(p, depth);
+    float view_z = 1.0 / w.w;  // homogeneous clip W is the perspective view depth
+    vec3 pos = w.xyz * view_z;
     vec3 to_camera = pc.camera.xyz - pos;
     float dist = length(to_camera);
     vec3 n = cross(Step(p, depth, pos, ivec2(1, 0)), Step(p, depth, pos, ivec2(0, 1)));
@@ -613,11 +625,11 @@ void main() {
     }
     Hit h = TraceClosest(origin, dir, 10000.0, own);
     if (pc.debug.x == 3u) {
-        Store(q, vec3(h.hit ? 0.0 : 1.0), h.hit ? h.t : 10000.0, dir);  // (debug: white where the ray meets the sky)
+        Store(q, vec3(h.hit ? 0.0 : 1.0), h.hit ? h.t : 10000.0, dir, view_z);  // (debug: white where the ray meets the sky)
         return;
     }
     if (!h.hit) {
-        Store(q, Sky(dir), 10000.0, dir);
+        Store(q, Sky(dir), 10000.0, dir, view_z);
         return;
     }
     // The light the hit gives back: its glow; or, for most pixels, the cache's (SHaRC's
@@ -663,8 +675,8 @@ void main() {
         // (the cache's light given back here, as if it came from straight out of the surface)
         vec3 cached;
         CacheLookup(pos, n, cached);
-        Store(q, cached, 1.0, n * (2.0 / 3.0));  // (SH: resolves to the whole of it along n)
+        Store(q, cached, 1.0, n * (2.0 / 3.0), view_z);  // (SH: resolves to the whole of it along n)
         return;
     }
-    Store(q, radiance, h.t, dir);
+    Store(q, radiance, h.t, dir, view_z);
 }

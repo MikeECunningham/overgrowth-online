@@ -614,3 +614,154 @@ def vk_parity(ctx, scenes=None):
             if r["psnr"] < r["min_psnr"]:
                 fails.append(f"{scene}_{view}: {r['psnr']} dB (GL again: {r.get('gl_again_psnr')}; mean {r['mean_diff']}, changed {r['changed']})")
     return {"passed": not fails, "metrics": m, "notes": fails}
+
+
+def vk_ray_tracing(ctx, nrd=False):
+    """Validate the selected GPU denoiser and its contribution to the final frame."""
+    from PIL import Image, ImageChops, ImageStat
+
+    level = dict(RENDER_SCENES)["slaver_landing"]
+    keys = {"renderer": "vulkan", "vk_validation": "2", "test_start_paused": "1",
+            "multisample": "1", "rt_shadows": "1", "rt_ao": "1", "rt_light_shadows": "1",
+            "rt_reflections": "1", "rt_gi": "0", "rt_denoise": "1", "rt_nrd": str(int(nrd)),
+            "rt_nrd_percent": "100", "rt_rr": "0"}
+    # Odd output dimensions exercise the last partial compute workgroup and rounding at every scale.
+    size = (805, 483) if nrd else (800, 480)
+    game = _scene_instance(ctx, "vk_nrd" if nrd else "vk_native_rt", level, keys, width=size[0], height=size[1])
+    bridge = game.bridge
+    assert bridge.status()["renderer"] == "vulkan"
+    x, y, z = bridge.me()["pos"]
+    bridge.call("view", pos=[x + 5, y + 2.5, z + 5], target=[x, y + 1, z], fov=70)
+
+    def settle():
+        goal = bridge.status()["vk_frames"] + 40
+        return bridge.wait(lambda: bridge.status()["vk_frames"] >= goal, 45, what="GI history settles")
+
+    def shot(tag):
+        path = f"{ctx.out_dir}/{tag}.png"
+        if os.path.exists(path):
+            os.unlink(path)
+        _shot(game, path)
+        return path
+
+    settle()
+    assert bridge.status()["vk_last_trace_instances"] > 0
+    off = shot("shadows_and_reflections")
+    bridge.call("exec", target="level", code='SetConfigValueInt("rt_gi", 1);')
+    bridge.wait(lambda: bridge.status()["vk_last_trace_gi"], 45, what="denoised GI reaches the colour pass")
+    settle()
+    status = bridge.status()
+    passes = status["vk_last_nrd_dispatches"]
+    nrd_bytes = status["vk_nrd_image_bytes"]
+    assert (passes > 0) == nrd, ("NRD compute dispatch count", passes, nrd)
+    assert (nrd_bytes > 0) == nrd, ("NRD image allocations", nrd_bytes, nrd)
+    gi = shot("nrd_gi" if nrd else "native_gi")
+    bridge.call("exec", target="level", code='SetConfigValueInt("rt_gi", 0);')
+    bridge.wait(lambda: not bridge.status()["vk_last_trace_gi"], 45, what="GI disabled in live play")
+    settle()
+    off_again = shot("gi_off_again")
+    change = _compare(off, gi, f"{ctx.out_dir}/gi_difference.png")["mean_diff"]
+    noise = _compare(off, off_again, f"{ctx.out_dir}/baseline_difference.png")["mean_diff"]
+    assert change > max(1, 2 * noise), (change, noise)
+    scales = {}
+    if nrd:
+        def sampled_frame(path):
+            with Image.open(path) as frame:
+                assert frame.size == size, ("output resolution changed", frame.size, size)
+                # Average nearby samples before comparing lighting so fine grain and edge aliasing cancel.
+                return frame.convert("RGB").resize((64, 48), Image.Resampling.BOX)
+
+        def quadrant_differences(a, b):
+            diff = ImageChops.difference(a, b)
+            return [sum(ImageStat.Stat(diff.crop((x, y, x + 32, y + 24))).mean) / 3
+                    for y in (0, 24) for x in (0, 32)]
+
+        def light_pattern(lit, unlit):
+            # Preserve the sign of the GI contribution. Average to a coarse grid to remove ray noise.
+            return ImageChops.subtract(lit, unlit, offset=128).resize((16, 12), Image.Resampling.BOX)
+
+        native_gi, native_off = sampled_frame(gi), sampled_frame(off)
+        native_signal = quadrant_differences(native_gi, native_off)
+        native_noise = quadrant_differences(native_off, sampled_frame(off_again))
+        native_pattern = light_pattern(native_gi, native_off)
+        flipped_pattern = native_pattern.transpose(Image.Transpose.ROTATE_180)
+        for percent in (50, 100, 25):
+            bridge.call("exec", target="level", code=f'SetConfigValueInt("rt_nrd_percent",{percent});')
+            settle()
+            status = bridge.status()
+            lighting_size = (status["vk_lighting_width"], status["vk_lighting_height"])
+            assert all(abs(actual - full * percent / 100) <= 1 for actual, full in zip(lighting_size, size)), (
+                percent, size, lighting_size)
+            off_at_scale = sampled_frame(shot(f"off_{percent}"))
+            bridge.call("exec", target="level", code='SetConfigValueInt("rt_gi",1);')
+            settle()
+            status = bridge.status()
+            assert status["vk_last_trace_gi"] and status["vk_last_nrd_dispatches"] > 0
+            gi_at_scale = sampled_frame(shot(f"gi_{percent}"))
+            signal = quadrant_differences(gi_at_scale, off_at_scale)
+            # GI must reach all four quadrants where it was visible at native resolution.
+            assert all(value > max(floor * 2, reference * .35) for value, reference, floor in
+                       zip(signal, native_signal, native_noise)), (percent, signal, native_signal, native_noise)
+            pattern = light_pattern(gi_at_scale, off_at_scale)
+            aligned = sum(ImageStat.Stat(ImageChops.difference(pattern, native_pattern)).mean) / 3
+            displaced = sum(ImageStat.Stat(ImageChops.difference(pattern, flipped_pattern)).mean) / 3
+            assert aligned < displaced / 2, ("GI misaligned with native lighting", percent, aligned, displaced)
+            scales[percent] = {"lighting_size": lighting_size, "gi_by_quadrant": [round(v, 2) for v in signal],
+                               "lighting_alignment_error": round(aligned, 2)}
+            bridge.call("exec", target="level", code='SetConfigValueInt("rt_gi",0);')
+        bridge.call("exec", target="level", code='SetConfigValueInt("rt_nrd",0);SetConfigValueInt("rt_gi",1);')
+        bridge.wait(lambda: bridge.status()["vk_last_nrd_dispatches"] == 0 and bridge.status()["vk_last_trace_gi"],
+                    45, what="switch back to the built-in GPU denoiser")
+        bridge.wait(lambda: bridge.status()["vk_nrd_image_bytes"] == 0, 10, what="retire NRD GPU images after switching")
+    status = bridge.status()
+    if nrd:
+        assert (status["vk_lighting_width"], status["vk_lighting_height"]) == size, "built-in lighting kept the NRD scale"
+    log = game.log()
+    assert status["vk_problems"] == 0, [line for line in log.splitlines() if "Vulkan error" in line or "Vulkan warning" in line][:6]
+    return {"passed": True, "metrics": {"instances": status["vk_last_trace_instances"], "nrd_dispatches": passes,
+            "mean_colour_change": round(change, 2), "baseline_variation": round(noise, 2),
+            "nrd_image_bytes": nrd_bytes, "scales": scales, "synchronization_validation": "validation layer with synchronization checks" in log,
+            "validation_problems": status["vk_problems"]}, "notes": []}
+
+
+def perf_rt_denoisers(ctx):
+    """Time both GPU denoisers on a fixed Therium view. OGMP_KEYS can override resolution and quality."""
+    keys = {"renderer": "vulkan", "vk_validation": "0", "test_start_paused": "1", "multisample": "1",
+            "frame_timers": "1", "frame_timers_cpu": "0", "rt_shadows": "1", "rt_ao": "1",
+            "rt_light_shadows": "1", "rt_reflections": "1", "rt_gi": "1", "rt_denoise": "1",
+            "rt_shadow_rays": "4", "rt_ao_rays": "4", "rt_light_rays": "4", "rt_nrd": "0", "rt_rr": "0"}
+    game = _scene_instance(ctx, "perf_rt_denoisers", "Data/Levels/t2/s1/a3.xml", keys, width=1920, height=1012)
+    bridge = game.bridge
+    assert bridge.status()["renderer"] == "vulkan"
+    x, y, z = bridge.me()["pos"]
+    bridge.call("view", pos=[x + 5, y + 2.5, z + 5], target=[x, y + 1, z], fov=70)
+    metrics = {}
+    for label, nrd in (("built_in", False), ("nrd", True), ("built_in_again", False)):
+        bridge.call("exec", target="level", code=f'SetConfigValueInt("rt_nrd", {int(nrd)});')
+
+        def ready():
+            state = bridge.status()
+            return state["vk_last_trace_gi"] and bool(state["vk_last_nrd_dispatches"]) == nrd
+
+        bridge.wait(ready, 60, what=f"{label} denoiser and GI active")
+        # Let shader compilation and temporal history settle, even on a slow device.
+        # Bound the wait so a device running at one frame per second can still be measured.
+        first_frame = bridge.status()["vk_frames"]
+        started = time.monotonic()
+
+        def warm():
+            elapsed = time.monotonic() - started
+            return elapsed >= 30 or (elapsed >= 2 and bridge.status()["vk_frames"] - first_frame >= 80)
+
+        bridge.wait(warm, 45, what=f"warming {label}")
+        snapshot = _sample(game)
+        frame_ms = snapshot["frame_ms"]
+        assert frame_ms and frame_ms > 0, snapshot
+        phases = {path.rsplit("/", 1)[-1]: zone["gpu_ms"] for path, zone in snapshot["zones"].items()
+                  if path.rsplit("/", 1)[-1] in ("RT shadows", "RT GI", "RT denoise")}
+        state = bridge.status()
+        width, height = state["vk_lighting_width"], state["vk_lighting_height"]
+        assert 0 < width <= int(game.keys["screenwidth"]) and 0 < height <= int(game.keys["screenheight"]), (width, height)
+        metrics[label] = {"frame_ms": frame_ms, "fps": round(1000 / frame_ms, 1), "gpu_ms": phases,
+                          "nrd_dispatches": state["vk_last_nrd_dispatches"], "lighting_extent": [width, height]}
+    return {"passed": True, "metrics": metrics, "notes": []}

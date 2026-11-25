@@ -953,6 +953,9 @@ SCENARIOS["render_check"] = _render("render_check")
 SCENARIOS["render_quick"] = _render("render_check", scenes=["slaver_path"], battle=False)
 SCENARIOS["render_check_vk"] = _render("render_check_vk")
 SCENARIOS["vk_errors"] = _render("vk_errors")
+SCENARIOS["vk_ray_tracing"] = _render("vk_ray_tracing")
+SCENARIOS["vk_nrd"] = _render("vk_ray_tracing", nrd=True)
+SCENARIOS["perf_rt_denoisers"] = _render("perf_rt_denoisers")
 SCENARIOS["vk_textures"] = _render("vk_textures")
 SCENARIOS["vk_parity"] = _render("vk_parity")
 
@@ -1540,3 +1543,31 @@ def _arena_stats_layout_small(ctx):
 
 SCENARIOS["arena_stats_layout"] = _arena_stats_layout
 SCENARIOS["arena_stats_layout_small"] = _arena_stats_layout_small
+
+def _session_mod_state(ctx):
+    from .session_mod_state_suite import session_mod_state
+    return session_mod_state(ctx)
+
+SCENARIOS["session_mod_state"] = _session_mod_state
+
+
+def _gameplay_mods(ctx):
+    from .gameplay_mods_suite import gameplay_mods
+    return gameplay_mods(ctx)
+
+
+SCENARIOS["gameplay_mods"] = _gameplay_mods
+
+
+def _solo_kill_camera(ctx):
+    from .solo_kill_camera_suite import solo_kill_camera
+    return solo_kill_camera(ctx)
+
+
+def _overhaul_solo_kill_camera(ctx):
+    from .solo_kill_camera_suite import solo_kill_camera
+    return solo_kill_camera(ctx, overhaul=True)
+
+
+SCENARIOS["solo_kill_camera"] = _solo_kill_camera
+SCENARIOS["overhaul_solo_kill_camera"] = _overhaul_solo_kill_camera

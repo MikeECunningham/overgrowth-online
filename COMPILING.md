@@ -64,7 +64,19 @@ It downloads packages into `Build/Dependencies/gpu`, extracts them privately, an
 
 CMake copies the prepared libraries and their copyright notice beside the executable. For a different build directory, select the prepared directory with `-DOVERGROWTH_SHADER_RUNTIME_DIR="/path/to/runtime"`. The engine also searches the executable's directory, `$VULKAN_SDK/lib`, `$VULKAN_SDK/lib64`, and the normal loader path.
 
-The Linux renderer includes OpenGL, Vulkan and TAA. The current DLSS, FSR and NRD integrations use Windows SDK binaries and are excluded from the Linux build.
+### Optional NVIDIA Real-Time Denoisers (NRD)
+
+The built-in Vulkan denoiser runs on the GPU. To add NVIDIA's SIGMA and REBLUR denoisers, use CMake 3.30 or newer and run the following after preparing the Vulkan shader runtime.
+
+```sh
+OVERGROWTH_GAME_DATA="/path/to/installed/Overgrowth" \
+OVERGROWTH_BUILD_JOBS=6 \
+    ./Tools/build_linux_nrd.sh
+```
+
+The helper downloads NRD v4.18.0 and its shader tools, compiles the Vulkan compute shaders to SPIR-V, and embeds them in `libNRD.so`. It also builds the game and places the library and its license beside the executable. To reuse an existing SDK, build it with the helper's options and the [REBLUR shader patch](Tools/patches/nrd-4.18-reblur-vulkan-sh.patch), then pass `-DNRD_SDK=/path/to/NRD` to the game build. The patch makes a shader write all four channels of the image used for diffuse global illumination.
+
+With Vulkan active, use **Settings → Ray Tracing → Denoiser → NVIDIA NRD**. A fresh profile selects NRD when available. The integration needs 224 bytes of Vulkan push constants. If the device or library is unavailable, the renderer uses the built-in GPU denoiser. DLSS and FSR currently require a Windows build.
 
 ## Windows
 

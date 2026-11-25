@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Mod>
+    <Id>og-online-scaling</Id>
+    <Name>Difficulty Scaling</Name>
+    <Author>Overgrowth Online</Author>
+    <Description>Adjust enemy strength and equipment to the party and its performance. The host selects scaling in Difficulty and configures the rates for each lobby mode. Peers match this mod and its network schema. Session saves preserve settings, encounter pressure, and earned difficulty increases.</Description>
+    <Category>Gameplay</Category>
+    <Thumbnail>Data/Images/og-online-scaling.jpg</Thumbnail>
+    <Version>1.0.0</Version>
+    <SupportedVersion>0.41.36</SupportedVersion>
+    <EnabledByDefault>true</EnabledByDefault>
+    <SupportsOnline>true</SupportsOnline>
+    <NeedsRestart>false</NeedsRestart>
+    <Session feature="scaling" network_version="1" save_version="1">
+        <Rule key="five_minute_gain" value="0.05"/>
+        <Rule key="completion_gain" value="0.08"/>
+        <Rule key="win_gain" value="0.04"/>
+        <Rule key="wipe_gain" value="0.05"/>
+        <Rule key="forced_win_gain" value="0.08"/>
+        <Rule key="retry_relief" value="0.025"/>
+        <LobbySetting key="challenge_time" label="Active time" description="Increase enemy difficulty as active play time passes." default="2" live="true" placement="difficulty">
+            <Choice>Off</Choice>
+            <Choice>Gentle</Choice>
+            <Choice>Standard</Choice>
+            <Choice>Brisk</Choice>
+            <Choice>Nightmare</Choice>
+        </LobbySetting>
+        <LobbySetting key="challenge_round" label="Level or match completion" description="Increase enemy difficulty when a level or match is completed." default="2" live="true" placement="difficulty" modes="campaign,arena">
+            <Choice>Off</Choice>
+            <Choice>Gentle</Choice>
+            <Choice>Standard</Choice>
+            <Choice>Brisk</Choice>
+            <Choice>Nightmare</Choice>
+        </LobbySetting>
+        <LobbySetting key="challenge_performance" label="Performance scaling" description="Adjust difficulty after wins, party wipes or both." default="0" live="true" placement="difficulty">
+            <Choice>Off</Choice>
+            <Choice>On win</Choice>
+            <Choice>On loss</Choice>
+            <Choice>Forced-50</Choice>
+        </LobbySetting>
+        <LobbySetting key="challenge_performance_rate" label="Performance rate" description="Set the size of each performance adjustment." default="2" live="true" placement="difficulty" depends_on="challenge_performance">
+            <Choice>Off</Choice>
+            <Choice>Gentle</Choice>
+            <Choice>Standard</Choice>
+            <Choice>Brisk</Choice>
+            <Choice>Nightmare</Choice>
+        </LobbySetting>
+    </Session>
+</Mod>

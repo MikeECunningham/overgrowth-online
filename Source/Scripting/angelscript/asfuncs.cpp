@@ -1817,11 +1817,11 @@ void AttachActiveCamera(ASContext* context) {
 }
 
 #include "Internal/timer.h"
+static bool ASAllowsSoloCinematics() {
+    return Online::Instance()->AllowsSoloCinematics();
+}
 static void ASTimedSlowMotion(float target_time_scale, float how_long, float delay) {
-    Online* online = Online::Instance();
-    if (online->IsActive()) {
-        return;  // Overgrowth Online: no slow motion online (it slowed everyone's game for one kill)
-    }
+    if (!ASAllowsSoloCinematics()) return;
     game_timer.AddTimedSlowMotionLayer(target_time_scale, how_long, delay);
 }
 
@@ -1838,6 +1838,7 @@ static bool GetMenuPaused() {
 }
 
 void AttachTimer(ASContext* context) {
+    context->RegisterGlobalFunction("bool AllowsSoloCinematics()", asFUNCTION(ASAllowsSoloCinematics), asCALL_CDECL);
     context->RegisterGlobalProperty("float time_step", &game_timer.timestep, "Time in seconds between engine time steps");
     context->RegisterGlobalProperty("float the_time", &game_timer.game_time, "The current time in seconds since engine started (in-game time)");
     context->RegisterGlobalProperty("float ui_time", &ui_timer.game_time, "The current time in seconds since engine started (absolute time)");
@@ -6891,7 +6892,7 @@ int AS_GetMonitorCount() {
 
 // Overgrowth Online (RT): what the ray tracing can use on this PC, for the settings menu:
 // 1 the Vulkan renderer runs, 2 its GPU ray traces, 4 NVIDIA NRD is there, 8 DLSS Ray
-// Reconstruction is
+// Reconstruction is, 16 reflections and 32 GI are supported
 int AS_RayTracingSupport() {
     int support = 0;
     if (UseVulkan()) {
@@ -6899,6 +6900,8 @@ int AS_RayTracingSupport() {
         support |= VkRt::Available() ? 2 : 0;
         support |= VkRt::NrdAvailable() ? 4 : 0;
         support |= VkNgx::RrAvailable() ? 8 : 0;
+        support |= VkRt::DrawsCanTrace() ? 16 : 0;
+        support |= VkRt::GiSupported() ? 32 : 0;
     }
     return support;
 }
@@ -7293,6 +7296,10 @@ static std::string ASSpawnerItemGetPath(void* memory) {
 static std::string ASSpawnerItemGetThumbnail(void* memory) {
     return std::string(((ModInstance::Item*)memory)->thumbnail);
 }
+static bool ASModSessionFeature(const std::string& feature) {
+    return ModLoading::Instance().HasSessionFeature(feature);
+}
+
 static bool ASModIsActive(ModID& sid) {
     ModInstance* mod = ModLoading::Instance().GetMod(sid);
     if (mod) {
@@ -8077,6 +8084,7 @@ void AttachModding(ASContext* context) {
     context->RegisterGlobalFunction("Campaign GetCampaign(string& campaign_id)", asFUNCTION(ASGetCampaign), asCALL_CDECL);
     context->RegisterGlobalFunction("array<Campaign>@ GetCampaigns()", asFUNCTION(ASGetCampaigns), asCALL_CDECL);
 
+    context->RegisterGlobalFunction("bool ModSessionFeature(const string &in)", asFUNCTION(ASModSessionFeature), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ModIsActive(ModID& id)", asFUNCTION(ASModIsActive), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ModNeedsRestart(ModID& id)", asFUNCTION(ASModNeedsRestart), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ModIsValid(ModID& id)", asFUNCTION(ASModIsValid), asCALL_CDECL);

@@ -26,6 +26,81 @@ The mod loading system should fullfill the following features for mods
 
 ## Overview
 
+## Session mods
+
+Overgrowth Online installs **Difficulty Scaling** and **Friendly Progression** under
+`Data/Mods/`. Both are active on first discovery. At the main menu, change either in **Mods**, then start or load a game.
+The choice takes effect without restarting the application and survives restarts and updates.
+In the lobby, the host still chooses Traditional or Scaling difficulty and whether
+to award XP for that mode. Slot ownership, split-screen, host-local save cards
+and armor protection work independently of both packages.
+
+The bundled manifests contain numerical tuning under `Rule`, including XP bounties,
+shop prices and difficulty gains. Their AngelScript files supply the campaign and
+Arena event hooks and campaign shop transitions.
+
+**Difficulty Scaling** contributes the host's difficulty controls, enemy scaling
+rules and encounter events. All peers use the host's settings. Saves include
+encounter pressure, completion and retry history, and the captured enemy strength.
+**Friendly Progression** contributes the campaign and Arena XP rules, shop and
+loadouts. Peers receive the host's wallets and shop decisions. The host saves XP,
+purchases, equipment, team upgrades and shop state against persistent lobby slots.
+
+### Declare a lobby option
+
+In `mod.xml`, describe the gameplay, network and save effects in the normal
+`Description` field. Add a `Session` element for machine-readable compatibility.
+This example gives the host a three-choice Arena control in **Mode settings**.
+
+```xml
+<SupportsOnline>true</SupportsOnline>
+<Session network_version="1" save_version="1">
+    <LobbySetting key="session-rules.duration" label="Round length"
+                  modes="arena" default="1" description="Choose the length of a round.">
+        <Choice>Short</Choice>
+        <Choice>Normal</Choice>
+        <Choice>Long</Choice>
+    </LobbySetting>
+</Session>
+```
+
+Prefix each setting key with the mod ID and a dot. Values are zero-based indices
+into the choices. The host can set preferences per mode, and the engine supplies
+the lobby control and preserves the selection across peers, host handoffs and
+save/load. A pair of `Off` and `On` choices draws a checkbox. Other choices draw
+a dropdown. Omit `modes` for all play modes or comma-separate `campaign`, `arena`
+and `sandbox`. To show an option only when another of the mod's settings is
+nonzero, use its full key in `depends_on`. Set `live="true"` to allow host scripts
+to change the setting during play. The default permits edits in the lobby.
+
+Read the selection with `LobbyGetModeSetting("session-rules.duration")`.
+`LobbySetModeSetting(key, value)` checks host authority, mode, timing and range.
+With lobby settings, each omitted schema defaults to the mod’s package version.
+Bump the network and save schemas when the meaning of an existing index changes.
+
+### Synchronize and save gameplay data
+
+The host calls `SessionSetModData(mod_id, json_string)` with a JSON object.
+It returns whether the write succeeded. Scripts on any peer can read the latest
+object using `SessionGetModData(mod_id)`. The empty object is `{}`. Use the stable
+lobby slot ID when recording per-player state, so swapping devices or reconnecting
+a player preserves ownership. Keep each object's serialized size within 64 KiB
+and the total script data within 256 KiB.
+
+- `network_version` includes data in live updates, the initial host snapshot
+  and host migration. Joining requires a matching network schema for each active
+  session mod. Keep this value when publishing backward-compatible package updates.
+- `save_version` includes data in the host's autosave and manual save cards. Load
+  checks the installed mod and its save schema before changing the running session.
+  A missing or incompatible required mod is identified to the host. Extra active
+  mods start with their defaults when a card predates them.
+
+A script mod that only needs stored state can declare just a save schema. A
+network-only script mod can declare just a network schema. The usual active-mod
+compatibility check still applies. Save-only data stays on the host during play.
+A host handoff transfers it to the newly elected host. Use the mod’s own ID for
+data access.
+
 ## Folder structure
 
 Mods are usually installed in the game Data folder, in the Mods folder, it can look something like this
