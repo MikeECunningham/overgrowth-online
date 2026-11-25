@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace FriendlyProgression {
 struct Weapon {
@@ -26,9 +27,11 @@ inline const std::array<Weapon, 5>& Weapons() {
     }};
     return weapons;
 }
-struct Build {
+struct StatRanks {
     int health = 0, damage = 0, speed = 0;
-    int stealth_passive = 0, stealth_active = 0;
+    int stealth_passive = 0, stealth_active = 0, luck = 0;
+};
+struct Build : StatRanks {
     std::array<int, 9> armor{}; // front, back, head, forearms, shoulders, thighs
     int big_weapon = 0;        // none, sword, spear, staff, broadsword
     bool dagger = false;
@@ -38,19 +41,22 @@ struct Build {
 };
 Build GetBuild(uint32_t player);
 bool Enabled();
-void Checkpoint();
+void Checkpoint(int checkpoint = 0, int source = -1);
+void ArenaWin(const std::vector<int>& winners, bool match, const std::vector<int>* participants = nullptr);
 void ResetAttempt();
 bool BeginShop(bool campaign_final = false);
 bool ShopOpen();
 bool LoopChosen();
 Json::Value View(uint32_t actor, uint32_t target);
-bool Act(uint32_t actor, uint32_t target, const std::string& action, const std::string& key);
+bool Act(uint32_t actor, uint32_t target, const std::string& action, const std::string& key,
+         unsigned expected_reward_generation = 0);
 
 // Session, network and character hooks.
 void NewSession();
 void NewWorld();
 void ForgetPlayer(uint32_t player);
 void Update();
+void ReportRecovery(int victim);
 void ReportHit(int victim, int attacker, float damage, bool defeat);
 bool ReceiveEvent(uint8_t peer, const Json::Value& message);
 bool ReceiveAction(uint32_t actor, const Json::Value& message);

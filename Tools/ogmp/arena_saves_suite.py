@@ -85,7 +85,8 @@ def arena_saves(ctx):
     menu(host, f'LobbySetSelection("{ARENA}","{ARENA}","{ARENA_MAP}",false);LobbySetForceTeams(true);'
          f'LobbySetPlayerTeam({owner},5);LobbySetPlayerTeam({visitor},2);LobbySetPlayerTeam({bot},2);'
          f'LobbySetPlayerTeam({removed},2);'
-         'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",1);LobbyStart();')
+         'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",1);'
+         'LobbySetModeSetting("progression_gain_damage",1);LobbySetModeSetting("progression_loss_damage",1);LobbyStart();')
     for peer in (host, guest):
         _ready(peer, ARENA_MAP)
     _code(host, f"LobbyRemovePlayer({removed});")
@@ -109,6 +110,9 @@ def arena_saves(ctx):
           'for(uint i=0;i<spot_weapons.length();++i)spot_weapons[i]="Data/Items/DogWeapons/DogSword.xml";'
           f'for(uint i=0;i<roster.length();++i)points[i]=ArenaSeatKey(roster[i])=="seat{owner}"?2:1;'
           'PublishArenaState();SendScore();')
+    _code(host, f'ProgressionReportHit({avatar(host, bot)},{avatar(host, owner)},.5f,false);')
+    unbanked = host.bridge.call("progression", actor=owner)["view"]["pooled"]
+    assert unbanked > 0
     ongoing = save(host, 1)
     original_slots = ongoing["slots"]
     assert ongoing["world"]["round"] == 4 and ongoing["world"]["points"][f"seat{owner}"] == 2
@@ -126,6 +130,10 @@ def arena_saves(ctx):
     assert shared_wallet["held"] > 0, shared_wallet
     # Load the earlier in-progress card into this live lobby. Connected humans
     # retain their physical inputs and their unit's score and gear template.
+    legacy_rules = json.loads(json.dumps(ongoing))
+    legacy_rules["session_mods"]["og-online-progression"]["version"] = "1"
+    legacy_rules["rules"]["mode_settings"][ARENA]["progression_combat"] = 1
+    card(host, 1).write_text(json.dumps(legacy_rules))
     _code(host, "SessionLoad(1);")
     wait(lambda: all(p.bridge.status()["online"]["lobby_waiting"] and not p.bridge.status()["level_loaded"]
                      for p in (host, guest)), "manual Arena card reopens lobby")
@@ -136,8 +144,12 @@ def arena_saves(ctx):
     wait(lambda: probe(host, '""+round_number') == "4", "saved Arena round restored")
     freeze(host, guest)
     assert match(host) == expected(ongoing), (match(host), expected(ongoing))
+    assert host.bridge.call("progression", actor=owner)["view"]["pooled"] == unbanked
     reissued = save(host, 3)
     assert reissued["world"]["arena"]["spots"] == ongoing["world"]["arena"]["spots"]
+    prefs = reissued["rules"]["mode_settings"][ARENA]
+    assert "progression_combat" not in prefs and reissued["session_mods"]["og-online-progression"]["version"] == "4"
+    assert (prefs["progression_gain_damage"], prefs["progression_loss_damage"], prefs["progression_gain_kill"]) == (1, 1, 0)
     # A fresh process receives only disk cards, no old session or object IDs.
     cold = ctx.instance("arena_save_cold", width=640, height=360, keys={**keys, "mp_port": "28693"})
     for folder in ("SessionSaves", "Textures/SessionSaves"):
@@ -150,6 +162,7 @@ def arena_saves(ctx):
     legacy["progression"] = mods["og-online-progression"]["runtime"]
     legacy["rules"]["challenge"] = mods["og-online-scaling"]["runtime"]
     legacy["rules"]["challenge"]["modes"] = legacy["rules"].pop("mode_settings")
+    legacy["rules"]["challenge"]["modes"][ARENA]["progression_combat"] = 0
     legacy["world"]["arena"]["phase"] = 5
     legacy["progression"]["open"] = True
     legacy["progression"]["ms_left"] = 10000.0
@@ -166,6 +179,9 @@ def arena_saves(ctx):
     for peer in (cold, fresh):
         _ready(peer, ARENA_MAP)
     wait(lambda: probe(cold, '""+int(phase)') == "3", "saved round-win boundary restores without shop")
+    assert probe(cold, '""+LobbyGetModeSetting("progression_gain_kill")') == "1"
+    assert probe(cold, '""+LobbyGetModeSetting("progression_gain_damage")') == "0"
+    assert probe(cold, 'LobbyGetModeSetting("progression_shop") == 1 && LobbyGetModeSetting("progression_free_buffs") == 0') == "true"
     assert match(cold) == expected(after_win), (match(cold), expected(after_win))
     freeze(cold, fresh)
     assert not cold.bridge.call("progression", actor=owner)["view"]["shop_open"]
@@ -193,6 +209,13 @@ def arena_saves(ctx):
         card(cold, 6).write_text(json.dumps(corrupt))
         assert probe(cold, '""+SessionLoad(6)') == "false", ("invalid Arena row must fail before ending the match", collection)
         assert cold.bridge.status()["level_loaded"] and probe(cold, '""+int(phase)') == "6"
+    # Schema 2 cards had a paid shop and no free choices. Its open shop must
+    # remain usable after loading the card alongside another human peer.
+    old_shop = json.loads(json.dumps(final))
+    old_shop["session_mods"]["og-online-progression"]["version"] = "2"
+    for key in ("progression_shop", "progression_free_buffs"):
+        old_shop["rules"]["mode_settings"][ARENA].pop(key, None)
+    card(cold, 4).write_text(json.dumps(old_shop))
     _code(cold, "SessionLoad(4);")
     wait(lambda: all(p.bridge.status()["online"]["lobby_waiting"] and not p.bridge.status()["level_loaded"]
                      for p in (cold, fresh)), "final-win card reopens lobby")

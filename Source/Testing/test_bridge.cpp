@@ -505,7 +505,8 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         const PlayerID actor = req.get("actor", LobbyAuthority::InvalidPlayer).asUInt();
         const PlayerID target = req.get("target", actor).asUInt();
         if (req["action"].isString())
-            out["submitted"] = FriendlyProgression::Act(actor, target, req["action"].asString(), req.get("key", "").asString());
+            out["submitted"] = FriendlyProgression::Act(actor, target, req["action"].asString(), req.get("key", "").asString(),
+                                                        req.get("generation", 0).asUInt());
         out["view"] = FriendlyProgression::View(actor, target);
         out["ledger"] = FriendlyProgression::Snapshot();
     } else if (cmd == "state") {
@@ -818,7 +819,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             if (name.empty()) sg->level->Execute(code);
             else {
                 bool found = false;
-                for (auto& hook : sg->level->as_contexts_) if (hook.context_name == name) {
+                for (auto& hook : sg->level->as_contexts_) if (hook.context_name == name || hook.path.GetOriginalPath() == name) {
                     hook.ctx->Execute(code);
                     found = true;
                     break;

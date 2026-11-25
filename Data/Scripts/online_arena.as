@@ -447,7 +447,7 @@ bool RestoreArenaMatch() {
         phase = saved_phase; phase_time = the_time; intro_step = 0;
         SessionArenaRound(round_number);
         PlaceFighters(); SendScore(); PublishArenaState();
-        Show(saved_phase == kShoppingNextMatch ? "Shopping" : "Round complete");
+        Show(saved_phase == kShoppingNextMatch || saved_phase == kMatchOver ? "Match complete" : "Round complete");
     }
     return true;
 }
@@ -460,8 +460,12 @@ void SetPhase(ArenaPhase p) {
         }
         else if(p == kRoundOver) {
             ChallengeArenaRoundWin(round_winner);
+            ProgressionArenaRoundComplete(round_winners, roster);
         }
-        else if(p == kMatchOver) ChallengeArenaMatchComplete();
+        else if(p == kMatchOver) {
+            ChallengeArenaMatchComplete();
+            ProgressionArenaWin(round_winners, true);
+        }
     }
     phase = p;
     phase_time = the_time;
@@ -600,6 +604,8 @@ void NewMatch() {
 }
 
 void StartRound(bool resume = false) {
+    // A resumed round already has its attempt and unbanked XP from the save.
+    if(!resume) ProgressionResetAttempt();
     ++round_number;
     round_winner = -1;
     round_winners.resize(0);

@@ -81,4 +81,51 @@ template<> template<> void xp_test::test<3>() {
     snapshot["xp_scales"][0]["world_remaining"] = -1;
     ensure("negative reward estimates are rejected", !FriendlyProgression::Restore(snapshot, true));
 }
+template<> template<> void xp_test::test<4>() {
+    using namespace FriendlyProgression;
+    ensure_equals("baseline chance", FreeRewardChance(0), .20);
+    ensure_equals("maximum Luck guarantees a choice", FreeRewardChance(kMaxRank), 1.);
+    ensure_equals("aggregate Luck never exceeds certainty", FreeRewardChance(kMaxRank + 1), 1.);
+    const double baseline = FreeRewardBudget(0, 2400);
+    ensure("base Luck favors ordinary buffs", FreeRewardWeight(16, baseline) > .99);
+    ensure("base Luck makes recruits exceptional", FreeRewardWeight(2400, baseline) < .000001);
+    const auto relative_weight = [](int luck) {
+        const double budget = FreeRewardBudget(luck, 2400);
+        return FreeRewardWeight(2400, budget) / FreeRewardWeight(16, budget);
+    };
+    for (int rank = 1; rank <= kMaxRank; ++rank) {
+        ensure("each rank improves the chance to draw", FreeRewardChance(rank) > FreeRewardChance(rank - 1));
+        ensure("each rank improves expensive offers relative to cheap ones", relative_weight(rank) > relative_weight(rank - 1));
+    }
+    const double budget = FreeRewardBudget(20, 2400);
+    ensure_equals("rank 20 reaches the first recruit price", budget, 2400.);
+    ensure_equals("recruit weight at rank 20", FreeRewardWeight(2400, budget), .5);
+    ensure("repeat recruits still rarer at rank 20", FreeRewardWeight(5400, budget) < .01);
+    ensure_equals("reward values respect modded recruit price", FreeRewardBudget(20, 3600), 3600.);
+}
+
+template<> template<> void xp_test::test<5>() {
+    using namespace FriendlyProgression;
+    Wallet wallet;
+    wallet.Earn(40, true);
+    wallet.Earn(25.5, false);
+    wallet.Lose(16, true);
+    ensure_equals("a funded defeat preserves the bank", wallet.held, 40.);
+    ensure_equals("unused pool remains until reset or banking", wallet.pooled, 9.5);
+    wallet.Lose(16, true);
+    ensure_equals("only the unpaid 6.5 XP reaches the bank", wallet.held, 33.5);
+    ensure_equals(wallet.pooled, 0.);
+    wallet.Earn(16, false);
+    wallet.Lose(16, true);
+    ensure_equals("an exact pool covers the whole defeat", wallet.held, 33.5);
+    ensure_equals(wallet.pooled, 0.);
+    wallet.Lose(16, false);
+    ensure_equals("damage cannot spill into the bank", wallet.held, 33.5);
+    wallet.Lose(16, true);
+    ensure_equals("an empty pool leaves the full defeat cost", wallet.held, 17.5);
+    wallet.Lose(32, true);
+    ensure_equals("the bank cannot go into debt", wallet.held, 0.);
+    ensure_equals("losses never produce a checkpoint commit", wallet.commit_serial, 0u);
+}
+
 }

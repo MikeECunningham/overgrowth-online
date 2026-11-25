@@ -39,4 +39,6 @@ void HandleEvent(string event, MovementObject @mo){
 
 void OnEnter(MovementObject @mo) {
     params.SetFloat("LastEnteredTime", the_time);
+    if(Online_IsHosting() && Online_IsPlayerCharacter(mo.GetID()))
+        ProgressionCheckpoint(1, Online_ToSharedID(hotspot.GetID()));
 }

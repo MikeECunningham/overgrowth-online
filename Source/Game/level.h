@@ -94,7 +94,8 @@ class Level : public ASNetworkCallback {
 
         Path path;
         std::string context_name;
-        ASContext* ctx;
+        ASContext* ctx = nullptr;
+        std::map<std::string, ASContext*> float_param_adapters;
     };
 
     std::vector<HookedASContext> as_contexts_;

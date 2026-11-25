@@ -101,12 +101,16 @@ bool OpposesMain(Online* online, SceneGraph* graph, MovementObject* actor) {
     }
     return member;
 }
-bool Hostile(Online* online, SceneGraph* graph, MovementObject* actor) {
-    if (!actor || actor->controlled || (online->IsPlayerCharacter(actor->GetID()) && !LobbyBot(online, actor->GetID())) ||
-        !actor->HasFunction("void SetCampaignScaling(float, float, float, float)")) return false;
+bool DifficultyTarget(Online* online, SceneGraph* graph, MovementObject* actor) {
+    if (!actor || actor->controlled) return false;
     ScriptParams* params = actor->GetScriptParams();
     if (params->HasParam("Campaign Scaling Exempt") && params->ASGetInt("Campaign Scaling Exempt") != 0) return false;
     return OpposesMain(online, graph, actor);
+}
+bool Hostile(Online* online, SceneGraph* graph, MovementObject* actor) {
+    return actor && actor->HasFunction("void SetCampaignScaling(float, float, float, float)") &&
+           (!online->IsPlayerCharacter(actor->GetID()) || LobbyBot(online, actor->GetID())) &&
+           DifficultyTarget(online, graph, actor);
 }
 bool ExplicitBoss(MovementObject* actor, bool inferred) {
     ScriptParams* params = actor->GetScriptParams();
@@ -1205,6 +1209,12 @@ std::string Online::CampaignWaitingText() {
     return "";
 }
 
+bool Online::IsDifficultyEnemy(ObjectID id) {
+    if (!IsHosting() || IsPlayerCharacter(id)) return false;
+    SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    return DifficultyTarget(this, graph, Actor(graph, id));
+}
+
 void Online::ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions, float base) {
     if (!std::isfinite(vitality) || !std::isfinite(damage) || !std::isfinite(armor) || !std::isfinite(ai) ||
         vitality < 0.75f || vitality > 6 || damage < 0.9625f || damage > 2 || armor < 0.975f || armor > 2 || ai < 0 || ai > 0.06f ||
@@ -2045,6 +2055,24 @@ bool IssueProgressionWeapon(Online* online, SceneGraph* graph, MovementObject* a
     auto& assets = *Engine::Instance()->GetAssetManager();
     auto weapon = assets.LoadSync<Item>(path);
     if (!weapon.valid()) return false;
+    auto& tracked = seat.weapons[offhand ? 1 : 0];
+    Object* item = OwnedWeapon(graph, tracked);
+    if (item && item->obj_file != path) {
+        // A mid-level reward can replace a sheathed or held weapon. Leave
+        // the old item in the world if it was thrown or taken by somebody else.
+        const auto& attachments = actor->rigged_object()->attached_items.items;
+        const bool attached = std::any_of(attachments.begin(), attachments.end(), [item](const auto& attachment) {
+            return attachment.item.GetAttached() == item;
+        });
+        if (attached) {
+            const ObjectID id = item->GetID();
+            actor->NetworkDetachItem(id);
+            actor->Execute("NotifyItemDetach(" + std::to_string(id) + ");");
+            graph->map_editor->DeleteID(id);
+        }
+        tracked = {};
+        item = nullptr;
+    }
     AttachmentSlotList slots;
     actor->rigged_object()->AvailableItemSlots(weapon, &slots);
     // Prefer opposite hips. Long weapons without a sheath attachment start
@@ -2059,12 +2087,6 @@ bool IssueProgressionWeapon(Online* online, SceneGraph* graph, MovementObject* a
             if (slot == slots.end()) continue;
             // A checkpoint resets everyone's rig. Return the original purchase,
             // whether it was sheathed, dropped or thrown on the previous attempt.
-            auto& tracked = seat.weapons[offhand ? 1 : 0];
-            Object* item = OwnedWeapon(graph, tracked);
-            if (item && item->obj_file != path) {
-                graph->map_editor->DeleteID(item->GetID());
-                item = nullptr;
-            }
             if (!item) {
                 const ObjectID id = graph->map_editor->CreateObject(path);
                 if (id < 0 || !graph->DoesObjectWithIdExist(id)) return false;
@@ -2090,6 +2112,14 @@ bool IssueProgressionWeapon(Online* online, SceneGraph* graph, MovementObject* a
     }
     return false;
 }
+}
+
+void Online::ProgressionWeaponAwarded(PlayerID recipient, bool offhand) {
+    if (!progression_equipment) return;
+    auto found = progression_equipment->seats.find(recipient);
+    if (found == progression_equipment->seats.end()) return;
+    found->second.issued &= ~(offhand ? 2 : 1);
+    found->second.prepared = false;
 }
 
 void Online::RefreshProgressionLoadouts(bool arena_round) {

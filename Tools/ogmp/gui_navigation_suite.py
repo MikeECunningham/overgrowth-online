@@ -178,8 +178,8 @@ def _legacy(ctx):
             return [x, y, x + width, y + height]
 
         g.click(element_rect('textbox_screenwidth'))
-        for digit in '1234':
-            g.key(digit)
+        for key in ('1', 'Keypad 2', '3', 'Keypad 4'):
+            g.key(key)
         assert numeric() == '1234|true|true', numeric()
         g.pointer(element_rect('Brightness', slider=True))
         assert g.probe('active_slider') != '-1', 'fixture did not hover the slider'

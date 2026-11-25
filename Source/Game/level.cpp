@@ -67,9 +67,18 @@ Level::~Level() {
     Dispose();
 }
 
+namespace {
+// Per-context user data. Slot zero is reserved for ASContext itself.
+constexpr asPWORD kHookFloatParameters = 1;
+const char* kAdaptHookFloat = "bool AdaptLevelHookFloat(int, const string &in, float &out)";
+}
+
 void Level::Dispose() {
     Message("dispose_level");
 
+    for (auto& hook : as_contexts_) {
+        if (hook.ctx) hook.ctx->ctx->SetUserData(nullptr, kHookFloatParameters);
+    }
     for (auto& as_context : as_contexts_) {
         delete as_context.ctx;
         as_context.ctx = NULL;
@@ -820,8 +829,68 @@ static bool ASWaitingForInput() {
     return Engine::Instance()->waiting_for_input_;
 }
 
+namespace {
+Level::HookedASContext* FindLevelHook(Level* level, const std::string& path) {
+    for (auto& hook : level->as_contexts_) {
+        if (hook.context_name == "mod_level_hook" && path == hook.path.GetOriginalPath()) return &hook;
+    }
+    return nullptr;
+}
+
+bool ASAdaptHookParameter(Level* level, const std::string& path, const std::string& key) {
+    auto* target = FindLevelHook(level, path);
+    asIScriptContext* active = asGetActiveContext();
+    auto* provider = active ? static_cast<ASContext*>(active->GetUserData()) : nullptr;
+    if (!target || !target->ctx || !provider || target->ctx == provider || !provider->HasFunction(kAdaptHookFloat)) return false;
+    // Only sibling level hooks have the same lifetime as the registration.
+    for (const auto& hook : level->as_contexts_) {
+        if (hook.ctx == provider && hook.context_name == "mod_level_hook") {
+            auto inserted = target->float_param_adapters.emplace(key, provider);
+            target->ctx->ctx->SetUserData(&target->float_param_adapters, kHookFloatParameters);
+            return inserted.first->second == provider;
+        }
+    }
+    return false;
+}
+
+bool ASGetHookFloat(Level* level, const std::string& path, const std::string& name, float& value) {
+    auto* hook = FindLevelHook(level, path);
+    if (!hook || !hook->ctx) return false;
+    auto* module = hook->ctx->module.GetInternalScriptModule();
+    if (!module) return false;
+    int index = module->GetGlobalVarIndexByName(name.c_str()), type = 0;
+    if (index < 0 || module->GetGlobalVar(index, nullptr, nullptr, &type) < 0 || type != asTYPEID_FLOAT) return false;
+    const auto* address = static_cast<const float*>(module->GetAddressOfGlobalVar(index));
+    if (!address) return false;
+    value = *address;
+    return true;
+}
+}  // namespace
+
+bool ReadLevelHookFloatParameter(const ScriptParams& params, const std::string& key, float& result) {
+    auto* active = asGetActiveContext();
+    const auto* providers = active ? static_cast<const std::map<std::string, ASContext*>*>(
+        active->GetUserData(kHookFloatParameters)) : nullptr;
+    if (!providers) return false;
+    auto found = providers->find(key);
+    if (found == providers->end() || found->second->ctx->GetState() == asEXECUTION_ACTIVE) return false;
+    ASArglist args;
+    args.Add(static_cast<int>(params.GetObjectID()));
+    args.AddAddress(const_cast<std::string*>(&key));
+    args.AddAddress(&result);
+    bool handled = false;
+    ASArg returned;
+    returned.type = _as_bool;
+    returned.data = &handled;
+    return found->second->CallScriptFunction(kAdaptHookFloat, &args, &returned, false) && handled;
+}
+
 void Level::DefineLevelTypePublic(ASContext* as_context) {
     as_context->RegisterObjectType("Level", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    as_context->RegisterObjectMethod("Level", "bool AdaptHookFloatParameter(const string &in path, const string &in key)", asFUNCTION(ASAdaptHookParameter), asCALL_CDECL_OBJFIRST,
+        "Supply a runtime float to another level hook's HasParam/GetFloat reads through bool AdaptLevelHookFloat(int object_id, const string &in key, float &out value).");
+    as_context->RegisterObjectMethod("Level", "bool GetHookFloat(const string &in path, const string &in name, float &out value)", asFUNCTION(ASGetHookFloat), asCALL_CDECL_OBJFIRST,
+        "Read a declared float from a loaded level hook.");
     as_context->RegisterObjectMethod("Level", "bool HasFunction(const string &in function_definition)", asMETHOD(Level, HasFunction), asCALL_THISCALL);
     as_context->RegisterObjectMethod("Level", "int QueryIntFunction(const string &in function)", asMETHOD(Level, QueryIntFunction), asCALL_THISCALL);
     as_context->RegisterObjectMethod("Level", "int GetNumObjectives()", asMETHOD(Level, GetNumObjectives), asCALL_THISCALL);

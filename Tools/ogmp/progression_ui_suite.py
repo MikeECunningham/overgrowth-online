@@ -1,10 +1,122 @@
 """Two couch seats browse separately, bank XP, buy upgrades and equip in the shared shop."""
+import json
 import time
 from pathlib import Path
 
 from .campaign_scaling_suite import CAMPAIGN, RENDER_KEYS
 from .newcampaign_local_suite import FIRST, _join_pad, _ready, _skip
 from .scenarios import script_errors
+
+
+def progression_free_buff_ui(ctx):
+    """Checkpoint hands accept keyboard and D-pad input independently of the paid shop."""
+    host = ctx.instance("progression_free_buff_ui", width=1024, height=720,
+                        keys={**RENDER_KEYS, "mp_port": "28614", "player_invincible": "true", "tutorials": "false"})
+    bridge = host.bridge
+
+    def script(code, target="level"):
+        return bridge.call("exec", target=target, code=code)
+
+    def panels():
+        return sorted(bridge.status()["progression_ui"], key=lambda panel: panel["screen"])
+
+    def data(actor):
+        return bridge.call("progression", actor=actor)
+
+    def wait(condition, label):
+        return bridge.wait(condition, 30, step=.1, what=label)
+
+    def tap_pad(button):
+        for down in (True,False):
+            bridge.call("virtual_pad", action="button", slot=0, button=button, down=down)
+            time.sleep(.12)
+
+    def check_choice(actor, key, before):
+        result = data(actor)
+        assert before["view"]["held"] == result["view"]["held"], (key, before, result)
+        def account(state):
+            return next(p for p in state["ledger"]["players"] if p["id"] == actor)
+        if key.startswith("armor_"):
+            slot = int(key.split("_")[1])
+            assert account(result)["armor"][slot] > account(before)["armor"][slot]
+        elif key in ("dagger","sword","spear","staff","broadsword"):
+            assert account(result)["weapons"] != account(before)["weapons"]
+        elif key == "recruit":
+            assert len(result["ledger"]["players"]) > len(before["ledger"]["players"])
+        elif key == "ai":
+            def ranks(state):
+                return sum(p["ai"] for p in state["ledger"]["players"])
+            assert ranks(result) == ranks(before) + 1
+        else:
+            assert account(result)[key] == account(before)[key] + 1
+
+    script("LobbyBeginHost();", "menu")
+    _join_pad(host, 0, 2)
+    script(f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
+           'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shop",1);'
+           'LobbySetModeSetting("progression_free_buffs",1);LobbySetModeSetting("progression_shared",0);'
+           'LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
+    _ready(host, FIRST)
+    _skip(host)
+    wait(lambda: len(panels()) == 2, "two local players")
+    # A real host save with max-rank Luck removes randomness from these input checks.
+    path = Path(host.writedir, "Data/SessionSaves/slot2.json")
+    script("SessionSave(2);")
+    wait(path.is_file, "save before checkpoint")
+    saved = json.loads(path.read_text())
+    roster = saved["session_mods"]["og-online-progression"]["runtime"]["players"]
+    assert len(roster) == 2
+    for player in roster:
+        player["luck"] = 50
+    path.write_text(json.dumps(saved))
+    script("SessionLoad(2);")
+    wait(lambda: bridge.status()["online"]["lobby_waiting"] and not bridge.status()["level_loaded"], "roster restored")
+    script("LobbyStart();", "menu")
+    _ready(host, FIRST)
+    _skip(host)
+    script("ProgressionCheckpoint(31);")
+    wait(lambda: len(panels()) == 2 and all(p.get("page") == "reward" for p in panels()), "both checkpoint hands")
+    rows = panels()
+    assert all(not p["shop"] and len(p["visible_cards"]) == len(set(p["visible_cards"])) == 4 for p in rows), rows
+    p1, p2 = [p["actor"] for p in rows]
+    first, second = data(p1), data(p2)
+    assert [c["id"] for c in first["view"]["reward_cards"]] == rows[0]["visible_cards"]
+    assert not bridge.status()["open_menu_players"]
+    ctx.shot(host, "checkpoint_free_choices")
+    bridge.call("key", key="4")
+    wait(lambda: not data(p1)["view"]["reward_pending"], "number row claims the fourth upgrade")
+    check_choice(p1, rows[0]["visible_cards"][3], first)
+    assert data(p2)["view"]["reward_pending"]
+    assert not panels()[0].get("page") and panels()[1].get("page") == "reward"
+    tap_pad(4)  # open P2's personal menu
+    wait(lambda: bridge.status()["open_menu_players"] == [1], "controller opens personal menu during pending hand")
+    assert panels()[1].get("page") != "reward"
+    tap_pad(14)  # D-pad right can navigate the menu without selecting a reward
+    assert data(p2)["view"]["reward_pending"]
+    bridge.call("exec", target="player_menu", local_player=1, code='this_ui.SendCallback("close");')
+    wait(lambda: panels()[1].get("page") == "reward", "personal menu returns to the pending hand")
+    tap_pad(14)
+    wait(lambda: not data(p2)["view"]["reward_pending"], "P2's D-pad claims the second upgrade")
+    check_choice(p2, rows[1]["visible_cards"][1], second)
+    script("ProgressionCheckpoint(31);")
+    assert not data(p1)["view"]["reward_pending"] and not data(p2)["view"]["reward_pending"]
+    script("ProgressionCheckpoint(32);")
+    wait(lambda: all(p.get("page") == "reward" for p in panels()), "next checkpoint offers new hands")
+    before_keypad = data(p1)
+    second_card = panels()[0]["visible_cards"][1]
+    bridge.call("key", key="Keypad 2")
+    wait(lambda: not data(p1)["view"]["reward_pending"], "keypad selects from P1's hand")
+    check_choice(p1, second_card, before_keypad)
+    remaining = data(p2)["view"]["reward_generation"]
+    script("ProgressionBeginShop(false);")
+    wait(lambda: all(p.get("page") == "shop" for p in panels()), "paid shop opens independently")
+    for actor in (p1,p2):
+        assert bridge.call("progression", actor=actor, action="ready")["submitted"]
+    wait(lambda: panels()[1].get("page") == "reward", "unclaimed hand resumes when paid shop closes")
+    assert data(p2)["view"]["reward_generation"] == remaining
+    assert not data(p1)["view"]["reward_pending"], "end shop unexpectedly awarded another free hand"
+    assert not script_errors(host), script_errors(host)
+    return {"passed": True, "metrics": {"keyboard_slots": [4,2], "controller_slot": 2}, "notes": []}
 
 
 def progression_ui(ctx):

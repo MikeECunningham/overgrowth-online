@@ -23,6 +23,7 @@
 //-----------------------------------------------------------------------------
 
 #include "threatcheck.as"
+#include "hotspots/progression_checkpoint.as"
 #include "challenge_campaign_events.as"
 #include "lugaru_campaign.as"
 
@@ -80,6 +81,8 @@ void TriggerGoalPost() {
 void IncrementProgress() {
     TriggerGoalPost();
     ++progress;
+    if(Online_IsHosting() && HasPlayerSpawnCheckpoint(progress))
+        ProgressionCheckpoint(progress, Online_ToSharedID(hotspot.GetID()));
     win_time = -1.0;
 
     TriggerGoalPre();

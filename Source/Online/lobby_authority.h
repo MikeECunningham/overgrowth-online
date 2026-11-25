@@ -9,6 +9,7 @@
 // Decision roles follow logical players, independently of transport ownership
 // and the order in which local input devices were connected.
 namespace LobbyAuthority {
+constexpr unsigned kMaxSlots = 4096;
 using Player = uint32_t;
 using Peer = uint8_t;
 constexpr Player InvalidPlayer = std::numeric_limits<Player>::max();

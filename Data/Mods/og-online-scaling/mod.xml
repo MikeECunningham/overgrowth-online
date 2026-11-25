@@ -3,15 +3,20 @@
     <Id>og-online-scaling</Id>
     <Name>Difficulty Scaling</Name>
     <Author>Overgrowth Online</Author>
-    <Description>Adjust enemy strength and equipment to the party and its performance. The host selects scaling in Difficulty and configures the rates for each lobby mode. Peers match this mod and its network schema. Session saves preserve settings, encounter pressure, and earned difficulty increases.</Description>
+    <Description>Adjust enemy strength and equipment to the party and its performance. The AI scaling rate also adjusts hostile fighters in compatible versions of Overhaul, Dynamic AI Aggression and Smarter Deaths when installed. The host selects rates in Difficulty. Peers match the active mods and their network schemas. Session saves preserve settings and encounter pressure.</Description>
     <Category>Gameplay</Category>
     <Thumbnail>Data/Images/og-online-scaling.jpg</Thumbnail>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <SupportedVersion>0.41.36</SupportedVersion>
     <EnabledByDefault>true</EnabledByDefault>
     <SupportsOnline>true</SupportsOnline>
     <NeedsRestart>false</NeedsRestart>
-    <Session feature="scaling" network_version="1" save_version="1">
+    <LevelHookFile>Data/Scripts/scaling_ai_adapters.as</LevelHookFile>
+    <LevelHookFile>Data/Scripts/scaling_overhaul_xp.as</LevelHookFile>
+    <Session feature="scaling" network_version="2" save_version="1">
+        <OnlineAdapter mod="crxhvrd-overhaul" version="0.41.36"/>
+        <OnlineAdapter mod="com-dynamicai" version="1.5.1"/>
+        <OnlineAdapter mod="seans-smarter-deaths" version="1.2.5" host_level_hooks="true"/>
         <Rule key="five_minute_gain" value="0.05"/>
         <Rule key="completion_gain" value="0.08"/>
         <Rule key="win_gain" value="0.04"/>

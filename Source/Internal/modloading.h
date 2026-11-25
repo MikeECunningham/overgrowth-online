@@ -75,8 +75,14 @@ class ModInstance {
         bool live = false;
     };
 
+    struct OnlineAdapter {
+        std::string mod_id, version;
+        bool host_level_hooks = false;
+    };
+
     struct SessionContract {
         std::string network_version, save_version, feature;
+        std::vector<OnlineAdapter> adapters;
         std::vector<LobbySetting> lobby_settings;
         std::map<std::string, double> rules;
         double Rule(const std::string& key) const {
@@ -329,6 +335,7 @@ class ModInstance {
     bool HasBeenActivated() const;
     bool NeedsRestart() const;
     bool SupportsOnline() const;
+    const std::string& SessionVersion(bool network) const;
     bool ExplicitVersionSupport() const;
 
     /* Evaluate if this mod could be uploaded to steam or other */
@@ -461,6 +468,7 @@ class ModLoading {
     std::string GetModID(ModID sid);
     bool IsActive(ModID sid);
     bool IsActive(std::string id);
+    const ModInstance::OnlineAdapter* OnlineAdapterFor(const ModInstance& target) const;
     const ModInstance::SessionContract* GetSessionFeature(const std::string& feature) const;
     bool HasSessionFeature(const std::string& feature) const { return GetSessionFeature(feature) != nullptr; }
 

@@ -33,6 +33,18 @@
 
 #include <sstream>
 
+namespace {
+float ScriptGetFloat(ScriptParams* params, const std::string& key) {
+    float value;
+    return ReadLevelHookFloatParameter(*params, key, value) ? value : params->ASGetFloat(key);
+}
+
+bool ScriptHasParam(const ScriptParams* params, const std::string& key) {
+    float value;
+    return params->HasParam(key) || ReadLevelHookFloatParameter(*params, key, value);
+}
+}  // namespace
+
 void ScriptParams::RegisterScriptInstance(ASContext *context) {
     context->RegisterGlobalProperty("ScriptParams params", this);
 }
@@ -43,7 +55,7 @@ void ScriptParams::RegisterScriptType(ASContext *context) {
     }
     context->RegisterObjectType("ScriptParams", 0, asOBJ_REF | asOBJ_NOCOUNT);
     context->RegisterObjectMethod("ScriptParams", "const string &GetString (const string &in key)", asMETHOD(ScriptParams, GetStringVal), asCALL_THISCALL);
-    context->RegisterObjectMethod("ScriptParams", "float GetFloat (const string &in key)", asMETHOD(ScriptParams, ASGetFloat), asCALL_THISCALL);
+    context->RegisterObjectMethod("ScriptParams", "float GetFloat (const string &in key)", asFUNCTION(ScriptGetFloat), asCALL_CDECL_OBJFIRST);
     context->RegisterObjectMethod("ScriptParams", "int GetInt (const string &in key)", asMETHOD(ScriptParams, ASGetInt), asCALL_THISCALL);
     context->RegisterObjectMethod("ScriptParams", "float SetFloat (const string &in key, float val)", asMETHOD(ScriptParams, ASSetFloat), asCALL_THISCALL);
     context->RegisterObjectMethod("ScriptParams", "int SetInt (const string &in key, int)", asMETHOD(ScriptParams, ASSetInt), asCALL_THISCALL);
@@ -60,7 +72,7 @@ void ScriptParams::RegisterScriptType(ASContext *context) {
     context->RegisterObjectMethod("ScriptParams", "JSON GetJSON (const string &in key)", asMETHOD(ScriptParams, ASGetJSON), asCALL_THISCALL);
 
     context->RegisterObjectMethod("ScriptParams", "void Remove (const string &in key)", asMETHOD(ScriptParams, ASRemove), asCALL_THISCALL);
-    context->RegisterObjectMethod("ScriptParams", "bool HasParam (const string &in key)", asMETHOD(ScriptParams, HasParam), asCALL_THISCALL);
+    context->RegisterObjectMethod("ScriptParams", "bool HasParam (const string &in key)", asFUNCTION(ScriptHasParam), asCALL_CDECL_OBJFIRST);
     context->RegisterObjectMethod("ScriptParams", "bool IsParamInt(const string &in key)", asMETHOD(ScriptParams, IsParamInt), asCALL_THISCALL);
     context->RegisterObjectMethod("ScriptParams", "bool IsParamFloat(const string &in key)", asMETHOD(ScriptParams, IsParamFloat), asCALL_THISCALL);
     context->RegisterObjectMethod("ScriptParams", "bool IsParamString(const string &in key)", asMETHOD(ScriptParams, IsParamString), asCALL_THISCALL);

@@ -87,18 +87,44 @@ with either Traditional or Scaling difficulty. XP rewards use enemy species,
 spawn equipment and the selected difficulty. Scaling also considers the enemy's
 durability, outgoing damage and current run pressure.
 
+**XP shop** and **Free upgrade choice** are independent. The shop starts on
+and lets players spend committed XP between campaign levels or Arena matches.
+With **Free upgrade choice** enabled, each new campaign checkpoint or completed
+Arena round rolls separately for each participating human player. A successful
+roll offers up to four eligible shop upgrades. Pick one for free with **1–4**
+or the matching numpad keys. On a controller, D-pad up, right, down and left
+choose cards 1, 2, 3 and 4 respectively. The other players can keep playing. Offers wait
+for their owner and saves retain outstanding choices with their slots.
+
+**Luck** starts at a 20% chance per roll. Each rank adds 1.6 percentage points,
+reaching 100% at rank 50. Luck also increases the chance of drawing expensive
+upgrades. A player can improve both odds by buying Luck in the shop or taking
+it as a free upgrade. In shared mode the team shares its Luck rank, and each
+player still gets a separate roll.
+
+Both modes have independent checkboxes for damage dealt, kills, damage taken
+and defeat. Kill rewards start enabled. With damage rewards enabled, dealing a
+full health bar of damage earns the opponent's bounty. With both rewards
+enabled, the killing blow can earn damage XP and a kill bounty. The damage
+penalty costs 40% of a bounty per full health bar lost and draws from pooled
+XP down to zero. Defeat costs one bounty. It uses pooled XP first and takes
+any remainder from committed XP. For a 16 XP penalty with 10 XP pooled,
+the committed balance loses 6 XP.
+
 **Campaign.** Purple XP is pending until a checkpoint or chapter victory banks
-it as green XP. A reset clears the pending pool. In independent mode, living
-teammates share credit for hostile kills. A downed spectator keeps the XP
-already earned. The shop opens between chapters. At the last shop the host
-can choose to loop, carrying purchases, balances and difficulty into the first
+it as green XP. A new checkpoint can also award a 25 XP bonus. A retry clears
+the pool left after defeat penalties. In independent mode, living teammates
+share credit for hostile kills. A downed spectator keeps their remaining XP
+while teammates continue. The paid shop opens between chapters when enabled. At campaign end the
+host can choose to loop, carrying upgrades, balances and difficulty into the first
 chapter. The host can resume a saved run through Continue or Load game.
 
-**Arena.** Kill XP goes straight into the green balance. The optional **Combat**
-rule instead awards XP for actual damage dealt and deducts XP for damage taken,
-at 40% of the corresponding bounty rate. An exchange of equal damage against
-equal opponents leaves a small gain. The balance has a floor of zero. The shop
-opens once a team wins the match and the match-win camera finishes. Earlier rounds and draws go straight into the next round after their winner camera. The next match starts when shopping finishes.
+**Arena.** Combat XP goes straight into the green balance by default. When
+**Lose pooled XP on damage** or **Lose XP on defeat** is enabled, combat XP goes into the purple pool and
+the balance left at the end of each round banks automatically. The host can enable a
+25 XP round-win bonus and a 100 XP match-win bonus independently. Winning the
+deciding round with both enabled earns 125 XP. The paid shop opens once
+the match-win camera finishes. Players can carry pending free choices into the next round or match.
 
 **Independent upgrades** give each player a wallet and an individual shop on
 their screen. Use the target selector for self or friendly bots. **Shared
@@ -109,14 +135,15 @@ normally rotate between eligible humans. Armor rotates through everyone on
 the team, including bots. Each slot advances to its next material after every
 teammate owns the current tier for that slot. Individuals keep their own
 loadout choices.
-Bots can receive gear and AI training. Each human marks ready, or the
-multiplayer shop timer advances everyone after 10, 15, 30, 60 or 120 seconds.
+Bots can receive gear and AI training. The multiplayer upgrade timer can
+advance everyone after 10, 15, 30, 60 or 120 seconds.
 Infinite waits for everyone. Solo shops always wait.
 
 | Purchase | XP | Effect |
 | --- | ---: | --- |
 | Durability, damage, speed | 16, 23, 34 for the first three ranks of each stat | Each rank adds 8%, 6% or 3%, respectively |
 | Passive or active stealth | Same prices as the other stats | Each rank adds 6% concealment while standing or crouching, respectively |
+| Luck | Same prices as the other stats | Increases the chance of a free choice and improves the odds of drawing higher-priced upgrades |
 | Wood | 155–195 | First shoulder, forearm or thigh guard |
 | Chitin | 310–600 | Second limb guard or first chest, back or head piece |
 | Dog armor | 465–900 | Upgrades any Chitin slot |
@@ -135,7 +162,7 @@ is selected. Selecting both a large weapon and a dagger gives exactly that pair.
 
 The stats column shows each player’s armor. The green bar shows banked XP as a share of the projected final balance, which includes the estimated reward from remaining enemies. The purple bar shows pending XP against the estimated reward for the current encounter. Both bars display the actual balance for the player or shared team.
 
-All five stat cards keep their neutral Common appearance at every rank.
+All six stat cards keep their neutral Common appearance at every rank.
 Detection range is divided by `1 + 0.06 × stealth rank`, using active stealth
 while crouched and passive stealth otherwise. During an unarmed or staff rear
 choke, the holder’s attack damage increases knockout speed and the defender’s

@@ -57,18 +57,22 @@ def stealth_stats(ctx):
     leader = data(host,owner)["view"]["team_leader"]
     buyer = host if leader == owner else guest
     cards = {c["id"]: c for c in data(buyer,leader)["view"]["cards"]}
-    assert {"health","damage","speed","stealth_passive","stealth_active"} <= cards.keys(), data(buyer,leader)
-    assert all(cards[key]["rarity"] == 0 for key in ("health","damage","speed","stealth_passive","stealth_active"))
-    for key in ("stealth_passive","stealth_active"):
+    assert {"health","damage","speed","stealth_passive","stealth_active","luck"} <= cards.keys(), data(buyer,leader)
+    assert all(cards[key]["rarity"] == 0 for key in ("health","damage","speed","stealth_passive","stealth_active","luck"))
+    assert cards["luck"]["cost"] == cards["health"]["cost"]
+    for key in ("stealth_passive","stealth_active","luck"):
         assert data(buyer,leader,action="buy",key=key)["submitted"]
     def installed():
         return all(stats(p,r["avatar_id"]).get("progression_stealth_passive") == 1 and
                    stats(p,r["avatar_id"]).get("progression_stealth_active") == 1
                    for p in peers for r in seats)
     wait(installed, "shared stealth ranks installed on both peers")
+    wait(lambda: all(data(p,r["id"])["view"]["stats"]["luck_rank"] == 1 for p in peers for r in seats),
+         "shared Luck propagated to both HUDs")
     for p in peers:
         ledger = data(p,owner)["ledger"]
-        assert any(t["stealth_passive"] == t["stealth_active"] == 1 for t in ledger["teams"])
+        assert any(t["stealth_passive"] == t["stealth_active"] == t["luck"] == 1 for t in ledger["teams"])
+        assert math.isclose(data(p,owner)["view"]["stats"]["reward_chance"], .216)
     for p in peers:
         local = next(r["id"] for r in _rows(p) if (r["peer_id"] == 255) == (p is host))
         assert data(p,local,action="ready",key="")["submitted"]
@@ -124,5 +128,6 @@ def stealth_stats(ctx):
     assert math.isclose(faster/base,1.6,abs_tol=1e-4),(base,faster)
     assert math.isclose(opposed/faster,1/1.8,abs_tol=1e-4),(faster,opposed)
     assert all(not script_errors(p) for p in peers), [script_errors(p) for p in peers]
-    return {"passed":True,"metrics":{"shared_stealth_rank":1,"sight_perception":1.5,"hearing_perception":1.225,
+    return {"passed":True,"metrics":{"shared_stealth_rank":1,"shared_luck_rank":1,"reward_chance":.216,
+                                      "sight_perception":1.5,"hearing_perception":1.225,
                                       "choke_damage":{"base":base,"damage_10":faster,"health_10_damage_10":opposed}},"notes":[]}

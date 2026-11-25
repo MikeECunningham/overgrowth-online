@@ -735,6 +735,7 @@ class Online {
     void ResetModeChallenge();
     void BeforeChallengeRateChange();
     CampaignDifficulty::Sample EnemyDifficulty() const;
+    bool IsDifficultyEnemy(ObjectID id);
     void CaptureEnemyDifficulty(bool new_match = false);
     void ChallengeSceneChanged();
     void BeginChallengeCampaignLoop();
@@ -744,6 +745,7 @@ class Online {
     std::shared_ptr<ProgressionEquipmentState> progression_equipment;
     void ApplyProgressionEquipment(SceneGraph* graph);
     void RefreshProgressionLoadouts(bool arena_round);
+    void ProgressionWeaponAwarded(PlayerID recipient, bool offhand);
     void UpdateModeChallenge(SceneGraph* graph);
     bool DifficultyScalingEnabled() const;
     float ModeChallengeGeneralPressure() const;
@@ -940,6 +942,7 @@ class Online {
     ObjectID CampaignMainAvatarID() const;
     bool LobbyWaiting() const { return lobby_waiting_; }
     PlayerID AddLocalLobbyPlayer(const std::string& name);
+    bool HasSpaceForLobbySlot() const;
     PlayerID AddLobbyBot(const std::string& name = "", PlayerID actor = LobbyAuthority::InvalidPlayer);
     std::vector<LobbySlot> GetLobbySlots() const;
     bool LobbyAutoAdmission() const { return lobby_auto_admission_; }

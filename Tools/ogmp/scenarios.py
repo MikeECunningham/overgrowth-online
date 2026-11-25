@@ -1397,12 +1397,34 @@ def _progression_ui(ctx):
 
 SCENARIOS["progression_ui"] = _progression_ui
 
+
+def _progression_free_buff_ui(ctx):
+    from .progression_ui_suite import progression_free_buff_ui
+    return progression_free_buff_ui(ctx)
+
+
+SCENARIOS["progression_free_buff_ui"] = _progression_free_buff_ui
+
 def _friendly_progression(ctx):
     from .friendly_progression_suite import friendly_progression
     return friendly_progression(ctx)
 
 
 SCENARIOS["friendly_progression"] = _friendly_progression
+
+
+def _progression_rewards(ctx):
+    from .progression_rewards_suite import progression_rewards
+    return progression_rewards(ctx)
+
+
+SCENARIOS["progression_rewards"] = _progression_rewards
+
+def _checkpoint_reward_slots(ctx):
+    from .progression_rewards_suite import checkpoint_reward_slots
+    return checkpoint_reward_slots(ctx)
+
+SCENARIOS["checkpoint_reward_slots"] = _checkpoint_reward_slots
 
 
 def _progression_campaign(ctx):

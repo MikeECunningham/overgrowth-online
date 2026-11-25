@@ -22,10 +22,21 @@ def friendly_progression(ctx):
         return tuple(v.get(k,-1) for k in ("held","pooled"))
     def act(inst, player, action, key="", target=None):
         return data(inst,player,action=action,key=key,target=player if target is None else target)["submitted"]
+    def check_xp_options(arena):
+        _code(h, 'array<LobbyOption>@ opts=LobbyModOptions();string checks;'
+                 'for(uint i=0;i<opts.length();++i){array<string>@ choices=opts[i].Choices();'
+                 'if(choices.length()==2 && choices[0]=="Off" && choices[1]=="On") checks+=opts[i].key+" ";}'
+                 'SetConfigValueString("test_xp_checks",checks);')
+        checks = set(_probe(h, 'GetConfigValueString("test_xp_checks")').split())
+        common = {"shop", "free_buffs", "gain_damage", "gain_kill", "loss_damage", "loss_death"}
+        mode_options = {"gain_checkpoint", "gain_round", "gain_match"}
+        expected = common | ({"gain_round", "gain_match"} if arena else {"gain_checkpoint"})
+        assert {key for key in common | mode_options if "progression_" + key in checks} == expected, checks
     def join_campaign(shared):
         _code(h, f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);')
         for key, value in (("progression",1),("progression_shared",shared),("progression_timer",0)):
             assert _probe(h,f'LobbySetModeSetting("{key}",{value})') == 'true'
+        check_xp_options(arena=False)
         _code(h, 'LobbyStart();')
         for peer in (h,g): _ready(peer,FIRST)
         deadline=time.monotonic()+25
@@ -100,25 +111,36 @@ def friendly_progression(ctx):
     wait(lambda: not view(h,p1).get("shop_open"),"shared shop advances")
     end()
     _code(h,f'LobbySetSelection("{ARENA}","{ARENA}","{ARENA_MAP}",false);')
-    for key,value in (("progression",1),("progression_combat",1),("progression_timer",1)):
+    for key,value in (("progression",1),("progression_gain_damage",1),("progression_loss_damage",1),
+                      ("progression_gain_kill",0),("progression_timer",1)):
         assert _probe(h,f'LobbySetModeSetting("{key}",{value})')=='true'
+    check_xp_options(arena=True)
+    assert _probe(h, 'LobbyGetModeSetting("progression_shop")') == "1"
+    assert _probe(h, 'LobbyGetModeSetting("progression_free_buffs")') == "0"
+    assert _probe(h, 'LobbySetModeSetting("progression_shop",0) && LobbySetModeSetting("progression_free_buffs",1)') == "true"
+    wait(lambda: _probe(g, 'LobbyGetModeSetting("progression_shop") == 0 && LobbyGetModeSetting("progression_free_buffs") == 1') == "true",
+         "guest sees free upgrades enabled independently of the paid shop")
+    assert _probe(g, 'LobbySetModeSetting("progression_shop",1)') == "false"
+    assert _probe(h, 'LobbySetModeSetting("progression_shop",1) && LobbySetModeSetting("progression_free_buffs",0)') == "true"
+    wait(lambda: _probe(g,'LobbyGetModeSetting("progression_gain_damage")') == "1", "host XP settings reach guest")
+    assert _probe(g,'LobbySetModeSetting("progression_loss_death",1)') == "false"
     _code(h,'LobbyStart();')
     for inst in (h,g): _ready(inst)
     # The actual owner takes final, post-shield damage on a remote character.
     for inst,player,team in ((h,p1,'ledger_red'),(g,p2,'ledger_blue')):
         _code(inst,f'ReadObjectFromID({avatar(inst,player)}).GetScriptParams().SetString("Teams","{team}");',"level")
         _code(inst,'this_mo.static_char=true;invincible=false;ko_shield=0;temp_health=1;blood_health=1;permanent_health=1;',avatar(inst,player))
-    before=wallet(h,p1)[0]
+    held,before=wallet(h,p1)
     _code(g,f'attacked_by_id={avatar(g,p1)};ko_shield=1;TakeDamage(0.2f);',avatar(g,p2))
     time.sleep(.3)
-    assert wallet(h,p1)[0]==before
+    assert wallet(h,p1)==(held,before)
     _code(g,'ko_shield=0;TakeDamage(0.2f);',avatar(g,p2))
-    wait(lambda: wallet(h,p1)[0]>before,"actual remote victim's post-shield damage awards instant Arena XP")
-    earned=wallet(h,p1)[0]-before
-    before_bleed=wallet(h,p1)[0]
+    wait(lambda: wallet(h,p1)[1]>before,"actual remote victim's post-shield damage awards pooled Arena XP")
+    earned=wallet(h,p1)[1]-before
+    before_bleed=wallet(h,p1)[1]
     _code(g,f'attacked_by_id={avatar(g,p1)};TakeDelayedBloodDamage(.2f);attacked_by_id=this_mo.GetID();'
             'Timestep ts(time_step,1);for(int i=0;i<150 && blood_damage>0;++i) RegenerateHealth(ts);',avatar(g,p2))
-    wait(lambda: wallet(h,p1)[0]>=before_bleed+earned-.001,
+    wait(lambda: wallet(h,p1)[1]>=before_bleed+earned-.001,
          "delayed bleeding credits actual blood loss to its original attacker")
     _code(h,'ProgressionBeginShop(false);',"level")
     wait(lambda: view(g,p2).get("shop_open"),"ten-second store opens")

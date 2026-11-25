@@ -23,6 +23,7 @@
 //-----------------------------------------------------------------------------
 
 #include "threatcheck.as"
+#include "hotspots/progression_checkpoint.as"
 #include "challenge_campaign_events.as"
 #include "hotspots/overgrowth_course.as"
 
@@ -307,18 +308,10 @@ void IncrementProgress() {
     TriggerGoalPost(_all_but_sting);
     ++progress;
     RememberCheckpointCasualties();
-    if(!Online_IsClient() && params.HasParam("player_spawn")) {
-        TokenIterator markers;
-        string spawns = params.GetString("player_spawn");
-        markers.Init();
-        for(int i = 1; i <= progress && markers.FindNextToken(spawns); ++i) {
-            int id = atoi(markers.GetToken(spawns));
-            if(i == progress && ObjectExists(id) && ReadObjectFromID(id).GetType() == _placeholder_object) {
-                Online_CaptureEnemyDifficulty();
-                ProgressionCheckpoint();
-                SessionAutosave();
-            }
-        }
+    if(!Online_IsClient() && HasPlayerSpawnCheckpoint(progress)) {
+        Online_CaptureEnemyDifficulty();
+        ProgressionCheckpoint(progress, Online_ToSharedID(hotspot.GetID()));
+        SessionAutosave();
     }
     win_time = -1.0;
 

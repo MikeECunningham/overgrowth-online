@@ -36,6 +36,7 @@
 
 #include <Scripting/angelscript/asfuncs.h>
 #include <Scripting/angelscript/ascontext.h>
+#include <Online/campaign_difficulty.h>
 #include <Online/friendly_progression.h>
 #include <Online/session_saves.h>
 #include <Scripting/angelscript/lobby_bindings.h>
@@ -5993,12 +5994,34 @@ std::string AS_Online_CampaignWaitingText() { return Online::Instance()->Campaig
 void AS_Online_ChallengeEncounterBegin(const std::string& key) { Online::Instance()->ChallengeEncounterBegin(key); }
 void AS_CaptureEnemyDifficulty(bool new_match) { Online::Instance()->CaptureEnemyDifficulty(new_match); }
 void AS_ProgressionCampaignLoop() { Online::Instance()->BeginChallengeCampaignLoop(); }
+static std::vector<int> ProgressionAvatars(const CScriptArray& array) {
+    std::vector<int> avatars;
+    for (asUINT i = 0; i < array.GetSize(); ++i)
+        avatars.push_back(*static_cast<const int*>(array.At(i)));
+    return avatars;
+}
+static void AS_ProgressionArenaWin(const CScriptArray& winners, bool match) {
+    FriendlyProgression::ArenaWin(ProgressionAvatars(winners), match);
+}
+static void AS_ProgressionArenaRoundComplete(const CScriptArray& winners, const CScriptArray& roster) {
+    const auto participants = ProgressionAvatars(roster);
+    FriendlyProgression::ArenaWin(ProgressionAvatars(winners), false, &participants);
+}
 void AS_ProgressionArenaLoadouts() { Online::Instance()->RefreshProgressionLoadouts(true); }
 float AS_WornArmorRating(int id) { return Online::Instance()->WornArmorRating(id); }
 void AS_Online_ChallengeEncounterWin(const std::string& key) { Online::Instance()->ChallengeEncounterWin(key); }
 void AS_Online_ChallengeCompletion(const std::string& key) { Online::Instance()->ChallengeCompletion(key); }
 int AS_Online_ChallengeReferenceAvatar() { return Online::Instance()->ChallengeReferenceAvatar(); }
 float AS_Online_ChallengePressure() { return Online::Instance()->ModeChallengePressure(); }
+bool AS_Online_GetEnemyDifficultySample(float& pressure, int& ai_rate, int& humans) {
+    const auto* online = Online::Instance();
+    const auto sample = online->EnemyDifficulty();
+    pressure = sample.pressure;
+    ai_rate = sample.ai_rate;
+    humans = sample.humans;
+    return online->IsHosting() && sample.ai && sample.humans > 0;
+}
+bool AS_Online_IsDifficultyEnemy(int id) { return Online::Instance()->IsDifficultyEnemy(id); }
 
 bool AS_Online_FindSafeSpot(const vec3& base, const vec3& facing, int index, vec3& spot) {
     return Online::Instance()->FindSafeSpot(base, facing, index, &spot);
@@ -6256,7 +6279,10 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("bool ProgressionShopOpen()", asFUNCTION(FriendlyProgression::ShopOpen), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ProgressionLoopChosen()", asFUNCTION(FriendlyProgression::LoopChosen), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ProgressionBeginShop(bool final_level = false)", asFUNCTION(FriendlyProgression::BeginShop), asCALL_CDECL);
-    context->RegisterGlobalFunction("void ProgressionCheckpoint()", asFUNCTION(FriendlyProgression::Checkpoint), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionArenaWin(const array<int> &in winners, bool match)", asFUNCTION(AS_ProgressionArenaWin), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionArenaRoundComplete(const array<int> &in winners, const array<int> &in roster)", asFUNCTION(AS_ProgressionArenaRoundComplete), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionReportRecovery(int victim)", asFUNCTION(FriendlyProgression::ReportRecovery), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionCheckpoint(int checkpoint = 0, int source = -1)", asFUNCTION(FriendlyProgression::Checkpoint), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionResetAttempt()", asFUNCTION(FriendlyProgression::ResetAttempt), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionReportHit(int victim, int attacker, float damage, bool defeat)", asFUNCTION(FriendlyProgression::ReportHit), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_Connect(string ip)", asFUNCTION(AS_Online_Connect), asCALL_CDECL);
@@ -6288,6 +6314,8 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("void Online_ChallengeCompletion(const string &in key)", asFUNCTION(AS_Online_ChallengeCompletion), asCALL_CDECL);
     context->RegisterGlobalFunction("int Online_ChallengeReferenceAvatar()", asFUNCTION(AS_Online_ChallengeReferenceAvatar), asCALL_CDECL);
     context->RegisterGlobalFunction("float Online_ChallengePressure()", asFUNCTION(AS_Online_ChallengePressure), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_GetEnemyDifficultySample(float &out pressure, int &out ai_rate, int &out humans)", asFUNCTION(AS_Online_GetEnemyDifficultySample), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_IsDifficultyEnemy(int local_id)", asFUNCTION(AS_Online_IsDifficultyEnemy), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_FindSafeSpot(const vec3 &in base, const vec3 &in facing, int index, vec3 &out spot)", asFUNCTION(AS_Online_FindSafeSpot), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_ObjectFile(int id)", asFUNCTION(AS_Online_ObjectFile), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_Spectating()", asFUNCTION(AS_Online_Spectating), asCALL_CDECL);
@@ -7372,6 +7400,13 @@ static std::string ASModGetName(ModID& sid) {
     }
 }
 
+static bool ASModOnlineAdapterActive(const std::string& id) {
+    auto& loading = ModLoading::Instance();
+    for (const auto* mod : loading.GetMods())
+        if (mod->IsActive() && id == mod->id.str()) return loading.OnlineAdapterFor(*mod) != nullptr;
+    return false;
+}
+
 static bool ASModGetSupportsOnline(ModID& sid) {
     ModInstance* mod = ModLoading::Instance().GetMod(sid);
     if (mod) {
@@ -8094,6 +8129,7 @@ void AttachModding(ASContext* context) {
     context->RegisterGlobalFunction("string ModGetID(ModID& id)", asFUNCTION(ASModGetID), asCALL_CDECL);
     context->RegisterGlobalFunction("string ModGetName(ModID& id)", asFUNCTION(ASModGetName), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ModGetSupportsOnline(ModID& id)", asFUNCTION(ASModGetSupportsOnline), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool ModOnlineAdapterActive(const string &in mod_id)", asFUNCTION(ASModOnlineAdapterActive), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ModGetSupportsCurrentVersion(ModID& id)", asFUNCTION(ASModGetSupportsCurrentVersion), asCALL_CDECL);
     context->RegisterGlobalFunction("string ModGetAuthor(ModID& id)", asFUNCTION(ASModGetAuthor), asCALL_CDECL);
     context->RegisterGlobalFunction("string ModGetVersion(ModID& id)", asFUNCTION(ASModGetVersion), asCALL_CDECL);

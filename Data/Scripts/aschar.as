@@ -6495,6 +6495,7 @@ void SetKnockedOut(int val) {
         knocked_out_time = the_time;
     }
 
+    if(val == _awake && knocked_out != _awake) ProgressionReportRecovery(this_mo.GetID());
     knocked_out = val;
 
     if(val == _dead || blood_health <= 0.0f ) {

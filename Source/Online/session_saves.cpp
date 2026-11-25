@@ -378,7 +378,7 @@ bool Load(int slot) {
         status = "The save is unavailable.";
         return false;
     }
-    if (r["version"] == 1) SessionMods::MigrateLegacySave(r);
+    SessionMods::MigrateSave(r);
     if (!SessionMods::Validate(r["session_mods"], SessionMods::Scope::Save, status)) return false;
     if (!FindFilePath(r["map"].asString(), kAnyPath, false).isValid()) {
         status = "The save or its map is unavailable.";

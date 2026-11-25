@@ -24,11 +24,11 @@ ModInstance* ActiveMod(const std::string& id) {
     return nullptr;
 }
 const std::string& Version(const ModInstance& mod, Scope scope) {
-    if (scope == Scope::Handoff && !mod.session.network_version.empty()) {
+    if (scope == Scope::Handoff && !mod.SessionVersion(true).empty()) {
         static const std::string omitted;
         return omitted;  // Already carried in the ordinary network snapshot.
     }
-    return scope == Scope::Network ? mod.session.network_version : mod.session.save_version;
+    return mod.SessionVersion(scope == Scope::Network);
 }
 Json::Value Section(const ModInstance& mod, Scope scope) {
     Json::Value section;
@@ -172,7 +172,7 @@ bool SetData(const std::string& id, const std::string& json) {
 
 // Version 1 predated mod descriptors. Its two built-in providers used these
 // fixed keys and schema 1; using the installed schema here would hide incompatibility.
-void MigrateLegacySave(Json::Value& save) {
+static void MigrateLegacySave(Json::Value& save) {
     auto& mods = save["session_mods"] = Json::Value(Json::objectValue);
     auto& rules = save["rules"];
     Json::Value challenge = rules.removeMember("challenge");
@@ -229,6 +229,37 @@ void MigrateLegacySave(Json::Value& save) {
     save["version"] = 2;
 }
 
+void MigrateSave(Json::Value& save) {
+    if (save["version"] == 1) MigrateLegacySave(save);
+    const char* id = "og-online-progression";
+    auto& mods = save["session_mods"];
+    if (!mods.isObject() || !mods.isMember(id) || !mods[id].isObject()) return;
+    // Both schemas already use independent XP options. Restore upgrades
+    // missing Luck at rank zero and retains pending hands from schema 3.
+    if (mods[id]["version"] == "2" || mods[id]["version"] == "3") {
+        mods[id]["version"] = "4";
+        return;
+    }
+    if (mods[id]["version"] != "1") return;
+    auto& rules = save["rules"];
+    if (!rules.isObject() || !rules["mode_settings"].isObject()) return;
+    auto& settings = rules["mode_settings"];
+    for (const auto& mode : settings.getMemberNames()) {
+        auto& prefs = settings[mode];
+        if (!prefs.isObject() || !prefs.isMember("progression_combat")) continue;
+        const auto& combat = prefs["progression_combat"];
+        // Leave malformed values for the normal save validator to reject.
+        if (!combat.isInt() || (combat.asInt() != 0 && combat.asInt() != 1)) continue;
+        if (mode == "com-wolfire-arena") {
+            prefs["progression_gain_kill"] = 1 - combat.asInt();
+            prefs["progression_gain_damage"] = combat.asInt();
+            prefs["progression_loss_damage"] = combat.asInt();
+        }
+        prefs.removeMember("progression_combat");
+    }
+    mods[id]["version"] = "4";
+}
+
 void KeepLobbyEdits(Json::Value& mods) {
     for (const auto& id : mods.getMemberNames()) {
         const auto* mod = ActiveMod(id);
@@ -236,9 +267,10 @@ void KeepLobbyEdits(Json::Value& mods) {
         // Roster edits can remove a slot or transfer its team while the host
         // is preparing to resume. Preserve the remaining shop timer and state.
         if (mod->session.feature == "progression") {
-            const auto ledger = FriendlyProgression::Snapshot();
-            mods[id]["runtime"]["players"] = ledger["players"];
-            mods[id]["runtime"]["teams"] = ledger["teams"];
+            auto& runtime = mods[id]["runtime"];
+            const auto saved_timer = runtime["ms_left"];
+            runtime = FriendlyProgression::Snapshot();
+            runtime["ms_left"] = saved_timer;
         }
     }
 }

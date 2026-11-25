@@ -90,8 +90,12 @@ def lobby_bots(ctx):
             'imGUI.receiveMessage(IMMessage("bot_name_character",name.substr(n,1)));', 0)
         time.sleep(0.2)
         screenshot(solo, "bot_name_controller_keyboard")
+        action(solo, "activate_bot_name")
+        for digit in "09":
+            solo.bridge.call("key", key="Keypad " + digit)
+            time.sleep(.1)
         action(solo, "save_bot_name")
-        wait(solo, lambda: bots(solo)[0]["name"] == "SOLO FRIEND", "pause UI renames bot")
+        wait(solo, lambda: bots(solo)[0]["name"] == "SOLO FRIEND09", "pause UI accepts keypad digits in a name")
         screenshot(solo, "bot_team_row")
         run(solo, f'LobbySetPlayerTeam({bot["id"]},1);MenuBack();', 0)
         action(solo, "Continue")

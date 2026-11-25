@@ -15,7 +15,7 @@ void PublishFeature(const std::string& feature);
 void Clear();
 std::string GetData(const std::string& id);
 bool SetData(const std::string& id, const std::string& json);
-void MigrateLegacySave(Json::Value& save);
+void MigrateSave(Json::Value& save);
 void KeepLobbyEdits(Json::Value& saved_mods);
 void CloseLegacyRoundShop(Json::Value& saved_mods);
 }

@@ -2814,6 +2814,23 @@ string ToLowerCase(string input){
     return output;
 }
 
+// SDL's keypad digits have different keycodes from their printable characters.
+uint32 TextEntryKeycode(uint32 keycode) {
+    if(keycode == uint32(SDLNumeric::KP_0)) return uint32(SDLNumeric::K_0);
+    if(keycode >= uint32(SDLNumeric::KP_1) && keycode <= uint32(SDLNumeric::KP_9)) {
+        return uint32(SDLNumeric::K_1) + (keycode - uint32(SDLNumeric::KP_1));
+    }
+    return keycode;
+}
+
+// Start with the oldest unconsumed key when multiple keys arrived in one frame.
+// SDL's sequence is a 16-bit counter and can wrap during a long session.
+uint NextTextEntryIndex(const array<KeyboardPress> &in inputs, int last_sequence) {
+    if(inputs.length() == 0) return 0;
+    uint pending = uint16(inputs[inputs.length() - 1].s_id - uint16(last_sequence));
+    return pending >= inputs.length() ? 0 : inputs.length() - pending;
+}
+
 class Search {
     bool active = false;
     bool pressed_return = false;
@@ -2944,10 +2961,10 @@ class Search {
             
             array<KeyboardPress> inputs = GetRawKeyboardInputs();
             if(inputs.size() > 0){
-                uint16 possible_new_input = inputs[inputs.size()-1].s_id;
-                if(possible_new_input != uint16(initial_sequence_id)){
-                    uint32 keycode = inputs[inputs.size()-1].keycode;
-                    initial_sequence_id = inputs[inputs.size()-1].s_id;
+                uint next = NextTextEntryIndex(inputs, initial_sequence_id);
+                if(next < inputs.length()){
+                    uint32 keycode = TextEntryKeycode(inputs[next].keycode);
+                    initial_sequence_id = inputs[next].s_id;
                     //Print("new input = "+ keycode + "\n");
                     
                     array<int> ignore_keycodes = {27};
@@ -3268,11 +3285,11 @@ class TextBox {
     void UpdateRawKeyboardInputs() {
         array<KeyboardPress> inputs = GetRawKeyboardInputs();
         if(inputs.size() > 0){
-            uint16 possible_new_input = inputs[inputs.size()-1].s_id;
-            if(possible_new_input != uint16(initial_sequence_id)){
-                uint32 keycode = inputs[inputs.size()-1].keycode;
-                uint32 modifier = inputs[inputs.size()-1].mod;
-                initial_sequence_id = inputs[inputs.size()-1].s_id;
+            uint next = NextTextEntryIndex(inputs, initial_sequence_id);
+            if(next < inputs.length()){
+                uint32 keycode = TextEntryKeycode(inputs[next].keycode);
+                uint32 modifier = inputs[next].mod;
+                initial_sequence_id = inputs[next].s_id;
 
                 // Handle special keys
                 switch(keycode) {
@@ -3589,10 +3606,10 @@ class TextboxNumeric : GUIElement {
             
             array<KeyboardPress> inputs = GetRawKeyboardInputs();
             if(inputs.size() > 0){
-                uint16 possible_new_input = inputs[inputs.size()-1].s_id;
-                if(possible_new_input != uint16(initial_sequence_id)){
-                    uint32 keycode = inputs[inputs.size()-1].keycode;
-                    initial_sequence_id = inputs[inputs.size()-1].s_id;
+                uint next = NextTextEntryIndex(inputs, initial_sequence_id);
+                if(next < inputs.length()){
+                    uint32 keycode = TextEntryKeycode(inputs[next].keycode);
+                    initial_sequence_id = inputs[next].s_id;
                     
                     if(keycode == int(SDLNumeric::K_ENTER) || keycode == int(SDLNumeric::KP_ENTER)){
                         imGUI.receiveMessage( IMMessage("save_unsaved_changes") );
@@ -3615,52 +3632,10 @@ class TextboxNumeric : GUIElement {
                     else if(query.length() == 5)
                         return;
 
+                    if(keycode < uint32(SDLNumeric::K_0) || keycode > uint32(SDLNumeric::K_9)) return;
                     string new_character('0');
+                    new_character[0] = keycode;
 
-                    switch(keycode) {
-                        case SDLNumeric::K_0:
-                        case SDLNumeric::KP_0:
-                            break;
-                        case SDLNumeric::K_1:
-                        case SDLNumeric::KP_1:
-                            new_character[0] = int(SDLNumeric::K_1);
-                            break;
-                        case SDLNumeric::K_2:
-                        case SDLNumeric::KP_2:
-                            new_character[0] = int(SDLNumeric::K_2);
-                            break;
-                        case SDLNumeric::K_3:
-                        case SDLNumeric::KP_3:
-                            new_character[0] = int(SDLNumeric::K_3);
-                            break;
-                        case SDLNumeric::K_4:
-                        case SDLNumeric::KP_4:
-                            new_character[0] = int(SDLNumeric::K_4);
-                            break;
-                        case SDLNumeric::K_5:
-                        case SDLNumeric::KP_5:
-                            new_character[0] = int(SDLNumeric::K_5);
-                            break;
-                        case SDLNumeric::K_6:
-                        case SDLNumeric::KP_6:
-                            new_character[0] = int(SDLNumeric::K_6);
-                            break;
-                        case SDLNumeric::K_7:
-                        case SDLNumeric::KP_7:
-                            new_character[0] = int(SDLNumeric::K_7);
-                            break;
-                        case SDLNumeric::K_8:
-                        case SDLNumeric::KP_8:
-                            new_character[0] = int(SDLNumeric::K_8);
-                            break;
-                        case SDLNumeric::K_9:
-                        case SDLNumeric::KP_9:
-                            new_character[0] = int(SDLNumeric::K_9);
-                            break;
-                        default:
-                            return;
-                    }
-                    
                     unsaved_values = true;
                     query.insert(query.length(), new_character);
                     text.setText(query);

@@ -39,7 +39,7 @@ int TeamChoiceLimit(const std::map<PlayerID, LobbySlot>& slots) {
 bool DecodeSlotDefinitions(const Json::Value& saved, std::map<PlayerID, LobbySlot>& slots, PlayerID& next) {
     if (!saved.isObject() || !saved["version"].isInt() || saved["version"].asInt() != 1 ||
         !saved["auto_admit"].isBool() || !saved["host_slot"].isUInt() || !saved["next_slot_id"].isUInt() ||
-        !saved["slots"].isArray() || saved["slots"].size() == 0 || saved["slots"].size() > 4096) return false;
+        !saved["slots"].isArray() || saved["slots"].size() == 0 || saved["slots"].size() > LobbyAuthority::kMaxSlots) return false;
     std::set<std::string> identities;
     std::set<uint32_t> orders;
     next = saved["next_slot_id"].asUInt();
@@ -71,6 +71,19 @@ std::string appearance_level;
 std::string natural_player_team;
 std::string natural_team_level;
 const SceneGraph* natural_team_graph = nullptr;
+
+void CaptureNaturalPlayerTeam(SceneGraph* graph, const std::string& level, ObjectID avatar) {
+    if (natural_team_graph != graph || natural_team_level != level) {
+        natural_player_team.clear();
+        natural_team_graph = graph;
+        natural_team_level = level;
+    }
+    if (!natural_player_team.empty()) return;
+    Object* object = graph->GetObjectFromID(avatar);
+    if (object && object->GetScriptParams()->HasParam("Teams"))
+        natural_player_team = object->GetScriptParams()->GetStringVal("Teams");
+}
+
 const char* const migration_match_settings[] = {
     "oo_arena_bots", "oo_arena_random", "oo_public_game", "game_difficulty",
     "global_time_scale_mult", "tutorials", "auto_ledge_grab", "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_ai_scaling_rate", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized"
@@ -317,6 +330,7 @@ bool Online::EnsureLocalSession() {
     }
     campaign_main_player_id_ = LobbyPlayerIDForLocalIndex(0);
     campaign_main_avatar_id_ = existing.empty() ? static_cast<ObjectID>(-1) : existing.front();
+    if (!existing.empty()) CaptureNaturalPlayerTeam(graph, level_name, campaign_main_avatar_id_);
     for (const auto& player : GetLocalPlayerStates()) if (player.local_index < existing.size()) {
         PossessAvatar(player.player_id, existing[player.local_index]);
         RemoveFreeAvatarId(existing[player.local_index]);
@@ -436,11 +450,19 @@ PlayerID Online::AddLocalLobbyPlayer(const std::string& name) {
     return static_cast<PlayerID>(255 + local_lobby_profiles_.size() - 1);
 }
 
+bool Online::HasSpaceForLobbySlot() const {
+    if (!online_session || next_local_player_id_ >= LobbyAuthority::InvalidPlayer - 1) return false;
+    // The common case needs no allocation. At capacity, count the union of
+    // persisted slots and active seats that have not been recorded yet.
+    return lobby_slots_.size() + online_session->player_states.size() < LobbyAuthority::kMaxSlots ||
+           GetLobbySlots().size() < LobbyAuthority::kMaxSlots;
+}
+
 PlayerID Online::AddLobbyBot(const std::string& name, PlayerID actor) {
     actor = ResolveLobbyActor(actor);
     if (LobbyMigrationBusy() || (!name.empty() && !OnlineUtility::IsValidPlayerName(name))) return LobbyAuthority::InvalidPlayer;
     if (!IsActive() && !EnsureLocalSession()) return LobbyAuthority::InvalidPlayer;
-    if (!IsHosting() || !IsLobbyHost(actor) || !online_session) return LobbyAuthority::InvalidPlayer;
+    if (!IsHosting() || !IsLobbyHost(actor) || !HasSpaceForLobbySlot()) return LobbyAuthority::InvalidPlayer;
     PlayerState bot;
     bot.player_id = LobbyAuthority::AllocatePlayerID(LobbySeats(true), 255, 1, next_local_player_id_);
     bot.peer_id = 255;
@@ -547,12 +569,7 @@ void Online::AssignPeerAvatars(PeerID peer) {
         if (avatar == static_cast<ObjectID>(-1)) avatar = CreateCharacter();
         if (avatar == static_cast<ObjectID>(-1)) continue;
         SceneGraph* graph = Engine::Instance()->GetSceneGraph();
-        Object* object = graph->GetObjectFromID(avatar);
-        if (natural_team_graph != graph || natural_team_level != level_name) {
-            natural_player_team.clear(); natural_team_graph = graph; natural_team_level = level_name;
-        }
-        if (natural_player_team.empty() && object && object->GetScriptParams()->HasParam("Teams"))
-            natural_player_team = object->GetScriptParams()->GetStringVal("Teams");
+        CaptureNaturalPlayerTeam(graph, level_name, avatar);
         PossessAvatar(id, avatar);
         if (id == campaign_main_player_id_) campaign_main_avatar_id_ = avatar;
         if (peer == LocalPeerID()) SeedLocalView(graph, state, CampaignMainAvatarID());
@@ -630,7 +647,7 @@ bool Online::StageLobbySlots(const Json::Value& saved, std::map<PlayerID, LobbyS
         if (target == LobbyAuthority::InvalidPlayer)
             for (const auto& entry : slots) if (!entry.second.is_bot && !occupied.count(entry.first)) { target = entry.first; break; }
         if (target == LobbyAuthority::InvalidPlayer) {
-            if (!saved["auto_admit"].asBool() || slots.size() >= 4096 || next >= LobbyAuthority::InvalidPlayer - 1) return false;
+            if (!saved["auto_admit"].asBool() || slots.size() >= LobbyAuthority::kMaxSlots || next >= LobbyAuthority::InvalidPlayer - 1) return false;
             target = next++;
             LobbySlot extra;
             extra.id = target; extra.uid = old != lobby_slots_.end() ? old->second.uid : "restored-" + std::to_string(target);
@@ -668,7 +685,7 @@ bool Online::ValidateLobbySlots(const Json::Value& saved) const {
         const size_t humans = std::max<size_t>(1, local_lobby_profiles_.size());
         size_t available = 0;
         for (const auto& entry : slots) if (!entry.second.is_bot) ++available;
-        return humans <= available || (saved["auto_admit"].asBool() && slots.size() + humans - available <= 4096);
+        return humans <= available || (saved["auto_admit"].asBool() && slots.size() + humans - available <= LobbyAuthority::kMaxSlots);
     }
     std::map<PlayerID, PlayerState> players;
     LobbyAuthority::State authority;
@@ -1639,7 +1656,7 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
         if (valid_actor && message["first"].isUInt() && message["second"].isUInt()) SwapLobbySlots(message["first"].asUInt(), message["second"].asUInt(), actor);
         return;
     }
-    if (action == "progress_hit") { FriendlyProgression::ReceiveEvent(from, message); return; }
+    if (action == "progress_hit" || action == "progress_recover") { FriendlyProgression::ReceiveEvent(from, message); return; }
     if (action == "progress_action") {
         if (valid_actor) FriendlyProgression::ReceiveAction(actor, message);
         return;

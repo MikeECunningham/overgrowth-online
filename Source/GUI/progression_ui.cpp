@@ -5,11 +5,14 @@
 #include <GUI/dimgui/imgui_impl_sdl_gl3.h>
 #include <Asset/assetmanager.h>
 #include <Asset/Asset/texture.h>
+#include <Editors/map_editor.h>
 #include <Graphics/graphics.h>
 #include <Graphics/textures.h>
 #include <Internal/filesystem.h>
 #include <Graphics/local_viewport.h>
+#include <Game/level.h>
 #include <Main/engine.h>
+#include <Main/scenegraph.h>
 #include <Online/friendly_progression.h>
 #include <Online/armor_protection.h>
 #include <Online/online.h>
@@ -65,7 +68,7 @@ Box gameplay_wallet(const Box& area, float scale) {
 Box gameplay_stats(const Box& area, float scale) {
     const float margin = 12.0f * scale;
     const float width = 174.0f * scale;
-    const float height = 201.0f * scale;
+    const float height = 223.0f * scale;
     const float wallet_width = gameplay_wallet(area, scale).w;
     const bool above_wallet = width + wallet_width + 3*margin > area.w;
     const float bottom = above_wallet ? 58*scale : margin;
@@ -143,6 +146,9 @@ struct Seat {
     int old_dx = 0, old_dy = 0;
     double next_move = 0;
     bool accept_down = false, back_down = false;
+    unsigned reward_generation = 0;
+    uint16_t next_reward_key = 0;
+    uint32_t next_reward_pad = 0;
     ImVec2 previous_mouse{-10000,-10000};
     void reset_list() { focus.clear(); scroll = 0; dropdown = false; }
 };
@@ -163,6 +169,7 @@ Artwork card_art(const std::string& id, int material) {
     if (id == "speed") return {nullptr, "SPD"};
     if (id == "stealth_passive") return {nullptr, "STL"};
     if (id == "stealth_active") return {nullptr, "SNK"};
+    if (id == "luck") return {nullptr, "LCK"};
     // These are the same item and character previews as the stock editor.
     // Left/right pieces share a mesh, so mirror the preview on the right.
     if (material == ArmorProtection::Wood) return {"O2/large_wood_plate","WD"};
@@ -301,6 +308,9 @@ void stats_column(ImDrawList* draw, Box box, const Json::Value& stats, float sca
     row("Movement", "x"+number(stats["movement"].asDouble()));
     row("Passive stealth", number((1-stats["passive_range"].asDouble())*100,0)+"%");
     row("Active stealth", number((1-stats["active_range"].asDouble())*100,0)+"%");
+    if (stats.isMember("luck_rank")) {
+        row("Luck", std::to_string(stats["luck_rank"].asInt()) + " (" + number(stats["reward_chance"].asDouble()*100,1) + "%)");
+    }
     y += 5*scale;
     const auto& armor = stats["armor"];
     int covered = 0;
@@ -357,7 +367,19 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     const float x = area.x+pad, w = area.w-2*pad-sidebar-gap;
     float y = area.y+pad;
     p.heading = {x,y,w,line}; y += line+gap;
+    const float bottom = area.y+area.h-pad;
     p.wallet = {x,y,w,33*s}; y += p.wallet.h+gap;
+    const bool paid = v["shop_enabled"].asBool();
+    const bool ready = v["ready"].asBool();
+    const bool loop = v["can_loop"].asBool();
+    const float footer_width = loop ? (w-gap)*0.5f : w;
+    p.buttons.push_back({"ready",ready ? "Ready  [x]" : "Ready", "", "", Action::Ready,
+                         {x+w-footer_width,bottom-line,footer_width,line},paid || loop || !ready});
+    if (loop)
+        p.buttons.push_back({"loop", v["loop"].asBool() ? "Loop campaign  [x]" : "Loop campaign  [ ]", "", "", Action::Loop,
+                             {x,bottom-line,footer_width,line},!ready});
+    p.note = {x,bottom-line-gap-35*s,w,35*s};
+    if (!paid) return p;
     const bool can_buy = v["can_buy"].asBool();
     const bool shared = v["shared"].asBool();
     if (!can_buy && seat.page == Page::Shop) seat.page = Page::Loadout;
@@ -376,14 +398,6 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     tab(Action::PageLoadout, "loadout", "Equipment", Page::Loadout);
     if (shared) tab(Action::PageTeam, "team", "Team", Page::Team);
     y += line+gap;
-    const float bottom = area.y+area.h-pad;
-    const float footer_width = v["final"].asBool() && Online::Instance()->IsLobbyHost(player.player_id) ? (w-gap)*0.5f : w;
-    p.buttons.push_back({"ready",v["ready"].asBool() ? "Ready  [x]" : "Ready", "", "", Action::Ready,
-                         {x+w-footer_width,bottom-line,footer_width,line}});
-    if (footer_width < w)
-        p.buttons.push_back({"loop", v["loop"].asBool() ? "Loop campaign  [x]" : "Loop campaign  [ ]", "", "", Action::Loop,
-                             {x,bottom-line,footer_width,line}});
-    p.note = {x,bottom-line-gap-35*s,w,35*s};
     p.list = {x,y,w,std::max(1.0f,p.note.y-gap-y)};
     float ly = 0;
     auto row = [&](Action action, const std::string& key, const std::string& title,
@@ -450,6 +464,96 @@ void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, 
     if (!FriendlyProgression::Act(actor,target,action,key)) {
         s.notice = "This choice is no longer available.";
         s.notice_until = now+1.8;
+    }
+}
+// Consume key-down events once, including a tap released between rendered frames.
+int reward_shortcut(Seat& seat, const Keyboard& keys, bool accepting) {
+    const uint16_t unseen = keys.keycode_input_buffer_sequence_counter - seat.next_reward_key;
+    seat.next_reward_key = keys.keycode_input_buffer_sequence_counter;
+    if (!accepting) return -1;
+    const size_t count = std::min<size_t>(unseen,keys.keycode_input_buffer_count);
+    for (size_t i = keys.keycode_input_buffer_count-count; i < keys.keycode_input_buffer_count; ++i) {
+        const auto& key = keys.keycode_input_buffer[i];
+        if (key.mod & (KMOD_CTRL | KMOD_SHIFT | KMOD_ALT | KMOD_GUI)) continue;
+        if (key.scancode >= SDL_SCANCODE_1 && key.scancode <= SDL_SCANCODE_4) return key.scancode-SDL_SCANCODE_1;
+        if (key.scancode >= SDL_SCANCODE_KP_1 && key.scancode <= SDL_SCANCODE_KP_4) return key.scancode-SDL_SCANCODE_KP_1;
+    }
+    return -1;
+}
+
+void checkpoint_reward(ImDrawList* draw, const Box& viewport, const Box& wallet, const Box& stats,
+                       const PlayerState& player, Seat& seat, const Json::Value& view, bool keyboard_owner,
+                       Json::Value& audit) {
+    const auto& cards = view["reward_cards"];
+    const unsigned generation = view["reward_generation"].asUInt();
+    const bool already_shown = generation == seat.reward_generation;
+    seat.reward_generation = generation;
+
+    Input* devices = Input::Instance();
+    const auto& io = ImGui::GetIO();
+    int choice = reward_shortcut(seat, devices->getKeyboard(),
+                                 already_shown && keyboard_owner && !io.WantTextInput && !io.WantCaptureKeyboard);
+    // Use the seat's physical D-pad. Movement, jump and item use keep their
+    // regular gameplay bindings while a choice is on screen.
+    const auto pad_events = devices->GetJoystickInputs(player.local_index);
+    for (const auto& press : pad_events) {
+        if (already_shown && choice < 0 && int32_t(press.s_id - seat.next_reward_pad) >= 0 &&
+            press.input >= ControllerInput::D_UP && press.input <= ControllerInput::D_LEFT)
+            choice = press.input - ControllerInput::D_UP;
+    }
+    auto& pads = devices->GetOpenJoysticks();
+    const int input_id = devices->GetLocalPlayerInputID(player.local_index);
+    const bool has_pad = std::any_of(pads.begin(), pads.end(), [&](auto& p) { return p.second->player_input == input_id; });
+    if (!pad_events.empty()) seat.next_reward_pad = pad_events.back().s_id + 1;
+
+    const float scale = std::max(.55f,std::min({1.16f,viewport.w/560.f,viewport.h/390.f}));
+    const float gap = 4*scale, pad = 6*scale, heading = 25*scale;
+    const float right = wallet.x + wallet.w;
+    const float width = std::min(440*scale, std::max(1.f, right - (stats.x+stats.w+gap)));
+    const int cols = width >= 310*scale ? 2 : 1;
+    const int rows = (static_cast<int>(cards.size())+cols-1)/cols;
+    const float cell_w = (width-(cols-1)*gap)/cols;
+    const bool details = viewport.h >= 300*scale && cell_w >= 195*scale;
+    const float cell_h = (details ? 73.f : 38.f)*scale;
+    const float top = wallet.y - pad - rows*(cell_h+gap) - heading;
+    const float left = right-width;
+    draw->AddRectFilled({left,top},{right,top+heading},ink,3*scale);
+    label(draw,{left+pad,top+scale,width-2*pad,heading},"Choose a free upgrade",17*scale,ivory,true);
+    if (has_pad || !keyboard_owner) {
+        const float hint_w = font(false)->CalcTextSizeA(13*scale,10000,0,"D-pad").x + pad;
+        label(draw,{right-hint_w,top+3*scale,hint_w,heading},"D-pad",13*scale,muted);
+    }
+    static const char* const directions[] = {"Up", "Right", "Down", "Left"};
+    audit["page"] = "reward";
+    audit["visible_cards"] = Json::Value(Json::arrayValue);
+    for (unsigned i=0; i<cards.size() && i<4; ++i) {
+        const auto& card = cards[i];
+        const Tier& tier = tiers[std::min(4,std::max(0,card["rarity"].asInt()))];
+        const float x = left+(i%cols)*(cell_w+gap), y = top+heading+gap+(i/cols)*(cell_h+gap);
+        std::string key = keyboard_owner ? std::to_string(i+1) : "";
+        if (has_pad || !keyboard_owner) key += (key.empty() ? std::string() : " / ") + directions[i];
+        const float key_w = font(true)->CalcTextSizeA(17*scale,10000,0,key.c_str()).x + 2*pad;
+        draw->AddRectFilled({x,y},{x+cell_w,y+cell_h},tier.surface,3*scale);
+        draw->AddRectFilled({x,y},{x+key_w,y+cell_h},ink,3*scale);
+        draw->AddLine({x+key_w,y},{x+key_w,y+cell_h},tier.accent);
+        label(draw,{x+pad,y+(cell_h-19*scale)/2,key_w,20*scale},key,17*scale,tier.accent,true);
+        const float text_x = x+key_w+pad, text_w = std::max(1.f,cell_w-key_w-2*pad);
+        const auto title = card["label"].asString();
+        const float name_size = 16*scale;
+        const float name_h = font(true)->CalcTextSizeA(name_size,10000,text_w,title.c_str()).y;
+        const float text_y = y+(details ? pad : std::max(0.f,(cell_h-name_h)/2));
+        label(draw,{text_x,text_y,text_w,cell_h-(text_y-y)},title,name_size,ivory,true,true);
+        if (details) {
+            const float detail_y = text_y+name_h+2*scale;
+            const auto detail = card["description"].asString();
+            const float available = y+cell_h-detail_y;
+            if (font(false)->CalcTextSizeA(15*scale,10000,text_w,detail.c_str()).y <= available)
+                label(draw,{text_x,detail_y,text_w,available},detail,15*scale,muted,false,true);
+        }
+        audit["visible_cards"].append(card["id"]);
+    }
+    if (choice >= 0 && static_cast<unsigned>(choice) < cards.size()) {
+        FriendlyProgression::Act(player.player_id,player.player_id,"reward",cards[choice]["id"].asString(),generation);
     }
 }
 // Only list items scroll. Navigation through a row can reach partially visible
@@ -551,7 +655,9 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     seat.accept_down = accept; seat.back_down = back;
     draw->AddRectFilled(area.min(), area.max(), ink);
     draw->AddLine(area.min(), {area.x+area.w,area.y}, gold, std::max(1.f,s));
-    std::string title = view["shared"].asBool() && view["team_leader"].asUInt() != player.player_id ? "Outfit" : "Upgrade shop";
+    std::string title = "Upgrade shop";
+    if (!view["shop_enabled"].asBool()) title = view["can_loop"].asBool() ? "Campaign complete" : "Waiting for players";
+    else if (view["shared"].asBool() && view["team_leader"].asUInt() != player.player_id) title = "Outfit";
     paint_heading(draw,p.heading);
     const int seconds = view["seconds_left"].asInt();
     const std::string clock = seconds >= 0 ? std::to_string(seconds)+"s" : "";
@@ -610,7 +716,8 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     audit["focus"] = seat.focus;
     audit["target"] = seat.target;
     audit["scroll"] = seat.scroll;
-    audit["page"] = seat.page == Page::Shop ? "shop" : seat.page == Page::Loadout ? "equipment" : "team";
+    audit["page"] = !view["shop_enabled"].asBool() ? "ready" :
+                    seat.page == Page::Shop ? "shop" : seat.page == Page::Loadout ? "equipment" : "team";
     audit["stats_drawn"] = true;
     if (chosen) dispatch(*chosen,seat,player.player_id,view,now);
 }
@@ -697,7 +804,10 @@ void Draw(Engine& engine) {
     layout = Json::Value(Json::arrayValue);
     Online* online = Online::Instance();
     if (!FriendlyProgression::Enabled() || !online->IsActive() || online->LobbyWaiting()) { Clear(); return; }
-    if (!engine.IsLevelLoaded() || !ImGui::GetCurrentContext() || Graphics::Instance()->media_mode()) return;
+    if (!engine.IsLevelLoaded() || !ImGui::GetCurrentContext() || Graphics::Instance()->media_mode()) {
+        for (auto& entry : seats) entry.second.reward_generation = 0;
+        return;
+    }
     if (FriendlyProgression::ShopOpen()) {
         if (!brush.valid() && FindFilePath("Data/Textures/ui/menus/main/brushStroke.png", kAnyPath, false).isValid())
             brush = engine.GetAssetManager()->LoadSync<TextureAsset>("Data/Textures/ui/menus/main/brushStroke.png", PX_NOMIPMAP|PX_NOCONVERT|PX_NOREDUCE, 0);
@@ -721,6 +831,14 @@ void Draw(Engine& engine) {
         if (area.w < 1 || area.h < 1) continue;
         const int actual = devices->GetLocalPlayerInputID(player.local_index);
         const PlayerInput* input = devices->GetController(actual);
+        const bool keyboard_owner = int(player.local_index) == devices->LocalKeyboardPlayerIndex();
+        const auto* scene = engine.GetSceneGraph();
+        const bool display_reward = !open && view["reward_pending"].asBool() &&
+            !engine.waiting_for_input_ && !engine.paused && !engine.PlayerHasMenu(actual) &&
+            !online->TimeFrozen() && !online->CoopCutscene() && !online->RemoteCutsceneActive() &&
+            scene->map_editor->state_ == MapEditor::kInGame &&
+            !scene->level->HasScriptFocus() && !scene->level->DialogueCameraControl();
+        if (!display_reward) seat.reward_generation = 0;
         seat.wallet.update(view,now);
         if (open && !seat.shopping) {
             seat.target = player.player_id;
@@ -747,13 +865,14 @@ void Draw(Engine& engine) {
             if (!valid) seat.target = player.player_id;
         }
         draw->PushClipRect(area.min(),area.max(),true);
-        if (open) shop(draw,player,view,area,seat,input,int(player.local_index) == devices->LocalKeyboardPlayerIndex(),now,audit);
+        if (open) shop(draw,player,view,area,seat,input,keyboard_owner,now,audit);
         else if (!engine.waiting_for_input_ && !engine.PlayerHasMenu(actual)) {
             const float s = gameplay_scale(area);
             const Box wallet = gameplay_wallet(area,s);
             balance(draw,seat.wallet,wallet,now,s);
             const Box stats = gameplay_stats(area,s);
             stats_column(draw,stats,view["stats"],s,false);
+            if (display_reward) checkpoint_reward(draw,area,wallet,stats,player,seat,view,keyboard_owner,audit);
             for (float value : {stats.x, stats.y, stats.x+stats.w, stats.y+stats.h}) audit["stats_rect"].append(value);
             if (arena_score_frame == ImGui::GetFrameCount())
                 for (float value : {arena_score.x, arena_score.y, arena_score.x+arena_score.w, arena_score.y+arena_score.h})

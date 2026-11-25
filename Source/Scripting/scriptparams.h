@@ -160,9 +160,13 @@ class ScriptParams {
     bool RenameParameterKey(const std::string &curr_name, const std::string &new_name);
 
    private:
-    uint32_t obj_id;
+    uint32_t obj_id = uint32_t(-1);
     ScriptParamMap parameter_map_;
 };
+
+// A level hook can opt to supply temporary float values to another hook.
+// The script-facing view is separate from authored parameters and serialization.
+bool ReadLevelHookFloatParameter(const ScriptParams &params, const std::string &key, float &result);
 
 class TiXmlElement;
 void ReadScriptParametersFromXML(ScriptParamMap &spm, const TiXmlElement *params);

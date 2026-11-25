@@ -42,9 +42,17 @@ Arena event hooks and campaign shop transitions.
 **Difficulty Scaling** contributes the host's difficulty controls, enemy scaling
 rules and encounter events. All peers use the host's settings. Saves include
 encounter pressure, completion and retry history, and the captured enemy strength.
-**Friendly Progression** contributes the campaign and Arena XP rules, shop and
-loadouts. Peers receive the host's wallets and shop decisions. The host saves XP,
-purchases, equipment, team upgrades and shop state against persistent lobby slots.
+**Friendly Progression** lets the host choose XP rules for each mode. Kill rewards
+start enabled. Damage dealt can also earn XP. Damage taken can cost pooled XP,
+and defeat can draw from pooled XP first and committed XP for any shortfall.
+Campaign checkpoints and Arena round and match wins have
+independent bonuses. An older Arena save that awarded XP for damage keeps its
+damage rewards and penalties when loaded. The host can offer a paid XP shop
+and free upgrades independently. At each new campaign checkpoint or completed Arena
+round the host rolls for each human slot. Luck affects both the chance to receive a
+choice and the odds of drawing expensive upgrades. Peers receive the host's rules,
+draws, wallets and purchases. Saves keep Luck and pending choices with their unit
+slots. Earlier saves start at Luck rank zero and retain any outstanding choices.
 
 ### Declare a lobby option
 
@@ -77,6 +85,33 @@ Read the selection with `LobbyGetModeSetting("session-rules.duration")`.
 `LobbySetModeSetting(key, value)` checks host authority, mode, timing and range.
 With lobby settings, each omitted schema defaults to the mod’s package version.
 Bump the network and save schemas when the meaning of an existing index changes.
+
+### Bundle an adapter for an optional mod
+
+A session mod can declare the exact release its compatibility script supports.
+For example, Difficulty Scaling uses the following declaration inside its
+`Session` element.
+
+```xml
+<OnlineAdapter mod="seans-smarter-deaths" version="1.2.5" host_level_hooks="true"/>
+```
+
+The player installs and enables the original mod separately. Scripts can check
+`ModOnlineAdapterActive(mod_id)` before accessing its settings. When both
+packages are active, the lobby accepts the declared release and compares it on
+join. The host's save records it as a dependency. Set `host_level_hooks` for
+mods whose level hooks change authoritative gameplay state. Their hooks run in
+single-player and on the host. A client receives the resulting game state.
+
+To supply a per-object numeric input to a sibling level hook, call
+`level.AdaptHookFloatParameter(hook_path, key)` from your hook's `Init`.
+Implement `bool AdaptLevelHookFloat(int object_id, const string &in key, float &out value)`.
+Return true with the value to expose through that hook's `ScriptParams.HasParam`
+and `GetFloat` calls. Return false to use the original parameter. Other hooks
+and the editor still read the authored parameters. The registration lasts for
+the level and the first adapter to register a given hook and key owns it.
+Use `level.GetHookFloat(hook_path, name, value)` to read a live float declared
+by that hook. It returns false if the hook or float is unavailable.
 
 ### Synchronize and save gameplay data
 

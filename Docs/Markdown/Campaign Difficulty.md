@@ -6,7 +6,7 @@ optional scaling factors together. These controls also appear under
 **Settings → Game → Difficulty**. Traditional gates every scaling factor Off
 while retaining its preferences for later use.
 
-Overhaul replaces the character scripts that receive these modifiers. Its fighters still respond to the base preset. [Overhaul AI and scaling compatibility](Overhaul%20AI.md)
+When an original AI mod is installed and enabled, the bundled adapters use the host’s captured **AI scaling** rate and encounter pressure. Overhaul 0.41.36 adjusts jump kicks, aerial combat, feints and weapon throws. Dynamic AI Aggression 1.5.1 shortens defensive and group waits. Smarter Deaths 1.2.5 shortens the recovery range for unconscious enemies and honors an explicit wake-up time set by the map. [Overhaul controls](Overhaul%20AI.md) · [Bundled adapters](../../Data/Mods/og-online-scaling/Data/Scripts/scaling_ai_adapters.as)
 
 ## Party stats and reinforcements
 

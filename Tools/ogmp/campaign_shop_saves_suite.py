@@ -58,7 +58,22 @@ def campaign_shop_saves(ctx):
     _code(source,'SessionSave(1);')
     wait(source,lambda:record(source,1).get("world",{}).get("campaign_transition")=="slaver_camp",
          "manual shop card stores its destination")
-    assert record(source,1)["session_mods"]["og-online-progression"]["runtime"]["open"]
+    # Schema 3 saved the outstanding hand inside a shop. Resume a card from
+    # that version and take the original choice after the next level starts.
+    old_card = record(source, 1)
+    module = old_card["session_mods"]["og-online-progression"]
+    ledger = module["runtime"]
+    assert ledger["open"]
+    module["version"] = "3"
+    ledger["v"] = 2
+    for key in ("reward_generation", "round_completed", "match_completed"):
+        ledger.pop(key)
+    choices = ["health", "damage", "speed", "stealth_passive"]
+    for row in ledger["players"] + ledger["teams"]:
+        row.pop("luck")
+    ledger["players"][0]["free_rewards"] = choices
+    old_card["rules"]["mode_settings"][CAMPAIGN]["progression_free_buffs"] = 1
+    card(source, 1).write_text(json.dumps(old_card))
     resumed=cold_resume(source,"campaign_shop_chapter_resume",28832,1,FIRST)
     source.stop()
     act(resumed,"ready")
@@ -66,6 +81,11 @@ def campaign_shop_saves(ctx):
     wait(resumed,lambda:not view(resumed).get("shop_open",False),"ready advances the saved chapter shop")
     time.sleep(1)
     assert SECOND in resumed.bridge.status()["level"] and resumed.bridge.status()["online"]["challenge"]["loop"]==0
+    migrated = view(resumed)
+    assert [option["id"] for option in migrated["reward_cards"]] == choices
+    assert migrated["stats"]["luck_rank"] == 0
+    act(resumed, "reward", "damage")
+    wait(resumed, lambda: view(resumed)["stats"]["damage_rank"] == 1, "legacy reward remains claimable in play")
     assert record(resumed,0).get("world",{}).get("campaign_transition") is None
     # Resolve the actual final chapter, preserve the chosen loop in an autosave,
     # then start a second fresh process with no campaign-script locals to reuse.

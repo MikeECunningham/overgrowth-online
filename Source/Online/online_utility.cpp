@@ -113,7 +113,7 @@ std::string OnlineUtility::GetActiveModsString() {
     vector<std::string> entries;
     for (ModInstance* mod : ModLoading::Instance().GetAllMods()) {
         if (CountsOnline(mod)) {
-            const auto& version = mod->session.network_version;
+            const auto& version = mod->SessionVersion(true);
             const auto entry = mod->id.str() + (version.empty() ? "" : "@" + version);
             entries.push_back(mod->SupportsOnline() ? entry : "[" + entry + "]");
         }
@@ -156,7 +156,7 @@ std::vector<OnlineUtility::LocalMod> OnlineUtility::GetLocalMods() {
     vector<LocalMod> mods;
     for (ModInstance* mod : ModLoading::Instance().GetAllMods()) {
         if (!mod->IsCore() && mod->id.str() != "com-wolfire-machine-translations") {
-            mods.push_back({mod->id.str(), mod->name.str(), CountsOnline(mod), mod->session.network_version});
+            mods.push_back({mod->id.str(), mod->name.str(), CountsOnline(mod), mod->SessionVersion(true)});
         }
     }
     return mods;

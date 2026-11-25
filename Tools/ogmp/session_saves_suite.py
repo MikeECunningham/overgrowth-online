@@ -37,7 +37,8 @@ def session_saves(ctx):
     menu(
         host,
         f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
-        'LobbySetModeSetting("progression",1);LobbySetModeSetting("challenge_round",4);'
+        'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_gain_checkpoint",1);'
+        'LobbySetModeSetting("challenge_round",4);'
         "LobbySetAllowAllPause(true);LobbyStart();",
     )
     _ready(host, FIRST)
@@ -46,6 +47,7 @@ def session_saves(ctx):
     wait(host, lambda: source(host, 0).exists(), "first camera autosave")
     initial = json.loads(source(host, 0).read_text())
     assert initial["lobby"] and initial["rules"]["allow_pause"]
+    assert initial["rules"]["mode_settings"][CAMPAIGN]["progression_gain_checkpoint"] == 1
     assert not source(guest, 0).exists()
     hero = host.bridge.me()["id"]
     _code(host, f"ProgressionReportHit(363,{hero},0,true);ProgressionCheckpoint();")
@@ -127,6 +129,7 @@ def session_saves(ctx):
         "saved objective restored",
     )
     assert _probe(cold, 'LobbyGetModeSetting("progression")') == "1"
+    assert _probe(cold, 'LobbyGetModeSetting("progression_gain_checkpoint")') == "1"
     assert _probe(cold, 'LobbyGetModeSetting("challenge_round")') == "4"
     assert _probe(cold, "LobbyGetAllowAllPause()") == "true"
     owner = next(p["id"] for p in players(cold) if p["host"])

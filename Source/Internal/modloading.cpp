@@ -658,11 +658,11 @@ bool SessionToken(const std::string& value, size_t maximum) {
 
 bool OwnsSettingKey(const std::string& id, const std::string& key) {
     if (key.size() > id.size() + 1 && key.compare(0, id.size() + 1, id + ".") == 0) return true;
-    // Old saves and scripts refer to these unqualified setting names.
+    // Native providers also own their unqualified, dot-free setting names.
     if (id == "og-online-scaling")
         return key == "challenge_time" || key == "challenge_round" || key == "challenge_performance" || key == "challenge_performance_rate";
     if (id == "og-online-progression")
-        return key == "progression" || key == "progression_shared" || key == "progression_combat" || key == "progression_timer";
+        return key == "progression" || (key.compare(0, 12, "progression_") == 0 && key.find('.') == std::string::npos);
     return false;
 }
 
@@ -679,6 +679,17 @@ bool ParseSession(const TiXmlElement* element, const std::string& id, const std:
     // names so two mods cannot serialize the same gameplay object twice.
     if ((session.feature == "scaling" && id != "og-online-scaling") ||
         (session.feature == "progression" && id != "og-online-progression")) return false;
+    for (const auto* row = element->FirstChildElement("OnlineAdapter"); row; row = row->NextSiblingElement("OnlineAdapter")) {
+        ModInstance::OnlineAdapter adapter;
+        adapter.mod_id = SessionAttribute(row, "mod");
+        adapter.version = SessionAttribute(row, "version");
+        const auto host_hooks = SessionAttribute(row, "host_level_hooks");
+        if (!SessionToken(adapter.mod_id, MOD_ID_MAX_LENGTH) || !SessionToken(adapter.version, MOD_VERSION_MAX_LENGTH) ||
+            adapter.mod_id == id || (!host_hooks.empty() && host_hooks != "true" && host_hooks != "false") ||
+            session.adapters.size() >= 64) return false;
+        adapter.host_level_hooks = host_hooks == "true";
+        session.adapters.push_back(std::move(adapter));
+    }
     for (const auto* rule = element->FirstChildElement("Rule"); rule; rule = rule->NextSiblingElement("Rule")) {
         const std::string key = SessionAttribute(rule, "key");
         const std::string value = SessionAttribute(rule, "value");
@@ -722,7 +733,7 @@ bool ParseSession(const TiXmlElement* element, const std::string& id, const std:
     }
     for (const auto& setting : session.lobby_settings)
         if (!setting.depends_on.empty() && (!keys.count(setting.depends_on) || setting.depends_on == setting.key)) return false;
-    if (!session.lobby_settings.empty() || session.feature == "scaling" || session.feature == "progression") {
+    if (!session.adapters.empty() || !session.lobby_settings.empty() || session.feature == "scaling" || session.feature == "progression") {
         if (session.network_version.empty()) session.network_version = version;
         if (session.save_version.empty()) session.save_version = version;
     }
@@ -731,8 +742,8 @@ bool ParseSession(const TiXmlElement* element, const std::string& id, const std:
 }
 
 bool SessionContractLocked(const ModInstance& mod) {
-    return (!mod.session.network_version.empty() || !mod.session.save_version.empty()) &&
-           (Online::Instance()->IsActive() || SessionSaves::Loading());
+    return (Online::Instance()->IsActive() || SessionSaves::Loading()) &&
+           (!mod.session.network_version.empty() || !mod.session.save_version.empty() || ModLoading::Instance().OnlineAdapterFor(mod));
 }
 
 bool IsBundledMod(const std::string& path) {
@@ -1600,7 +1611,16 @@ bool ModInstance::NeedsRestart() const {
 }
 
 bool ModInstance::SupportsOnline() const {
-    return supports_online;
+    return supports_online || ModLoading::Instance().OnlineAdapterFor(*this);
+}
+
+const std::string& ModInstance::SessionVersion(bool network) const {
+    const auto& own_version = network ? session.network_version : session.save_version;
+    if (own_version.empty()) {
+        const auto* adapter = ModLoading::Instance().OnlineAdapterFor(*this);
+        if (adapter) return adapter->version;
+    }
+    return own_version;
 }
 
 bool ModInstance::ExplicitVersionSupport() const {
@@ -2492,6 +2512,20 @@ bool ModLoading::IsActive(ModID sid) {
     return false;
 }
 
+const ModInstance::OnlineAdapter* ModLoading::OnlineAdapterFor(const ModInstance& target) const {
+    const ModInstance::OnlineAdapter* match = nullptr;
+    for (const auto* provider : mods) {
+        if (!provider->IsActive()) continue;
+        for (const auto& adapter : provider->session.adapters) {
+            if (adapter.mod_id != target.id.str() || adapter.version != target.version.str()) continue;
+            // Admission and hook authority must agree regardless of discovery order.
+            if (adapter.host_level_hooks) return &adapter;
+            match = &adapter;
+        }
+    }
+    return match;
+}
+
 const ModInstance::SessionContract* ModLoading::GetSessionFeature(const std::string& feature) const {
     if (feature.empty()) return nullptr;
     for (const auto* mod : mods)
@@ -2887,6 +2921,10 @@ std::vector<std::string> ModLoading::ActiveLevelHooks() {
 
     for (; modit != mods.end(); modit++) {
         if ((*modit)->IsActive()) {
+            if (Online::Instance()->IsClient()) {
+                const auto* adapter = OnlineAdapterFor(**modit);
+                if (adapter && adapter->host_level_hooks) continue;
+            }
             files.insert(files.end(), (*modit)->level_hook_files.begin(), (*modit)->level_hook_files.end());
         }
     }
