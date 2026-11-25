@@ -1976,8 +1976,8 @@ std::vector<ModID> ModInstance::GetIDCollisionsWithActiveMods() const {
     for (; modit != ModLoading::Instance().mods.end(); modit++) {
         bool collides = false;
 
-        if ((*modit)->sid != this->sid) {
-            if (strmtch((*modit)->id, id) && (*modit)->active) {
+        if ((*modit)->sid != this->sid && (*modit)->active) {
+            if (strmtch((*modit)->id, id)) {
                 colliding_sids.push_back((*modit)->sid);
                 collides = true;
             }
@@ -2630,10 +2630,18 @@ std::string ModLoading::WhichCampaignLevelBelongsTo(const std::string& level_pat
 void ModLoading::RemoveMod(const std::string& path) {
     std::vector<ModInstance*>::iterator modit = GetMod(path);
     if (modit != mods.end()) {
-        if ((*modit)->IsActive() && SessionContractLocked(**modit)) return;
+        ModInstance* removed = *modit;
+        if (removed->IsActive() && SessionContractLocked(*removed)) return;
         LOGI << "Removed mod: " << path << std::endl;
-        delete *modit;
         mods.erase(modit);
+        // The installation may have moved. Drop the old mount while retaining
+        // the activation preference for the replacement with the same ID.
+        if (removed->IsActive()) {
+            RemovePath(path.c_str(), kModPaths);
+            TriggerModActivationCallback(removed);
+            RebuildLocalization();
+        }
+        delete removed;
     }
 }
 
@@ -2658,10 +2666,21 @@ void ModLoading::InitMods() {
     DetectMods();
 }
 
+static std::string LocalManifestID(const std::string& directory) {
+    TiXmlDocument document(AssemblePath(directory, "mod.xml").c_str());
+    if (!document.LoadFile()) return {};
+    const auto* id = TiXmlHandle(&document).FirstChildElement().FirstChild("Id").Element();
+    return id && id->GetText() ? id->GetText() : "";
+}
+
 void ModLoading::DetectMods() {
     std::vector<std::string> newMods;
+    std::vector<std::string> sourceMods;
 
     for (int i = 0; i < vanilla_data_paths.num_paths; ++i) {
+        // Source checkouts keep optional, separately installable mods here.
+        const std::string source = AssemblePath(vanilla_data_paths.paths[i], "mod");
+        if (CheckFileAccess(source.c_str())) getSubdirectories(source.c_str(), sourceMods);
         std::stringstream ss;
         ss << vanilla_data_paths.paths[i];
         // TODO: Use config var instead.
@@ -2709,6 +2728,16 @@ void ModLoading::DetectMods() {
         }
     }
 
+    if (!sourceMods.empty()) {
+        // An installed copy may be renamed, modified or linked to the tree.
+        // It owns the menu row and the saved activation choice in all cases.
+        std::set<std::string> installed;
+        for (const auto& directory : verifiedMods) installed.insert(LocalManifestID(directory));
+        for (const auto& directory : sourceMods) {
+            const std::string id = LocalManifestID(directory);
+            if (!id.empty() && installed.insert(id).second) verifiedMods.push_back(directory);
+        }
+    }
     SetMods(verifiedMods);
 }
 
@@ -2781,12 +2810,12 @@ void ModLoading::SetMods(std::vector<std::string> modpaths) {
     }
 
     std::vector<std::string>::iterator pathit;
-    for (pathit = newPaths.begin(); pathit != newPaths.end(); pathit++) {
-        AddMod(*pathit);
-    }
-
     for (pathit = missingPaths.begin(); pathit != missingPaths.end(); pathit++) {
         RemoveMod(*pathit);
+    }
+
+    for (pathit = newPaths.begin(); pathit != newPaths.end(); pathit++) {
+        AddMod(*pathit);
     }
 
     for (pathit = stillPaths.begin(); pathit != stillPaths.end(); pathit++) {

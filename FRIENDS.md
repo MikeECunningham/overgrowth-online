@@ -64,6 +64,10 @@ $profilePath = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "Wolfire/
 
 Replace `$gamePath` with your own installation folder. Keep the executable in `Build/Release` with its adjacent DLLs. Keep `--write-dir` to give the fork its own profile instead of the stock game's settings. This is a source-build recipe; a Windows download must also be compiled and tested on Windows before it is published.
 
+## Optional Overhaul mod
+
+Open **Main menu → Mods → Overhaul** to enable the copy that comes with a source checkout. Fresh source profiles start with it off. If you already installed a local copy under `Data/Mods`, the game uses that copy and your saved activation choice. For online play, everyone should use the same version and agree on whether to enable it. The host controls NPC behavior through **F9 → Overhaul AI**. [AI tuning guide](Docs/Markdown/Overhaul%20AI.md)
+
 ## Host and connect
 
 1. Launch the fork and open **Multiplayer**.

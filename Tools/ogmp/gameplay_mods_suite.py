@@ -1,5 +1,6 @@
 """Exercise bundled gameplay mods through the Mod menu's actual activation API."""
 from pathlib import Path
+import shutil
 
 from .campaign_scaling_suite import RENDER_KEYS
 from .mode_settings_suite import _code, _probe, ARENA, ARENA_MAP
@@ -68,3 +69,55 @@ def gameplay_mods(ctx):
     assert host.pid == pid
     return {"passed": True, "metrics": {"default_enabled": True, "explicit_off_after_restart": True,
                                         "live_overlay_switch": True, "third_party_lobby_setting": True}, "notes": []}
+
+
+def overhaul_discovery(ctx):
+    inst = ctx.instance("overhaul_discovery", width=800, height=450, keys=RENDER_KEYS)
+    profile = Path(inst.writedir)
+
+    def menu_row():
+        inst.bridge.call("menu", script="modmenu/main.as")
+        _code(inst, 'int count=0; int index=-1; for(uint i=0;i<current_mods.size();++i){'
+              'if(ModGetID(current_mods[i])=="crxhvrd-overhaul"){++count;index=i;}}'
+              'SetConfigValueInt("test_overhaul_rows",count);SetConfigValueInt("test_overhaul_index",index);', "menu")
+        assert _probe(inst, 'GetConfigValueInt("test_overhaul_rows")') == "1"
+        index = int(_probe(inst, 'GetConfigValueInt("test_overhaul_index")'))
+        mod = f"current_mods[{index}]"
+        assert _probe(inst, f'ModCanActivate({mod})') == "true"
+        return index, mod, Path(_probe(inst, f'ModGetPath({mod})')).resolve()
+
+    index, mod, source = menu_row()
+    assert profile.resolve() not in source.parents
+    assert _probe(inst, f'ModIsActive({mod})') == "false"
+    _code(inst, f'imGUI.receiveMessage(IMMessage("toggle_mod",{index}));', "menu")
+    inst.bridge.wait(lambda: _probe(inst, f"ModIsActive({mod})") == "true", 10, what="Overhaul toggled on")
+    # Leaving the actual Mods screen runs Dispose() and saves the selection.
+    inst.bridge.call("menu", script="mainmenu.as")
+    inst.stop()
+    inst.start(reuse_profile=True)
+    _, mod, same_source = menu_row()
+    assert same_source == source and _probe(inst, f'ModIsActive({mod})') == "true"
+
+    # Use an independently copied installation. A symlink would also pass the
+    # old same-file check and would not exercise same-ID precedence.
+    inst.bridge.call("menu", script="mainmenu.as")
+    installed = profile / "Data/Mods/custom-folder-name"
+    shutil.copytree(source, installed)
+    _, mod, selected = menu_row()
+    assert selected == installed.resolve(), selected
+    assert _probe(inst, f'ModIsActive({mod})') == "true"
+    brain = "Data/Scripts/aio_brain.as"
+    assert Path(_probe(inst, f'FindFilePath("{brain}")')).resolve() == selected / brain
+    # Keep its files on disk to detect a stale mount after its manifest goes away.
+    inst.bridge.call("menu", script="mainmenu.as")
+    (installed / "mod.xml").rename(installed / "manifest.disabled")
+    _, mod, selected = menu_row()
+    assert selected == source and _probe(inst, f'ModIsActive({mod})') == "true"
+    assert Path(_probe(inst, f'FindFilePath("{brain}")')).resolve() == source / brain
+    inst.bridge.call("load_level", path="Data/Levels/fight_test.xml")
+    _ready(inst)
+    guard = next(c for c in inst.bridge.state() if not c["controlled"])
+    assert _probe(inst, f'ReadCharacterID({guard["id"]}).HasFunction("void AIORefreshSettings()")', "level") == "true"
+    assert not script_errors(inst), script_errors(inst)
+    return {"passed": True, "metrics": {"default_off": True, "enabled_after_restart": True,
+            "loaded_overhaul_ai": True, "installed_copy_preferred": True, "live_fallback": True}, "notes": []}

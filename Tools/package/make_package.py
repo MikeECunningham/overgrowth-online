@@ -6,7 +6,7 @@ Contents:
   OvergrowthOnline/ the exe and its DLLs (+ the VC++ runtime), steam_appid.txt,
                     our Data overlay (Scripts, GLSL, VulkanShaders, root files), licences
   launcher/         Overgrowth.exe (the stand-in Steam starts)
-  mod/overhaul/     the Overhaul mod (D:/OvergrowthAI)
+  mod/overhaul/     the optional Overhaul mod from this checkout
   install.bat, uninstall.bat (+ .ps1), README.txt
 Never any game assets: those come from the player's own Overgrowth.
 """
@@ -16,9 +16,9 @@ import re
 import shutil
 import sys
 
-ROOT = "D:/OvergrowthMP"
-MOD = "D:/OvergrowthAI/mod/overhaul"
-HERE = ROOT + "/Tools/package"
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+MOD = os.path.join(ROOT, "mod", "overgrowth-online")
 
 args = sys.argv[1:]
 build = ROOT + "/" + (args[args.index("--build") + 1] if "--build" in args else "Build_steam/Release")

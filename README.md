@@ -241,7 +241,7 @@ Other mods are not guaranteed to work online and have not been tested.
 - The Multiplayer menu opens only when every enabled mod declares online support (`<SupportsOnline>true</SupportsOnline>` in its `mod.xml`). Most Workshop mods don't, so they have to be disabled to play online. The declaration is the mod author's own claim; nothing checks it.
 - Everyone in a game needs the same mods enabled. Only the mod names are compared, not their versions: different versions of the same mod can still join each other and fall out of sync.
 - Mods that only add assets (characters, weapons, maps, textures) are the most likely to work. Mods that replace the character scripts (`aschar.as`, `enemycontrol.as`) break online play: the network code relies on hooks in those scripts.
-- The optional, separately distributed Overhaul mod (AI, HUD, camera, weather, trainer, Large Battles) is not required for multiplayer, but everyone must have it either on or off.
+- Source builds list the optional Overhaul mod (AI, HUD, camera, weather, trainer, Large Battles) in **Main menu → Mods**. All players in a multiplayer session should use the same activation choice. [Overhaul AI tuning guide](Docs/Markdown/Overhaul%20AI.md)
 
 ## License
 

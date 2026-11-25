@@ -6,6 +6,8 @@ optional scaling factors together. These controls also appear under
 **Settings → Game → Difficulty**. Traditional gates every scaling factor Off
 while retaining its preferences for later use.
 
+Overhaul replaces the character scripts that receive these modifiers. Its fighters still respond to the base preset. [Overhaul AI and scaling compatibility](Overhaul%20AI.md)
+
 ## Party stats and reinforcements
 
 The host can enable **Party stats and reinforcements** in Scaling mode.

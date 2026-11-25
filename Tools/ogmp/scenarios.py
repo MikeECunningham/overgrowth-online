@@ -1556,7 +1556,13 @@ def _gameplay_mods(ctx):
     return gameplay_mods(ctx)
 
 
+def _overhaul_discovery(ctx):
+    from .gameplay_mods_suite import overhaul_discovery
+    return overhaul_discovery(ctx)
+
+
 SCENARIOS["gameplay_mods"] = _gameplay_mods
+SCENARIOS["overhaul_discovery"] = _overhaul_discovery
 
 
 def _solo_kill_camera(ctx):
