@@ -469,6 +469,10 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                 p["pending_unreliable"] = link.pending_unreliable;
                 p["unacked_reliable"] = link.sent_unacked_reliable;
                 p["send_rate_bytes_per_second"] = link.send_rate_bytes_per_second;
+                p["out_bytes_per_second"] = link.out_bytes_per_sec;
+                p["in_bytes_per_second"] = link.in_bytes_per_sec;
+                p["out_packets_per_second"] = link.out_packets_per_sec;
+                p["in_packets_per_second"] = link.in_packets_per_sec;
                 p["clock_offset_ms"] = peer.clock.Offset();
                 p["clock_samples"] = peer.clock.Samples();
                 o["peers"].append(p);

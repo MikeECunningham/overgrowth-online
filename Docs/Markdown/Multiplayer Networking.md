@@ -38,6 +38,18 @@ Combat and ownership requests also bypass the normal small-packet batching
 delay. Lanes prevent unrelated reliable traffic from imposing the same
 ordered-delivery wait on control, but they cannot create bandwidth or CPU time.
 
+Input presses, releases, and significant analog changes use reliable delivery.
+The game keeps the last input state it sent. GameNetworkingSockets handles
+acknowledgements, retransmission, and ordering within each reliable lane after
+it accepts a message. The sender currently advances its state even if the local
+transport queue rejects a message. A stalled queue during a custom level
+transfer is one place this matters. Level chunks can reach 256 KiB and share
+the control lane, whose connection has a 240 KiB send buffer.
+
+Protocol 17 hosts advertise compact camera updates during the binding handshake.
+Guests send all fourteen camera components at their original precision and
+cadence. A guest uses the original named fields when the host omits the capability.
+
 The host's character stream has a 150,000-byte/second application budget,
 shared across receivers. Allocation reserves update rates for the receiver's
 active fights and nearby players before spending the remainder on other
@@ -58,6 +70,11 @@ echo their request timestamp: duplicates, superseded requests for the same
 attacker/target/event, and replies older than 1.5 seconds are discarded. This
 limits delayed corrections from a backlog. It is not full historical
 defender/collision rollback.
+
+The attacker-position check compares source timestamps against up to 64
+received root poses. The defender uses its current position and block state.
+During an outage the newest attacker pose can also be old, so an incoming
+request can still pass that check after the attacker's local reply timer expires.
 
 All peers need the same release and native protocol. Protocol 8 introduced
 the traffic lanes and correlated hit replies. Protocol 9 adds host-authoritative
@@ -107,6 +124,10 @@ requests/resolutions, snapshot traffic, and connection diagnostics. Use those
 alongside frame times and the periodic `Link peer` transport logs (queue time
 refers to the control lane; pending byte totals include all lanes) to distinguish
 render/AI saturation, missing snapshots, packet loss, and reliable queue buildup.
+Per-peer `in_bytes_per_second`, `out_bytes_per_second`, and packet rates
+report recent transport traffic. `send_rate_bytes_per_second` reports estimated
+sending capacity. The cumulative application byte counters count compressed
+messages and omit UDP headers and transport acknowledgements.
 The bridge is opt-in for isolated automated testing.
 
 Targeted regression scenarios (after building, with the normal game closed):

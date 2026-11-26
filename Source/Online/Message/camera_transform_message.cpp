@@ -27,13 +27,10 @@
 #include <Utility/binn_util.h>
 
 namespace OnlineMessages {
-CameraTransformMessage::CameraTransformMessage(vec3 position, vec3 flat_facing, vec3 facing, vec3 up, float x_rotation, float y_rotation, PlayerID player_id) : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT),
-                                                                                                                                            position(position),
-                                                                                                                                            flat_facing(flat_facing),
-                                                                                                                                            facing(facing),
-                                                                                                                                            up(up),
-                                                                                                                                            x_rotation(x_rotation),
-                                                                                                                                            y_rotation(y_rotation), player_id(player_id) {
+CameraTransformMessage::CameraTransformMessage(vec3 position, vec3 flat_facing, vec3 facing, vec3 up,
+                                               float x_rotation, float y_rotation, PlayerID player_id, bool compact)
+    : OnlineMessageBase(OnlineMessageCategory::LEVEL_TRANSIENT), position(position), flat_facing(flat_facing),
+      facing(facing), up(up), x_rotation(x_rotation), y_rotation(y_rotation), player_id(player_id), compact(compact) {
     reliable_delivery = false;
 }
 
@@ -41,6 +38,19 @@ binn* CameraTransformMessage::Serialize(void* object) {
     CameraTransformMessage* t = static_cast<CameraTransformMessage*>(object);
     binn* l = binn_object();
 
+    if (t->compact) {
+        // One ordered list keeps the precision and byte order of the legacy floats.
+        binn* pose = binn_list();
+        for (const vec3* v : {&t->position, &t->flat_facing, &t->facing, &t->up}) {
+            for (int i = 0; i < 3; ++i) binn_list_add_float(pose, (*v)[i]);
+        }
+        binn_list_add_float(pose, t->x_rotation);
+        binn_list_add_float(pose, t->y_rotation);
+        binn_object_set_uint32(l, "player_id", t->player_id);
+        binn_object_set_list(l, "p", pose);
+        binn_free(pose);
+        return l;
+    }
     binn_object_set_vec3(l, "position", t->position);
     binn_object_set_vec3(l, "flat_facing", t->flat_facing);
     binn_object_set_vec3(l, "facing", t->facing);
@@ -55,18 +65,31 @@ binn* CameraTransformMessage::Serialize(void* object) {
 void CameraTransformMessage::Deserialize(void* object, binn* l) {
     CameraTransformMessage* t = static_cast<CameraTransformMessage*>(object);
 
-    binn_object_get_vec3(l, "position", &t->position);
-    binn_object_get_vec3(l, "flat_facing", &t->flat_facing);
-    binn_object_get_vec3(l, "facing", &t->facing);
-    binn_object_get_vec3(l, "up", &t->up);
-    binn_object_get_float(l, "x_rotation", &t->x_rotation);
-    binn_object_get_float(l, "y_rotation", &t->y_rotation);
-    binn_object_get_uint32(l, "player_id", &t->player_id);
+    t->valid = binn_object_get_uint32(l, "player_id", &t->player_id);
+    void* pose = nullptr;
+    if (binn_object_get_list(l, "p", &pose)) {
+        t->valid = t->valid && binn_count(pose) == 14;
+        int index = 1;
+        for (vec3* v : {&t->position, &t->flat_facing, &t->facing, &t->up}) {
+            for (int i = 0; i < 3; ++i, ++index)
+                t->valid = t->valid && binn_list_get_float(pose, index, &(*v)[i]);
+        }
+        t->valid = t->valid && binn_list_get_float(pose, 13, &t->x_rotation)
+                            && binn_list_get_float(pose, 14, &t->y_rotation);
+    } else {
+        t->valid = t->valid && binn_object_get_vec3(l, "position", &t->position)
+                            && binn_object_get_vec3(l, "flat_facing", &t->flat_facing)
+                            && binn_object_get_vec3(l, "facing", &t->facing)
+                            && binn_object_get_vec3(l, "up", &t->up)
+                            && binn_object_get_float(l, "x_rotation", &t->x_rotation)
+                            && binn_object_get_float(l, "y_rotation", &t->y_rotation);
+    }
 }
 
 void CameraTransformMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID from) {
     CameraTransformMessage* t = static_cast<CameraTransformMessage*>(object);
 
+    if (!t->valid) return;
     auto found = Online::Instance()->online_session->player_states.find(t->player_id);
     if (Online::Instance()->IsHosting() && found != Online::Instance()->online_session->player_states.end() && found->second.peer_id == from) {
         int camera_id = found->second.camera_id;

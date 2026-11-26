@@ -111,6 +111,7 @@ class OnlineSession {
     unsigned binding_id_map_counter_ = 0;
     map<string, uint8_t> binding_id_map_;
     map<uint8_t, string> binding_name_map_;
+    bool host_supports_compact_camera = false;
 
     float last_ping_time = 0.0f;
     uint32_t ping_counter = 0;

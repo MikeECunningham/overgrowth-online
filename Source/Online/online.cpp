@@ -610,7 +610,8 @@ void Online::SendPlayerCameraState() {
         Camera* camera = ActiveCameras::GetCamera(std::max(0, player.screen - 1));
         if (camera == nullptr || player.object_id == static_cast<ObjectID>(-1)) continue;
         Send<OnlineMessages::CameraTransformMessage>(camera->GetPos(), camera->GetFlatFacing(), camera->GetFacing(),
-            camera->GetUpVector(), camera->GetXRotation(), camera->GetYRotation(), player.player_id);
+            camera->GetUpVector(), camera->GetXRotation(), camera->GetYRotation(), player.player_id,
+            online_session->host_supports_compact_camera);
     }
 }
 
@@ -622,15 +623,18 @@ void Online::SendPlayerInputState() {
         const bool menu_open = Engine::Instance()->PlayerHasMenu(input_id) ||
             ((CoopCutscene() || RemoteCutsceneActive()) && player.object_id != CampaignMainAvatarID());
         auto& previous = client_player_key_states_[player.player_id];
-        for (const string& binding : Input::Instance()->GetAllAvailableBindings()) {
+        // The handshake already supplies the actions this host can decode.
+        for (const auto& action : online_session->binding_id_map_) {
+            const string& binding = action.first;
             if (binding == "look_left" || binding == "look_right" || binding == "look_up" || binding == "look_down") continue;
             KeyState local;
-            if (!menu_open) local = input->key_down[binding];
+            const auto key = input->key_down.find(binding);
+            if (!menu_open && key != input->key_down.end()) local = key->second;
             KeyState remote = previous[binding];
             if (std::fabs(local.depth - remote.depth) > 0.05f || (local.depth == 0.0f) != (remote.depth == 0.0f) ||
                 (local.count > 0) != (remote.count > 0) || (local.depth_count > 0) != (remote.depth_count > 0)) {
                 Send<OnlineMessages::PlayerInputMessage>(local.depth, local.depth_count, local.count,
-                    online_session->binding_id_map_[binding], player.player_id);
+                    action.second, player.player_id);
                 previous[binding] = local;
             }
         }
@@ -1415,14 +1419,10 @@ void Online::StreamCharacters(SceneGraph* sg) {
 
             StreamRecord& r = stream_latest[cid];
             r.bytes.clear();
-            int positions = 0;
-            CharSnapshot::Write(r.bytes, frame, &mo->rigged_object()->NetworkRig(), &positions);
             r.lite.clear();
-            if (IsHosting() && frame.vitals.valid) {
-                CharSnapshot::Frame lite = frame;
-                lite.vitals.valid = false;
-                CharSnapshot::Write(r.lite, lite, &mo->rigged_object()->NetworkRig());
-            }
+            int positions = 0;
+            CharSnapshot::Write(r.bytes, frame, &mo->rigged_object()->NetworkRig(), &positions,
+                                IsHosting() && frame.vitals.valid ? &r.lite : nullptr);
             r.vitals_version = owned.vitals_version;
             r.target = frame.vitals.valid ? frame.vitals.target_id : -1;
             r.attacker = frame.vitals.valid ? frame.vitals.attacked_by : -1;

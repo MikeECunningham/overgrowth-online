@@ -125,7 +125,8 @@ quaternion UnpackQuat(uint32_t v) {
     return quaternion(q[0], q[1], q[2], q[3]);
 }
 
-void Write(std::vector<uint8_t>& out, const Frame& f, const Rig* rig, int* positions_sent) {
+void Write(std::vector<uint8_t>& out, const Frame& f, const Rig* rig, int* positions_sent, std::vector<uint8_t>* without_vitals) {
+    const size_t record_start = out.size();
     Put<int32_t>(out, f.id);
     Put<uint32_t>(out, f.src_ms);
 
@@ -148,7 +149,8 @@ void Write(std::vector<uint8_t>& out, const Frame& f, const Rig* rig, int* posit
     int bone_count = std::min((int)f.bones.size(), kMaxBones);
     int morph_count = std::min((int)f.morphs.size(), kMaxMorphs);
     bool morphs = f.has_morphs && morph_count > 0;
-    Put<uint8_t>(out, (uint8_t)((morphs ? 1 : 0) | (f.vitals.valid ? 2 : 0) | (f.resumed ? 4 : 0)));
+    const size_t flags_offset = out.size();
+    Put<uint8_t>(out, (uint8_t)((morphs ? 1 : 0) | (f.resumed ? 4 : 0)));
     Put<uint8_t>(out, (uint8_t)bone_count);
     Put<uint32_t>(out, f.skeleton);
 
@@ -272,7 +274,11 @@ void Write(std::vector<uint8_t>& out, const Frame& f, const Rig* rig, int* posit
         }
     }
 
+    if (without_vitals) {
+        without_vitals->insert(without_vitals->end(), out.begin() + record_start, out.end());
+    }
     if (f.vitals.valid) {
+        out[flags_offset] |= 2;
         const Vitals& v = f.vitals;
         Put<uint8_t>(out, v.knocked_out);
         Put<uint8_t>(out, v.state);

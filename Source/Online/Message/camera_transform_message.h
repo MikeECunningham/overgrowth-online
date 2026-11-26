@@ -34,9 +34,11 @@ class CameraTransformMessage : public OnlineMessageBase {
     float x_rotation;
     float y_rotation;
     PlayerID player_id;
+    bool compact;
+    bool valid = true;
 
    public:
-    CameraTransformMessage(vec3 position, vec3 flat_facing, vec3 facing, vec3 up, float x_rotation, float y_rotation, PlayerID player_id = 0);
+    CameraTransformMessage(vec3 position, vec3 flat_facing, vec3 facing, vec3 up, float x_rotation, float y_rotation, PlayerID player_id = 0, bool compact = false);
 
     static binn* Serialize(void* object);
     static void Deserialize(void* object, binn* source);

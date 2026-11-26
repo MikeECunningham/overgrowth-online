@@ -116,7 +116,10 @@ struct Frame {
 //    uint8 primary slot, uint8 filled slots, per: uint8 slot, int32 item]
 //   flags byte: 1 = morphs, 2 = vitals, 4 = resumed after standing still
 // With a rig, bones whose joints hold go without a position (most of them)
-void Write(std::vector<uint8_t>& out, const Frame& f, const Rig* rig = nullptr, int* positions_sent = nullptr);
+// An optional second, distinct buffer receives the same record without vitals.
+// Both outputs append, so each can also be used to build a bundle.
+void Write(std::vector<uint8_t>& out, const Frame& f, const Rig* rig = nullptr, int* positions_sent = nullptr,
+           std::vector<uint8_t>* without_vitals = nullptr);
 
 // Reads the record at offset and advances it. False on malformed data.
 // Bones sent without a position are marked derived: call Resolve.

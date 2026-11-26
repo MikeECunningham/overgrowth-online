@@ -44,12 +44,15 @@ binn* PCSSessionParametersMessage::Serialize(void* object) {
         binn_list_add_uint8(list, binding.second);
     }
     binn_object_set_list(l, "bindings", list);
+    binn_free(list);
+    binn_object_set_bool(l, "compact_camera", t->compact_camera);
     return l;
 }
 
 void PCSSessionParametersMessage::Deserialize(void* object, binn* l) {
     PCSSessionParametersMessage* t = static_cast<PCSSessionParametersMessage*>(object);
 
+    t->compact_camera = binn_object_bool(l, "compact_camera");
     binn* list;
     binn_object_get_list(l, "bindings", (void**)&list);
 
@@ -80,6 +83,7 @@ void PCSSessionParametersMessage::Execute(const OnlineMessageRef& ref, void* obj
     Online::Instance()->SessionStarted(false);
 
     Online::Instance()->online_session->binding_id_map_ = t->bind_id_map;
+    Online::Instance()->online_session->host_supports_compact_camera = t->compact_camera;
 
     // Send own parameters to host
     Online::Instance()->Send<OnlineMessages::PCSClientParametersMessage>(OnlineUtility::GetPlayerName(), OnlineUtility::GetActiveModsString());

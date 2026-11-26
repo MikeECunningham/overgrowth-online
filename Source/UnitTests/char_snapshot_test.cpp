@@ -100,6 +100,18 @@ void charsnap::test<2>() {
 
     std::vector<uint8_t> buf;
     Write(buf, f);
+    {
+        const std::vector<uint8_t> prefix = {0xAB, 0xCD};
+        std::vector<uint8_t> full = prefix, lite = prefix, expected_lite = prefix;
+        Write(full, f, nullptr, nullptr, &lite);
+        std::vector<uint8_t> expected_full = prefix;
+        expected_full.insert(expected_full.end(), buf.begin(), buf.end());
+        ensure("paired encoding preserves full wire record and bundle prefix", full == expected_full);
+        Frame without_vitals = f;
+        without_vitals.vitals.valid = false;
+        Write(expected_lite, without_vitals);
+        ensure("paired encoding matches independent vitals-free wire record", lite == expected_lite);
+    }
     Write(buf, Walker(1300, 4.0f));  // two records back to back
 
     size_t offset = 0;

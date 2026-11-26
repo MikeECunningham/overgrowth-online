@@ -28,6 +28,7 @@ namespace OnlineMessages {
 class PCSSessionParametersMessage : public OnlineMessageBase {
    private:
     std::map<std::string, uint8_t> bind_id_map;
+    bool compact_camera = true;
 
    public:
     PCSSessionParametersMessage(std::map<std::string, uint8_t> bind_id_map);
