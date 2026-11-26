@@ -24,6 +24,7 @@
 
 #include <UserInput/keyTranslator.h>
 
+#include <array>
 #include <string>
 #include <map>
 #include <vector>
@@ -43,7 +44,9 @@ class Joystick {
     float deadzone;
 
     Joystick(float look_sensitivity);
-    bool HandleInputChange(ControllerInput::Input input, float val, uint32_t sequence_id);
+    bool HandleInputChange(ControllerInput::Input input, float val, uint32_t sequence_id, uint64_t &menu_sequence);
+    bool MenuBindingPredates(const std::string &name, uint64_t serial) const;
+    uint64_t LastMenuPress() const { return last_menu_press_; }
     float GetButtonDown(const std::string &name) const;
     void ProcessBinding(ControllerInput::Input input, const std::string command);
     void SetButtonDown(const std::string &name, float depth);
@@ -58,6 +61,11 @@ class Joystick {
     typedef std::multimap<ControllerInput::Input, std::string> BindingMap;
 
     BindingMap binding_;
+    // Latch a direction until it returns towards neutral. A held or slightly
+    // fluctuating stick must not keep reclaiming menu navigation.
+    std::array<bool, ControllerInput::NONE> menu_pressed_{};
+    uint64_t last_menu_press_ = 0;
+    std::map<std::string, uint64_t> menu_binding_presses_;
 
     void AddInputBufferItem(ControllerInput::Input input, float depth, uint32_t sequence_id);
     float NormalizeJoystick(float value);

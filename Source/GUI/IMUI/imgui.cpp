@@ -24,6 +24,7 @@
 #include "imgui.h"
 
 #include <Internal/timer.h>
+#include <UserInput/input.h>
 
 #include <Graphics/hudimage.h>
 
@@ -687,6 +688,11 @@ void IMGUI::update() {
     // Fill in our GUI structure
     guistate.mousePosition = mousePosition;
     guistate.leftMouseState = leftMouseState;
+    if (menuInputPlayer >= 0 && Input::Instance()->GetMenuInputSource(menuInputPlayer) != Input::MenuInputSource::Mouse) {
+        // A parked pointer must stop hovering or dragging when navigation takes over.
+        guistate.mousePosition = vec2(-100000.0f);
+        guistate.leftMouseState = IMUIContext::kMouseStillUp;
+    }
     guistate.inheritedMouseDown = false;
     guistate.inheritedMouseOver = false;
     guistate.clickHandled = false;

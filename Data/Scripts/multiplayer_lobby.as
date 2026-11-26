@@ -26,8 +26,6 @@ string preview_path;
 TextureAssetRef preview_texture;
 bool focus_lobby_form = true;
 int lobby_leader_input = -1;
-string lobby_hover_hint;
-string lobby_focus_hint;
 string lobby_visible_hint;
 
 bool HasFocus() { return false; }
@@ -111,6 +109,7 @@ void Update() {
     }
     uint revision = LobbySnapshotRevision();
     if(revision != lobby_revision || lobby_players.length() == 0) {
+        if(!LobbyMigrationBusy() && lobby_maps_from_host != Online_IsHosting()) LobbyReadModes();
         lobby_players = LobbyPlayers();
         lobby_revision = revision;
         string mode = LobbyGetMode();
@@ -182,15 +181,12 @@ void LobbyHint(const string &in description) {
     // item bounds because IsItemHovered deliberately excludes disabled items.
     vec2 a = ImGui_GetItemRectMin();
     vec2 b = ImGui_GetItemRectMax();
-    bool hovered = ImGui_IsItemHovered() || (ImGui_IsWindowHovered() && ImGui_IsMouseHoveringRect(a, b, true));
-    if(hovered) lobby_hover_hint = description;
-    else if(ImGui_IsItemFocused()) lobby_focus_hint = description;
+    bool target = mp_pointer_active ? (ImGui_IsWindowHovered() && ImGui_IsMouseHoveringRect(a, b, true))
+                                    : ImGui_IsItemFocused();
+    if(target) lobby_visible_hint = description;
 }
 
 void DrawLobbyHint() {
-    // Resolve mouse hover before controller focus, then draw only once. Dear
-    // ImGui appends repeated BeginTooltip calls within the same frame.
-    lobby_visible_hint = lobby_hover_hint != "" ? lobby_hover_hint : lobby_focus_hint;
     if(lobby_visible_hint == "") return;
     ImGui_PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
     ImGui_BeginTooltip();
@@ -204,6 +200,10 @@ void DrawLobbyHint() {
 string LobbyInitialForm() {
     return GetScreenWidth() >= 1100 || small_panel == 1 ? "Players" :
            small_panel == 0 ? "Mode and map" : small_panel == 2 ? "Mode settings" : "Hosting options";
+}
+
+bool LobbyModeDetailsVisible() {
+    return !show_mode_cards && LobbySelectedMode() >= 0;
 }
 
 void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
@@ -277,12 +277,12 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
         ImGui_BeginChild("maps", vec2(0.0f, list_height), true);
         MPWindowScale(1.0f);
         string query = ToLowerCase(map_filter);
-        string current = LobbyGetMap();
+        int selected_map = LobbySelectedMap(mode);
         for(uint i = 0; i < mode.maps.length(); ++i) {
             if(query != "" && ToLowerCase(mode.maps[i].title).findFirst(query) < 0) {
                 continue;
             }
-            if(MPComboOption(mode.maps[i].title + "##map" + i, mode.maps[i].path == current)) {
+            if(MPComboOption(mode.maps[i].title + "##map" + i, int(i) == selected_map)) {
                 if(LobbyChooseMap(selected, int(i))) {
                     notice = "";
                 }
@@ -292,7 +292,6 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
         ImGui_EndChild();
         MPWindowScale(scale);
         ImGui_EndDisabled();
-        int selected_map = LobbySelectedMap(mode);
         if(selected_map >= 0) {
             LobbyMapChoice@ map = mode.maps[selected_map];
             ImGui_Spacing();
@@ -304,6 +303,8 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
             float image_width = ImGui_GetContentRegionAvailWidth();
             ImGui_Image(preview_texture, vec2(image_width, image_width * 0.56f));
             LobbyHint("Map preview: " + map.title + ".");
+        } else if(LobbyGetMap() != "") {
+            ImGui_TextWrapped("Selected map: " + LobbyLevelTitle(LobbyGetMap()));
         }
     } else if(selected < 0 && !LobbyIsHost()) {
         ImGui_TextWrapped("Waiting for the host to choose a mode and map.");
@@ -313,15 +314,16 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
 
 void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) {
     bool compact_players = size.y < 400.0f;
-    LobbyForm("Players", position, size, scale, !compact_players);
+    float footer_height = (compact_players ? 88.0f : 156.0f) * scale + 32.0f;
+    bool fixed_footer = size.y >= footer_height + 120.0f * scale;
+    float roster_height = fixed_footer ? size.y - footer_height : size.y;
+    LobbyForm("Players", position, vec2(size.x, roster_height), scale, !compact_players);
     ImGui_TextColored(kLobbyDim, compact_players ? "Controllers: press any button. Keyboard: Enter." :
         "Unassigned controllers: press any button. Keyboard: press Enter to join.");
     LobbyHint("Press any button on an unassigned controller to join. Keyboard users press Enter.");
     ImGui_Spacing();
     int locals = LocalPlayers();
-    float footer_height = (compact_players ? 88.0f : 156.0f) * scale;
-    float list_height = max(100.0f, ImGui_GetContentRegionAvail().y - footer_height);
-    ImGui_BeginChild("player_list", vec2(0.0f, list_height), true);
+    if(fixed_footer) ImGui_BeginChild("player_list", vec2(0), true);
     MPWindowScale(1.0f);
     ImGui_PushStyleVar(ImGuiStyleVar_ItemSpacing, vec2(10.0f, 5.0f));
     if(focus_lobby_form && LobbyInitialForm() == "Players") {
@@ -431,8 +433,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             LobbyHint("Let this player manage this computer's screens, names, and local players.");
         }
         ImGui_NextColumn();
-        // Align the interactive controls with Edit name, so right/left on a
-        // controller stays on this player's row rather than jumping a row.
+        // Align the Team and Screen selectors so Left/Right stays on this row.
         ImGui_Dummy(vec2(0.0f, float(info_lines) * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
         int team = min(int(teams.length()) - 1, max(0, player.team - 1));
         ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanSetPlayerTeam(player.id));
@@ -474,9 +475,18 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     }
     ImGui_Columns(1);
     ImGui_PopStyleVar();
-    ImGui_EndChild();
-    MPWindowScale(scale);
-    ImGui_Spacing();
+    if(fixed_footer) {
+        ImGui_EndChild();
+        LobbyEndForm();
+        // Keep actions visible while the roster scrolls and independently
+        // accessible to the gamepad/keyboard window switcher.
+        LobbyForm("Session actions", position + vec2(0.0f, roster_height),
+                  vec2(size.x, footer_height), scale, false);
+    } else {
+        // Short viewports use one scrollable panel for players and actions.
+        MPWindowScale(scale);
+        ImGui_Spacing();
+    }
     DrawLobbySessionActions(scale, LobbyIsHost() && !LobbyMigrationBusy(), compact_players);
     LobbyEndForm();
 }
@@ -567,7 +577,7 @@ void DrawLobbySessionActions(float scale, bool can_edit, bool compact = false) {
     if(!can_leave && !leave_denied) ImGui_TextColored(kLobbyDim, "Use the host's or local leader's controller to leave.");
 }
 
-void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) {
+void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale, bool show_mode_settings) {
     LobbyForm("Hosting options", position, size, scale);
     if(focus_lobby_form && LobbyInitialForm() == "Hosting options") {
         ImGui_SetWindowFocus();
@@ -583,18 +593,20 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     // navigation scope, trapping focus between its options and Start/Close.
     ImGui_PushTextWrapPos(0.0f);
     ImGui_BeginDisabled(!can_edit);
-    int armor_rule = GetConfigValueInt("armor_localized");
-    int choice = armor_rule == 2 ? 1 : armor_rule == 1 ? 2 : 0;
-    array<string> armor_rules = {"Legacy", "Weighted", "Localized"};
-    ImGui_TextColored(kLobbyDim, "Armor protection");
-    ImGui_PushItemWidth(-1.0f);
-    if(MPCombo("##armor_model", choice, armor_rules)) {
-        SetConfigValueInt("armor_localized", choice == 1 ? 2 : choice == 2 ? 1 : 0);
-        SaveConfig();
+    if(show_mode_settings) {
+        int armor_rule = GetConfigValueInt("armor_localized");
+        int choice = armor_rule == 2 ? 1 : armor_rule == 1 ? 2 : 0;
+        array<string> armor_rules = {"Legacy", "Weighted", "Localized"};
+        ImGui_TextColored(kLobbyDim, "Armor protection");
+        ImGui_PushItemWidth(-1.0f);
+        if(MPCombo("##armor_model", choice, armor_rules)) {
+            SetConfigValueInt("armor_localized", choice == 1 ? 2 : choice == 2 ? 1 : 0);
+            SaveConfig();
+        }
+        ImGui_PopItemWidth();
+        LobbyHint("Legacy uses whole-body metal armor. Weighted adds protection by material and body region. Localized checks the point of impact.");
+        ImGui_Spacing();
     }
-    ImGui_PopItemWidth();
-    LobbyHint("Legacy uses whole-body metal armor. Weighted adds protection by material and body region. Localized checks the point of impact.");
-    ImGui_Spacing();
     bool all_pause = LobbyGetAllowAllPause();
     if(MPCheckbox("Everyone may pause", all_pause)) {
         LobbySetAllowAllPause(all_pause);
@@ -607,27 +619,18 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale) 
     LobbyHint("On: only the host changes teams. Off: players can change their own team in modes that use lobby teams.");
     ImGui_TextColored(kLobbyDim, "When off, players may change their own team in modes using lobby teams.");
     ImGui_Spacing();
-    bool force_teams = LobbyGetForceTeams();
-    if(MPCheckbox("Force lobby teams", force_teams)) {
-        LobbySetForceTeams(force_teams);
+    if(show_mode_settings) {
+        bool force_teams = LobbyGetForceTeams();
+        if(MPCheckbox("Force lobby teams", force_teams)) LobbySetForceTeams(force_teams);
+        LobbyHint("Use lobby teams in Campaign and Arena. Sandbox and Freeplay always use lobby teams.");
+        string team_hint = "This mode uses lobby teams.";
+        if(LobbyModeIsCampaign())
+            team_hint = force_teams ? "Campaign teams ally with NPC factions; extras are hostile." : "The campaign keeps players allied.";
+        else if(LobbyModeIsArena())
+            team_hint = force_teams ? "Lobby teams override the mode's teams." : "Arena chooses team/FFA lineups each match.";
+        ImGui_TextColored(kLobbyDim, team_hint);
+        ImGui_Spacing();
     }
-    LobbyHint("Use lobby teams instead of mode teams. Off: campaign allies cooperate and Arena picks teams. Sandbox always uses lobby teams.");
-    string team_hint = "Choose a mode to see its team rules.";
-    if(force_teams) {
-        if(LobbyGetCampaign() != "com-wolfire-arena" && !LobbyGetBuildMode() && LobbyGetMode() != "sandbox" &&
-           LobbyGetCampaign() != "com-wolfire-sandbox-levels" && LobbyGetMode() != "")
-            team_hint = "Campaign teams ally with NPC factions; extras are hostile.";
-        else team_hint = "Lobby teams override the mode's teams.";
-    } else if(LobbyGetCampaign() == "com-wolfire-arena") {
-        team_hint = "Arena chooses team/FFA lineups each match.";
-    } else if(LobbyGetBuildMode() || LobbyGetMode() == "sandbox" ||
-              LobbyGetCampaign() == "com-wolfire-sandbox-levels") {
-        team_hint = "This mode uses lobby teams.";
-    } else if(LobbyGetMode() != "") {
-        team_hint = "The campaign keeps players allied.";
-    }
-    ImGui_TextColored(kLobbyDim, team_hint);
-    ImGui_Spacing();
     if(LobbyIsHost()) {
         if(LobbyIsLocalOnly()) {
             ImGui_TextWrapped("Local party. Online hosting is off.");
@@ -729,8 +732,6 @@ void DrawGUI() {
     if(HasPopup()) {
         return;
     }
-    lobby_hover_hint = "";
-    lobby_focus_hint = "";
     lobby_visible_hint = "";
     MPStyleBegin();
     float sw = float(GetScreenWidth());
@@ -744,6 +745,15 @@ void DrawGUI() {
     float header_h = 120.0f * scale;
     float body_y = top + header_h + gap;
     float body_h = sh - body_y - margin;
+    if(small_panel == 2 && !LobbyModeDetailsVisible()) {
+        small_panel = 0;
+        focus_lobby_form = true;
+    }
+    if(lobby_difficulty_open && (!LobbyModeDetailsVisible() || LobbyGetBuildMode())) {
+        lobby_difficulty_open = false;
+        lobby_difficulty_focus = false;
+        focus_lobby_form = true;
+    }
     ImGui_PushStyleVar(ImGuiStyleVar_WindowPadding, vec2(16.0f, 16.0f));
     ImGui_PushStyleVar(ImGuiStyleVar_ItemSpacing, vec2(10.0f, 10.0f));
     ImGui_BeginDisabled(lobby_difficulty_open);
@@ -778,9 +788,14 @@ void DrawGUI() {
         DrawModeForm(vec2(x, body_y), vec2(left_w, body_h), scale);
         DrawPlayersForm(vec2(x + left_w + gap, body_y), vec2(players_w, body_h), scale);
         float right_x = x + left_w + gap + players_w + gap;
-        float settings_h = (body_h - gap) * 0.56f;
-        DrawModeSettingsForm(vec2(right_x, body_y), vec2(right_w, settings_h), scale);
-        DrawHostingForm(vec2(right_x, body_y + settings_h + gap), vec2(right_w, body_h - settings_h - gap), scale);
+        float hosting_y = body_y;
+        bool show_mode_settings = LobbyModeDetailsVisible();
+        if(show_mode_settings) {
+            float settings_h = (body_h - gap) * 0.56f;
+            DrawModeSettingsForm(vec2(right_x, body_y), vec2(right_w, settings_h), scale);
+            hosting_y += settings_h + gap;
+        }
+        DrawHostingForm(vec2(right_x, hosting_y), vec2(right_w, body_y + body_h - hosting_y), scale, show_mode_settings);
     } else {
         // Keep every form comfortably wide on smaller windows; the tab row
         // switches complete forms instead of squeezing their controls together.
@@ -788,25 +803,29 @@ void DrawGUI() {
         float tab_h = compact_tabs ? 68.0f : 66.0f;
         float tab_button_h = compact_tabs ? 36.0f : 28.0f;
         LobbyForm("##lobby_sections", vec2(x, body_y), vec2(width, tab_h), scale, false);
-        float tab_w = (ImGui_GetContentRegionAvailWidth() - 30.0f) / 4.0f;
+        bool show_mode_settings = LobbyModeDetailsVisible();
+        int tab_count = show_mode_settings ? 4 : 3;
+        float tab_w = (ImGui_GetContentRegionAvailWidth() - (tab_count - 1) * 10.0f) / tab_count;
         if(MPButton(compact_tabs ? "Modes" : "Mode and map", vec2(tab_w, tab_button_h))) { small_panel = 0; focus_lobby_form = true; }
         LobbyHint("Choose the game mode and map. Host only.");
         ImGui_SameLine();
         if(MPButton("Players", vec2(tab_w, tab_button_h))) { small_panel = 1; focus_lobby_form = true; }
         LobbyHint("Manage players, names, teams, and this computer's screens.");
-        ImGui_SameLine();
-        if(MPButton(compact_tabs ? "Rules" : "Mode settings", vec2(tab_w, tab_button_h))) { small_panel = 2; focus_lobby_form = true; }
-        LobbyHint("Configure the starting difficulty and rules for this mode.");
+        if(show_mode_settings) {
+            ImGui_SameLine();
+            if(MPButton(compact_tabs ? "Rules" : "Mode settings", vec2(tab_w, tab_button_h))) { small_panel = 2; focus_lobby_form = true; }
+            LobbyHint("Configure the starting difficulty and rules for this mode.");
+        }
         ImGui_SameLine();
         if(MPButton(compact_tabs ? "Host" : "Hosting options", vec2(tab_w, tab_button_h))) { small_panel = 3; focus_lobby_form = true; }
-        LobbyHint("Manage session permissions, invitations, starting, and leaving.");
+        LobbyHint("Manage session permissions, invitations, and slots.");
         LobbyEndForm();
         vec2 panel_position(x, body_y + tab_h + gap);
         vec2 panel_size(width, body_h - tab_h - gap);
         if(small_panel == 0) { DrawModeForm(panel_position, panel_size, scale); }
         else if(small_panel == 1) { DrawPlayersForm(panel_position, panel_size, scale); }
         else if(small_panel == 2) { DrawModeSettingsForm(panel_position, panel_size, scale); }
-        else { DrawHostingForm(panel_position, panel_size, scale); }
+        else { DrawHostingForm(panel_position, panel_size, scale, show_mode_settings); }
     }
     DrawNameForm(scale);
     ImGui_EndDisabled();

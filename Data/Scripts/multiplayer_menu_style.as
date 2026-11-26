@@ -16,7 +16,7 @@ const float kMPTextScale = 0.9f;
 bool mp_style_loaded = false;
 uint mp_last_hover = 0;
 uint mp_frame_hover = 0;
-uint mp_frame_focus = 0;
+bool mp_pointer_active = true;
 
 void MPStyleLoad() {
     if(mp_style_loaded) { return; }
@@ -34,7 +34,7 @@ void MPStyleLoad() {
 void MPStyleBegin() {
     MPStyleLoad();
     mp_frame_hover = 0;
-    mp_frame_focus = 0;
+    mp_pointer_active = GetMenuInputSource(controller_player) == MenuMouse;
     ImGui_PushMenuFont(false);
     ImGui_PushStyleColor(ImGuiCol_Text, vec4(0.82f, 0.82f, 0.82f, 1.0f));
     ImGui_PushStyleColor(ImGuiCol_TextDisabled, vec4(0.39f, 0.39f, 0.39f, 1.0f));
@@ -65,12 +65,8 @@ void MPStyleBegin() {
 }
 
 void MPStyleEnd() {
-    // Mouse hover and keyboard focus may belong to different buttons. Select
-    // one feedback target after the whole frame, instead of letting those two
-    // widgets repeatedly announce each other on every draw.
-    uint target = mp_frame_hover != 0 ? mp_frame_hover : mp_frame_focus;
-    if(target != 0 && target != mp_last_hover) PlaySoundGroup("Data/Sounds/footstep_mud.xml");
-    mp_last_hover = target;
+    if(mp_frame_hover != 0 && mp_frame_hover != mp_last_hover) PlaySoundGroup("Data/Sounds/footstep_mud.xml");
+    mp_last_hover = mp_frame_hover;
     ImGui_PopStyleVar(5);
     ImGui_PopStyleColor(21);
     ImGui_PopFont();
@@ -129,9 +125,8 @@ bool MPButton(const string &in label, const vec2 &in size = vec2(0), bool promin
     ImGui_PopStyleColor(4);
     vec2 a = ImGui_GetItemRectMin();
     vec2 b = ImGui_GetItemRectMax();
-    bool hovered = ImGui_IsItemHovered() || ImGui_IsItemFocused();
-    if(ImGui_IsItemHovered()) mp_frame_hover = ImGui_GetID(label);
-    if(ImGui_IsItemFocused()) mp_frame_focus = ImGui_GetID(label);
+    bool hovered = ImGui_IsItemHovered();
+    if(hovered) mp_frame_hover = ImGui_GetID(label);
     if(pressed) { PlaySoundGroup("Data/Sounds/hit/hit_hard.xml"); }
     float offset = hovered ? min(4.0f, (b.x - a.x) * 0.01f) : 0.0f;
     vec2 move(offset, 0);
@@ -186,7 +181,7 @@ bool MPBeginCombo(const string &in label, const string &in preview, float left_p
     ImGui_PushMenuFont(true);
     vec2 a = ImGui_GetCursorScreenPos();
     vec2 b = a + vec2(ImGui_CalcItemWidth(), ImGui_GetFrameHeight());
-    bool hovered = ImGui_IsWindowHovered() && ImGui_IsMouseHoveringRect(a, b, true);
+    bool hovered = mp_pointer_active && ImGui_IsWindowHovered() && ImGui_IsMouseHoveringRect(a, b, true);
     ImDrawList_AddImage(mp_dropdown, a, b, vec2(0), vec2(1), ImGui_GetColorU32(vec4(1)));
     if(hovered) ImDrawList_AddImage(mp_diamond_light, a, b, vec2(0), vec2(1), ImGui_GetColorU32(vec4(1, 1, 1, 0.12f)));
     vec2 text_size = ImGui_CalcTextSize(preview);
@@ -225,9 +220,8 @@ bool MPComboOption(const string &in label, bool selected, float left_padding = 1
     bool pressed = ImGui_Selectable(label, selected, 0, vec2(0, 36.0f * mp_window_scale));
     ImGui_PopStyleColor(4);
     vec2 a = ImGui_GetItemRectMin(), b = ImGui_GetItemRectMax();
-    bool hovered = ImGui_IsItemHovered() || ImGui_IsItemFocused();
-    if(ImGui_IsItemHovered()) mp_frame_hover = ImGui_GetID(label);
-    if(ImGui_IsItemFocused()) mp_frame_focus = ImGui_GetID(label);
+    bool hovered = ImGui_IsItemHovered();
+    if(hovered) mp_frame_hover = ImGui_GetID(label);
     if(hovered || selected) ImDrawList_AddImage(mp_dropdown, a, b, vec2(0), vec2(1), ImGui_GetColorU32(vec4(1)));
     vec2 size = ImGui_CalcTextSize(label.split("##")[0]);
     ImDrawList_AddText(a + vec2(left_padding, (b.y - a.y - size.y) * 0.5f),

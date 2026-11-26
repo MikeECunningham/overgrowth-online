@@ -177,9 +177,11 @@ void localmapping::test<8>() {
     input.SetUpForXPlayers(2, true);
     input.BindLocalKeyboard(1);
     input.SetKeyboardMenuNavigationShared(false);
-    SDL_Keysym key = {};
-    key.sym = SDLK_RETURN; key.scancode = SDL_SCANCODE_RETURN;
-    input.getKeyboard().handleKeyDown(key);
+    SDL_Event event = {};
+    event.type = SDL_KEYDOWN;
+    event.key.keysym.sym = SDLK_RETURN;
+    event.key.keysym.scancode = SDL_SCANCODE_RETURN;
+    input.HandleEvent(event);
     input.ProcessController(0, 0.01f);
     input.ProcessController(1, 0.01f);
     ensure_equals("P1 does not receive another player's accept", input.GetController(0)->key_down["menu_return"].depth, 0.0f);

@@ -1330,6 +1330,14 @@ SCENARIOS["mode_settings_lobby"] = _mode_settings_lobby
 SCENARIOS["mode_challenge"] = _mode_challenge
 
 
+def _lobby_freeplay(ctx):
+    from .mode_settings_suite import lobby_freeplay
+    return lobby_freeplay(ctx)
+
+
+SCENARIOS["lobby_freeplay"] = _lobby_freeplay
+
+
 def _lobby_tooltips(ctx):
     from .mode_settings_suite import lobby_tooltips
     return lobby_tooltips(ctx)

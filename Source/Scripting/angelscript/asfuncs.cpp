@@ -423,6 +423,10 @@ static std::string AS_GetStringForMouseString(const std::string& text) {
     return StringFromMouseString(text);
 }
 
+static Input::MenuInputSource AS_GetMenuInputSource(int input_id) {
+    return Input::Instance()->GetMenuInputSource(input_id);
+}
+
 static uint32_t AS_GetInputMode() {
     return Input::Instance()->getKeyboard().GetModes();
 }
@@ -558,6 +562,11 @@ static bool AS_IsControllerConnected() {
 }
 
 void AttachUIQueries(ASContext* context) {
+    context->RegisterEnum("MenuInputSource");
+    context->RegisterEnumValue("MenuInputSource", "MenuMouse", static_cast<int>(Input::MenuInputSource::Mouse));
+    context->RegisterEnumValue("MenuInputSource", "MenuKeyboard", static_cast<int>(Input::MenuInputSource::Keyboard));
+    context->RegisterEnumValue("MenuInputSource", "MenuController", static_cast<int>(Input::MenuInputSource::Controller));
+    context->RegisterGlobalFunction("MenuInputSource GetMenuInputSource(int input_id)", asFUNCTION(AS_GetMenuInputSource), asCALL_CDECL);
     context->RegisterGlobalFunction("bool GetInputDown(int controller_id, const string &in input_label)",
                                     asFUNCTION(AS_GetInputDown),
                                     asCALL_CDECL);

@@ -98,7 +98,7 @@ void PCSFileTransferMetadataMessage::Execute(const OnlineMessageRef& ref, void* 
     if (load.empty()) {
         load = t->map_name;
     }
-    if (ModLoading::Instance().WhichCampaignLevelBelongsTo(t->map_name) != "") {
+    if (!t->campaign_id.empty()) {
         Online::Instance()->online_session->free_avatars.clear();
 
         Engine::Instance()->ScriptableUICallback("set_campaign " + t->campaign_id);

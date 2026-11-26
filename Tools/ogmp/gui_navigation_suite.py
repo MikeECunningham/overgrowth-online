@@ -79,6 +79,42 @@ class GUI:
         (Path(self.ctx.out_dir) / (self.inst.name + '.log')).write_text(self.inst.log())
 
 
+def _native_focus(ctx):
+    g = GUI(ctx, 'gui_native_focus')
+    try:
+        g.inst.bridge.call('menu', script='mainmenu.as')
+        g.code('SetConfigValueInt("difficulty_preset_value", 0); imGUI.receiveMessage(IMMessage("Multiplayer"));')
+        g.wait(lambda: g.ui()['nav_window'] == 'Multiplayer', 'first-run Multiplayer opens the role picker')
+        host = g.ui()
+        host_rect = host['nav_rect']
+        window = next(w for w in host['windows'] if w['name'] == 'Multiplayer')
+        host_id = zlib.crc32(b'Host\nCreate a lobby', window['id'])
+        connect_id = zlib.crc32(b'Connect\nJoin a host', window['id'])
+        assert host['nav_id'] == host_id
+        g.inst.bridge.call('virtual_pad', action='attach', slot=0)
+        def pad_right(down):
+            g.inst.bridge.call('virtual_pad', action='button', slot=0, button=14, down=down)
+        pad_right(True)
+        g.wait(lambda: g.ui()['nav_id'] == connect_id, 'pad moves right to Connect')
+        g.inst.bridge.call('key', key='Left', down=True)
+        g.wait(lambda: g.ui()['nav_id'] == host_id, 'keyboard takes focus from held pad')
+        time.sleep(0.6)  # Longer than the D-pad repeat delay.
+        assert g.ui()['nav_id'] == host_id
+        pad_right(False)
+        pad_right(True)
+        g.wait(lambda: g.ui()['nav_id'] == connect_id, 'new pad press takes focus from held key')
+        time.sleep(0.6)
+        assert g.ui()['nav_id'] == connect_id
+        g.pointer(host_rect)
+        g.wait(lambda: g.ui()['hovered_id'] == host_id, 'mouse hovers Host while both navigation inputs remain held')
+        g.click(host_rect)
+        g.wait(lambda: g.status()['online']['lobby_waiting'], 'one mouse click opens Host')
+        assert not script_errors(g.inst), script_errors(g.inst)
+        return {'host_id': host_id, 'connect_id': connect_id}
+    finally:
+        g.close()
+
+
 def _native_draft(ctx):
     g = GUI(ctx, 'gui_native_draft')
     try:
@@ -121,29 +157,71 @@ def _native_scroll(ctx):
         time.sleep(0.15)
         g.pad(0)
         g.wait(lambda: g.status()['online']['lobby_waiting'], 'controller chooses Host')
+        g.code('LobbySetSelection("com-wolfire-arena", "com-wolfire-arena", "Data/Levels/arenas/Magma_Arena.xml", false);')
+        g.wait(lambda: any(w['name'] == 'Mode settings' for w in g.ui()['windows']), 'full hosting form')
+        g.inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=True)
+        g.wait(lambda: g.ui()['windowing_target'], 'controller window switcher')
         for _ in range(8):
-            if g.ui()['nav_window'] == 'Hosting options':
+            if g.ui()['windowing_target'] == 'Hosting options':
                 break
-            g.inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=True)
-            time.sleep(0.09)
             g.pad(10)
-            g.inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=False)
-            time.sleep(0.18)
+        g.inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=False)
+        g.wait(lambda: g.ui()['nav_window'] == 'Hosting options', 'controller chooses hosting options')
         visited = []
         for _ in range(16):
             visited.append(g.ui())
             g.pad(12)
         window = next(w for w in visited[-1]['windows'] if w['name'] == 'Hosting options')
         assert window['max_scroll_y'] > 0 and window['scroll_y'] > 0, 'Down did not scroll to offscreen controls'
-        assert visited[-1]['nav_id'] == zlib.crc32(b'Close lobby', window['id']), 'Close remains inaccessible'
+        assert visited[-1]['nav_id'] == zlib.crc32(b'Public game', window['id']), 'last hosting option is unreachable'
         image = g.shot('native_controller_scrolled')
         for _ in range(16):
             g.pad(11)
         top = next(w for w in g.ui()['windows'] if w['name'] == 'Hosting options')
         assert top['scroll_y'] < window['scroll_y'], 'Up did not scroll back toward the first option'
-        assert g.ui()['nav_id'] == zlib.crc32(b'Everyone may pause', top['id']), 'first hosting option is unreachable'
+        assert g.ui()['nav_id'] == zlib.crc32(b'Add slot', top['id']), 'first hosting option is unreachable'
         assert not script_errors(g.inst), script_errors(g.inst)
         return {'bottom_scroll': window['scroll_y'], 'navigation': visited, 'screenshot': image}
+    finally:
+        g.close()
+
+
+def _legacy_focus(ctx):
+    g = GUI(ctx, 'gui_main_menu_focus')
+    try:
+        g.inst.bridge.call('menu', script='mainmenu.as')
+        g.inst.bridge.call('virtual_pad', action='attach', slot=0)
+        g.wait(lambda: g.probe('controller_items.length() > 0') == 'true', 'main menu buttons')
+        g.code('for(uint i=0;i<controller_items.length();++i){IMElement@ e=controller_items[i];'
+               'if(e.controllerItem.getMessage().name == "Settings")'
+               'SetConfigValueString("test_gui_probe",i+"|"+e.getScreenPosition().x+"|"+e.getScreenPosition().y+"|"+'
+               'e.getSizeX()*screenMetrics.GUItoScreenXScale+"|"+e.getSizeY()*screenMetrics.GUItoScreenYScale);}SaveConfig();')
+        index, x, y, w, h = map(float, g.stored_probe().split('|'))
+        settings = [x, y, x + w, y + h]
+        hovered = f'controller_items[{int(index)}].isMouseOver()'
+        g.pointer(settings)
+        assert g.probe(hovered) == 'true', 'parked pointer did not reach Settings'
+        g.inst.bridge.call('virtual_pad', action='axis', slot=0, axis=1, value=5000)
+        time.sleep(0.12)
+        assert g.probe('GetMenuInputSource(0) == MenuMouse') == 'true', 'stick drift took focus'
+
+        # Keep Down held throughout the handoffs. A stationary click should work
+        # on the first try, even when the pad's selection is somewhere else.
+        g.inst.bridge.call('virtual_pad', action='button', slot=0, button=12, down=True)
+        time.sleep(0.12)
+        assert g.probe('controller_active && GetMenuInputSource(0) == MenuController') == 'true'
+        assert g.probe(hovered) == 'false', 'parked pointer retained its hover'
+        g.key('Down')
+        assert g.probe('!GetInputDown(0,"menu_down") && GetMenuInputSource(0) == MenuKeyboard') == 'true', 'held pad leaked into keyboard navigation'
+        g.pad(11)
+        assert g.probe('!GetInputDown(0,"menu_down") && GetMenuInputSource(0) == MenuController') == 'true', 'old Down resumed after a fresh Up'
+        g.click(settings)
+        g.wait(lambda: g.probe('controller_items.length() > 0 && controller_items[0].controllerItem.getMessage().name == "switch_category"') == 'true',
+               'one click opens Settings')
+        assert g.probe('current_screen') == 'Screen'
+        assert g.probe('!controller_active && GetMenuInputSource(0) == MenuMouse') == 'true'
+        assert not script_errors(g.inst), script_errors(g.inst)
+        return {'opened': 'Settings'}
     finally:
         g.close()
 
@@ -246,8 +324,10 @@ def _legacy(ctx):
 def gui_navigation(ctx):
     metrics = {}
     try:
+        metrics['native_focus'] = _native_focus(ctx)
         metrics['native_draft'] = _native_draft(ctx)
         metrics['native_scroll'] = _native_scroll(ctx)
+        metrics['main_menu_focus'] = _legacy_focus(ctx)
         metrics['legacy'] = _legacy(ctx)
         return {'passed': True, 'metrics': metrics, 'notes': []}
     except Exception:

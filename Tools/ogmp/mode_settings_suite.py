@@ -1,6 +1,8 @@
 """Host-owned per-mode forms and challenge progression on two real peers."""
 
+import json
 import math
+import shutil
 import time
 from pathlib import Path
 
@@ -45,6 +47,95 @@ def _rows(inst):
     return inst.bridge.status()["online"]["players"]
 
 
+def lobby_freeplay(ctx):
+    host = ctx.instance("freeplay_host", keys={**RENDER_KEYS, "mp_port": "28751"})
+    guest = ctx.instance("freeplay_guest", keys={**RENDER_KEYS, "mp_port": "28752"})
+    peers = (host, guest)
+    fixture = "Data/Levels/freeplay_host_map.xml"
+    host_map = Path(host.writedir, fixture)
+    host_map.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_probe(host, f'FindFilePath("{SANDBOX_MAP}")'), host_map)
+    _code(host, 'LobbyBeginHost();this_ui.SendCallback("multiplayer_lobby.as");')
+    guest.bridge.call("connect", ip="127.0.0.1:28751")
+    host.bridge.wait(lambda: len(_rows(host)) == len(_rows(guest)) == 2, 35, what="two connected players")
+    for peer in peers:
+        peer.bridge.call("menu", script="multiplayer_lobby.as")
+
+    def choose(mode):
+        _code(host, f'for(uint i=0;i<lobby_modes.length();++i) if(lobby_modes[i].id=="{mode}") LobbyChooseMode(i);')
+        selection = f'LobbySelectedMode() >= 0 && lobby_modes[LobbySelectedMode()].id == "{mode}"'
+        host.bridge.wait(lambda: all(_probe(p, selection) == "true" for p in peers),
+                         25, what=f"{mode} selected on both peers")
+        for peer in peers:
+            assert _probe(peer, "LobbyModeIsArena() || LobbyModeIsCampaign() || LobbyGetBuildMode()") == "false"
+
+    def launch():
+        assert _probe(host, "LobbyStart()") == "true"
+        for peer in peers:
+            _ready(peer)
+            peer.bridge.wait(lambda: (peer.bridge.me() or {}).get("controlled"), 25, what="controllable avatar")
+
+    def end():
+        _code(host, "LobbyEndGame();", "level")
+        host.bridge.wait(lambda: all(p.bridge.status()["online"]["lobby_waiting"] and not p.bridge.status()["level_loaded"]
+                                     for p in peers), 45, what="shared lobby after playing")
+
+    def choose_map(path):
+        _code(host, 'int mode=LobbySelectedMode();for(uint m=0;m<lobby_modes[mode].maps.length();++m)'
+              f' if(lobby_modes[mode].maps[m].path=="{path}") LobbyChooseMap(mode,m);')
+        host.bridge.wait(lambda: _probe(guest, "LobbyGetMap()") == path, 20, what="map selection replicated")
+
+    choose("sandbox")
+    assert _probe(host, "LobbyGetCampaign()") == "com-wolfire-sandbox-levels"
+    maps = int(_probe(host, "lobby_modes[LobbySelectedMode()].maps.length()"))
+    assert maps > 1
+    assert _probe(host, "LobbyGetMap()").endswith("tree_canyon_summer.xml")
+    launch()
+    for peer in peers:
+        assert "tree_canyon_summer" in peer.bridge.status()["level"].lower()
+        assert _probe(peer, "GetCurrCampaignID()", "level") == "com-wolfire-sandbox-levels"
+    end()
+
+    choose("freeplay")
+    assert _probe(host, "LobbyGetCampaign()") == ""
+    assert _probe(host, "LobbyGetMap()") == "Data/Levels/starters/scrubby_hills_fall.xml"
+    launch()
+    for peer in peers:
+        assert "starters/scrubby_hills_fall.xml" in peer.bridge.status()["level"]
+    end()
+    # Red Shards also belongs to the stock Sandbox campaign. Freeplay must
+    # stay standalone on the guest when the same XML is launched here.
+    choose_map(SANDBOX_MAP)
+    guest_id = next(p["id"] for p in _rows(host) if not p["host"])
+    assert _probe(host, f"LobbySetPlayerTeam({guest_id},2)") == "true"
+    launch()
+    for peer in peers:
+        assert _probe(peer, 'GetCurrCampaignID() == ""', "level") == "true"
+    guest.bridge.wait(lambda: guest.bridge.me()["teams"] == "lobby_team_2", 15, what="guest uses its lobby team")
+    end()
+    choose_map(fixture)
+    launch()
+    assert _probe(host, "SessionSave(1)", "level") == "true"
+    card = Path(host.writedir, "Data/SessionSaves/slot1.json")
+    host.bridge.wait(card.exists, 20, what="Freeplay save card")
+    manifest = json.loads(card.read_text())
+    assert manifest["mode"] == "freeplay" and manifest["mode_name"] == "Freeplay" and manifest["lobby"]
+    assert manifest["campaign"] == "" and manifest["map"] == fixture
+    assert list(Path(guest.writedir, "Data/Levels/_online").rglob("*.xml")), "guest did not receive host map"
+    _code(host, "SessionLoad(1);", "level")
+    host.bridge.wait(lambda: host.bridge.status()["online"]["lobby_waiting"] and not host.bridge.status()["level_loaded"],
+                     45, what="Freeplay card reopens lobby")
+    assert _probe(host, "LobbyGetMode()") == "freeplay"
+    assert int(_probe(host, "LobbySelectedMap(lobby_modes[LobbySelectedMode()])")) >= 0
+    assert _probe(host, "LobbyGetMap()") == fixture
+    launch()
+    for peer in peers:
+        assert _probe(peer, 'GetCurrCampaignID() == ""', "level") == "true"
+    for peer in peers:
+        assert not script_errors(peer), script_errors(peer)
+    return {"passed": True, "metrics": {"stock_sandbox_maps": maps, "restored_freeplay_map": fixture}, "notes": []}
+
+
 def mode_settings_lobby(ctx):
     host = ctx.instance("mode_forms_host", width=1280, height=720,
                         keys={**RENDER_KEYS, "mp_port": "28004", "difficulty_scaling": "true"})
@@ -57,6 +148,73 @@ def mode_settings_lobby(ctx):
     wait(lambda: len(_rows(host)) == len(_rows(guest)) == 2, "two pregame seats")
     for inst in (host, guest):
         inst.bridge.call("menu", script="multiplayer_lobby.as")
+    def forms(peer):
+        return {w["name"]: w["rect"] for w in peer.bridge.call("ui_state")["windows"]}
+
+    def picker_round_trip(peer, compact=False):
+        def click(x, y):
+            for buttons in (0, 1, 0):
+                peer.bridge.call("pointer", x=int(x), y=int(y), buttons=buttons)
+                time.sleep(.08)
+
+        def tab(fraction):
+            left, top, right, bottom = forms(peer)["##lobby_sections"]
+            click(left + (right - left) * fraction, (top + bottom) / 2)
+
+        def mode_button(hint):
+            left, top, right, bottom = forms(peer)["Mode and map"]
+            x = int(left + (right - left) / 4)
+            for y in range(int(top) + 16, int(bottom) - 16, 16):
+                peer.bridge.call("pointer", x=x, y=y, buttons=0)
+                time.sleep(.04)
+                if _probe(peer, "lobby_visible_hint") == hint:
+                    click(x, y)
+                    return
+            raise AssertionError(f"Could not find mode button for {hint!r}")
+
+        if compact:
+            tab(.12)
+        card = "Choose " + _probe(peer, "lobby_modes[0].title") + ", then pick a map. Host only."
+        mode_button(card)
+        if compact:
+            tab(.70)  # Third of four tabs is Rules.
+        wait(lambda: "Mode settings" in forms(peer), "choosing a mode reveals its settings")
+        selected_map = _probe(peer, "LobbyGetMap()")
+        if compact:
+            tab(.12)
+        mode_button("Choose another game mode. Host only.")
+        if compact:
+            tab(.70)  # The same click should now reach Hosting.
+            wait(lambda: "Hosting options" in forms(peer), "returning to mode cards removes the Rules tab")
+            tab(.12)
+        else:
+            wait(lambda: "Mode settings" not in forms(peer), "returning to mode cards hides difficulty")
+        assert selected_map and _probe(peer, "LobbyGetMap()") == selected_map
+        mode_button(card)
+        if compact:
+            tab(.70)
+        wait(lambda: "Mode settings" in forms(peer), "reselecting the same mode restores its settings")
+        peer.bridge.call("pointer", enabled=False)
+
+    wait(lambda: "Hosting options" in forms(host) and "##lobby_sections" in forms(guest), "both lobby layouts drawn")
+    initial_forms = forms(host)
+    assert "Mode settings" not in initial_forms
+    assert initial_forms["Hosting options"][1] == initial_forms["Mode and map"][1]
+    # Stale focus from a prior selection cannot reopen the rules on a small screen.
+    _code(guest, "small_panel=2;lobby_difficulty_open=true;")
+    wait(lambda: "Mode and map" in forms(guest) and _probe(guest, "lobby_difficulty_open") == "false",
+         "empty lobby returns focus to visible mode cards")
+    assert "Mode settings" not in forms(guest)
+    left, top, right, bottom = forms(guest)["##lobby_sections"]
+    # The third tab is Hosting before selection. This point lies in Rules
+    # when all four tabs are present.
+    x, y = int(left + (right - left) * .70), int((top + bottom) / 2)
+    for buttons in (0, 1, 0):
+        guest.bridge.call("pointer", x=x, y=y, buttons=buttons)
+        time.sleep(.08)
+    wait(lambda: "Hosting options" in forms(guest), "narrow lobby has no rules tab before selection")
+    guest.bridge.call("pointer", enabled=False)
+    picker_round_trip(host)
     _code(host, f'LobbySetSelection("{ARENA}","{ARENA}","{ARENA_MAP}",false);')
     wait(lambda: _probe(guest, 'LobbyGetMode()') == ARENA, "Arena selection replicated")
     assert _settings(host) == _settings(guest) == (2, 2, 0, 2)
@@ -92,8 +250,8 @@ def mode_settings_lobby(ctx):
     assert _probe(host, 'LobbyModeIsArena()') == "true"
     assert _probe(host, 'LobbyModeIsCampaign()') == "false"
     rects = {w["name"]: w["rect"] for w in host.bridge.call("ui_state")["windows"]
-             if w["name"] in ("Mode and map", "Players", "Mode settings", "Hosting options")}
-    assert len(rects) == 4, rects
+             if w["name"] in ("Mode and map", "Players", "Session actions", "Mode settings", "Hosting options")}
+    assert len(rects) == 5, rects
     for name, (x1, y1, x2, y2) in rects.items():
         assert 0 <= x1 < x2 <= 1280 and 0 <= y1 < y2 <= 720, (name, rects)
     for index, (name, a) in enumerate(rects.items()):
@@ -158,7 +316,15 @@ def mode_settings_lobby(ctx):
     wait(lambda: _probe(guest, 'LobbyGetBuildMode()') == "true", "Build selection replicated")
     assert _probe(host, 'LobbySetModeSetting("challenge_time",2)') == "false"
     ctx.shot(guest, "build_mode_settings")
-    for inst in (host, guest):
+    _code(host, 'LobbySetSelection("","","",false);')
+    wait(lambda: "Mode settings" not in forms(host) and "Mode and map" in forms(guest),
+         "clearing the selected mode removes rules on both peers")
+    compact_host = ctx.instance("mode_picker_host", width=800, height=600,
+                                keys={**RENDER_KEYS, "mp_port": "28006"})
+    _code(compact_host, 'LobbyBeginHost();this_ui.SendCallback("multiplayer_lobby.as");')
+    wait(lambda: "##lobby_sections" in forms(compact_host), "compact hosting layout")
+    picker_round_trip(compact_host, compact=True)
+    for inst in (host, guest, compact_host):
         assert not script_errors(inst), (inst.name, script_errors(inst)[:8])
     return {"passed": True, "metrics": metrics, "notes": []}
 
@@ -475,8 +641,8 @@ def lobby_tooltips(ctx):
     wait = lambda predicate, label: bridge.wait(predicate, 20, step=0.1, what=label)
     def tooltip():
         return next((w for w in bridge.call("ui_state")["windows"] if w["name"].startswith("##Tooltip")), None)
-    def hints():
-        return tuple(_probe(inst, 'lobby_hover_hint+"|"+lobby_focus_hint+"|"+lobby_visible_hint').split("|"))
+    def hint():
+        return _probe(inst, 'lobby_visible_hint')
     def pad(button):
         for down in (True, False):
             bridge.call("virtual_pad", action="button", slot=0, button=button, down=down)
@@ -487,7 +653,6 @@ def lobby_tooltips(ctx):
     time.sleep(0.15)
     pad(0)  # The first controller chooses Host before a lobby exists.
     wait(lambda: bridge.status()["online"]["lobby_waiting"], "controller opens Host lobby")
-    bridge.call("pointer", x=0, y=0, buttons=0)
     wait(lambda: bridge.call("ui_state")["nav_id"] != 0 and tooltip(), "controller-focused lobby description")
     previous_nav = bridge.call("ui_state")["nav_id"]
     # X + shoulder is the game's controller gesture for changing form/window.
@@ -512,25 +677,20 @@ def lobby_tooltips(ctx):
     active = name_ui["active_id"]
     name_field = name_ui["nav_rect"]
     name_hint = "Edit the player's display name. Enter saves."
-    start_hint = "Start the selected mode and map with this roster. Resets difficulty progression."
-    players = next(w["rect"] for w in bridge.call("ui_state")["windows"] if w["name"] == "Players")
-    # Session actions live in the fixed Players footer. Find the actual Start
-    # tooltip in its bounded footer instead of tying the test to font metrics.
-    for y in range(int(players[3] - 190), int(players[3] - 20), 12):
-        bridge.call("pointer", x=int((players[0] + players[2]) * 0.5), y=y, buttons=0)
+    start_hint = "Start the selected mode and map with this roster."
+    footer = next(w["rect"] for w in bridge.call("ui_state")["windows"] if w["name"] == "Session actions")
+    # Find Start in the fixed Players footer using its rendered bounds.
+    for y in range(int(footer[1]), int(footer[3]), 12):
+        bridge.call("pointer", x=int((footer[0] + footer[2]) * 0.5), y=y, buttons=0)
         time.sleep(0.04)
-        if hints()[0] == start_hint:
+        if hint() == start_hint:
             break
-    assert hints()[0] == start_hint, ("Start footer tooltip missing", hints(), players)
-    # The name field is drawn after Hosting options and remains focused. Its
-    # candidate must not append to or replace the hovered Start description.
-    wait(lambda: hints() == (start_hint, name_hint, start_hint) and tooltip(),
-         "Start hover takes precedence over the focused name field")
+    assert hint() == start_hint and tooltip(), ("Start footer tooltip missing", hint(), footer)
     assert _probe(inst, 'name_buffer') == draft, "tooltip hover changed the live name draft"
     assert bridge.call("ui_state")["active_id"] == active, "tooltip hover stole text input focus"
     bridge.call("pointer", x=int((name_field[0] + name_field[2]) * 0.5),
                 y=int((name_field[1] + name_field[3]) * 0.5), buttons=0)
-    wait(lambda: hints() == (name_hint, "", name_hint) and tooltip(),
+    wait(lambda: hint() == name_hint and tooltip(),
          "second hover replaces the previous description")
     assert _probe(inst, 'name_buffer') == draft, "second tooltip hover changed the live name draft"
     assert bridge.call("ui_state")["active_id"] == active, "second tooltip hover stole text input focus"

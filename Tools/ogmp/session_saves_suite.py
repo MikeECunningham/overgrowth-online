@@ -111,6 +111,11 @@ def session_saves(ctx):
         lambda: cold.bridge.status()["online"].get("lobby_waiting") and len(players(cold)) >= 2,
         "Continue opens the saved lobby",
     )
+    wait(cold, lambda: any(w["name"] == "##lobby_sections" for w in cold.bridge.call("ui_state")["windows"]),
+         "restored narrow lobby has loaded")
+    menu(cold, "small_panel=2;focus_lobby_form=true;")
+    wait(cold, lambda: any(w["name"] == "Mode settings" for w in cold.bridge.call("ui_state")["windows"]),
+         "restored campaign immediately exposes its mode settings")
     menu(cold, 'this_ui.SendCallback("session_load_menu.as");')
     time.sleep(0.6)
     ctx.shot(cold, "load_cards")

@@ -98,7 +98,7 @@ Wolfire's online prototype (2021) was left unfinished. Overgrowth Online started
 | Joining | Steam invites, or TCP by IP | Steam friends, a server browser, direct IP |
 | Weapons | Pick-ups not shared | Held, thrown, stuck in a body or left on the ground: the same on every machine, tested with guests on different pings |
 | Sounds | No footsteps from other players | Shared |
-| Game modes | Any level, without co-op or PvP rules | Story co-op, arena PvP with bots |
+| Game modes | Any level, without co-op or PvP rules | Story co-op, arena PvP with bots, Sandbox Levels, Freeplay and shared editing |
 | Who may change what | Any connected player could delete, spawn or move any object and rewrite player states and settings | The host checks every message: a player can only affect their own character; hits and grabs must be in reach |
 | Malformed packets | Could crash the game | Dropped unread; tested with forged attacks |
 
@@ -108,7 +108,7 @@ See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for auth
 
 Open **Multiplayer** and choose **Host** or **Connect**. Hosting opens the lobby before loading a world. Guests connect by direct IP, or through the existing Steam friends and discovery features in Steamworks builds, and wait in the same lobby until the host starts.
 
-The lobby has separate panels for the mode and map, the scrolling player list, and hosting options. **Build a level** is a mode card alongside the playable modes. The host chooses the mode, map, manual lobby teams, pause permissions and start time. **Force lobby teams** is off by default: campaigns retain their cooperative teams, Arena chooses randomized team/FFA matchups from its battle setups, and sandbox/build uses the lobby teams as a fallback. Checking it enforces the lobby's team dropdowns. Mode-assigned teams are synchronized separately, so random Arena matchups do not overwrite the saved lobby choices.
+The lobby has separate panels for the mode and map, the scrolling player list, and hosting options. **Sandbox Levels** offers Wolfire's sandbox maps when the level pack is active. **Freeplay** opens a standalone map for play, including maps from active mods, the sandbox pack, and levels saved by the host. **Build a level** opens the shared editor. The host chooses the mode, map, manual lobby teams, pause permissions and start time. **Force lobby teams** is off by default. Campaigns retain their cooperative teams, Arena chooses randomized team/FFA matchups from its battle setups, and Sandbox, Freeplay and Build use lobby teams. Checking it enforces the lobby's team dropdowns. Mode-assigned teams are synchronized separately, so random Arena matchups do not overwrite the saved lobby choices.
 
 Press a button on another controller to add a local player. If a controller owns P1, press **Enter** to join with the keyboard and mouse as another player. Each client's **local leader** can rename or remove its local players and assign their screens; the host can also remove remote players. **Promote to leader** transfers local authority without changing device assignments. After transferring both host and leader roles away from the initial keyboard/mouse player, that seat can be removed. Removing a remote leader disconnects that client's whole group. Screens are exclusive: choosing an occupied screen swaps the two players. Remote players have no screen on your client. Each client renders only its own screens, and every player's character uses the fork's existing local simulation and compact network streams.
 

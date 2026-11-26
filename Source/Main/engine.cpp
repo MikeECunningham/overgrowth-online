@@ -750,7 +750,6 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
                     PROFILER_ZONE(g_profiler_ctx, "ImGui_ImplSdlGL3_ProcessEvent");
                     ProcessEventImGui(&event);
                 }
-                input->RecordKeyboardJoinEvent(event);
                 // Dear ImGui captures lobby keyboard navigation, including
                 // Escape. Route an unconsumed Back through the current UI's
                 // permission check once; dropdowns and active edits keep it.
@@ -759,7 +758,15 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
                     Online::Instance()->LobbyWaiting() && input->LocalKeyboardPlayerIndex() >= 0 &&
                     !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) && !ImGui::IsAnyItemActive()) {
                     config.GetRef("controller_menu_owner") = input->LocalKeyboardPlayerIndex();
+                    input->RecordMenuPointerOrKey(event);
                     ScriptableUICallback("back");
+                    continue;
+                }
+                const bool mouse_captured = (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEWHEEL) && WantMouseImGui();
+                const bool key_captured = (event.type == SDL_KEYDOWN || event.type == SDL_TEXTINPUT) && WantKeyboardImGui();
+                if (mouse_captured || key_captured) {
+                    input->RecordMenuPointerOrKey(event);
+                    input->RecordKeyboardJoinEvent(event);
                     continue;
                 }
                 // Redirect input events to the controller
@@ -786,18 +793,6 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
                     case SDL_QUIT:
                         Input::Instance()->RequestQuit();
                         return;
-                    case SDL_MOUSEBUTTONDOWN:
-                    case SDL_MOUSEWHEEL:
-                        if (!WantMouseImGui()) {
-                            input->HandleEvent(event);
-                        }
-                        break;
-                    case SDL_KEYDOWN:
-                    case SDL_TEXTINPUT:
-                        if (!WantKeyboardImGui()) {
-                            input->HandleEvent(event);
-                        }
-                        break;
                     default:
                         input->HandleEvent(event);
                 }

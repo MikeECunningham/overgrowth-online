@@ -35,7 +35,7 @@ Joystick::Joystick(float look_sensitivity) : look_sensitivity_(look_sensitivity)
                                              button_input_buffer_count(0) {
 }
 
-bool Joystick::HandleInputChange(ControllerInput::Input input, float val, uint32_t sequence_id) {
+bool Joystick::HandleInputChange(ControllerInput::Input input, float val, uint32_t sequence_id, uint64_t &menu_sequence) {
     float depth = val;
     std::ostringstream oss;
     switch (input) {
@@ -55,6 +55,14 @@ bool Joystick::HandleInputChange(ControllerInput::Input input, float val, uint32
             break;
     }
 
+    const bool pressed = depth > KeyState::kDepthThreshold && !menu_pressed_[input];
+    if (pressed) {
+        menu_pressed_[input] = true;
+        last_menu_press_ = ++menu_sequence;
+    } else if (depth < KeyState::kDepthThreshold * 0.5f) {
+        menu_pressed_[input] = false;
+    }
+
     bool ret_val = false;
     if (depth > 0.0f) {
         AddInputBufferItem(input, depth, sequence_id);
@@ -65,10 +73,18 @@ bool Joystick::HandleInputChange(ControllerInput::Input input, float val, uint32
     if (iter_pair.first != binding_.end()) {
         for (BindingMap::iterator iter = iter_pair.first; iter != iter_pair.second; ++iter) {
             SetButtonDown(iter->second, depth);
+            if (pressed && iter->second.compare(0, 5, "menu_") == 0) {
+                menu_binding_presses_[iter->second] = last_menu_press_;
+            }
         }
     }
 
     return ret_val;
+}
+
+bool Joystick::MenuBindingPredates(const std::string &name, uint64_t serial) const {
+    auto it = menu_binding_presses_.find(name);
+    return serial && (it == menu_binding_presses_.end() || it->second < serial);
 }
 
 void Joystick::ProcessBinding(ControllerInput::Input input, const std::string command) {
@@ -85,12 +101,7 @@ float Joystick::GetButtonDown(const std::string &name) const {
 }
 
 void Joystick::SetButtonDown(const std::string &name, float depth) {
-    ButtonMap::iterator iter(buttons_down_.find(name));
-    if (iter != buttons_down_.end()) {
-        iter->second = depth;
-    } else {
-        buttons_down_.insert(std::pair<std::string, bool>(name, depth));
-    }
+    buttons_down_[name] = depth;
 }
 
 void Joystick::ClearBinding() {

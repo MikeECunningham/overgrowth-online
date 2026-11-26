@@ -73,8 +73,9 @@ def lobby_role_ui(ctx):
             if state()['online']['active']:
                 assert len(rows()) == 2, 'menu activation unexpectedly admitted another player'
 
-        def focused(label, row=None):
-            current = state()
+        def focused(label, row=None, current=None):
+            if current is None:
+                current = state()
             seed = int(current['ui_nav_window_id'])
             if row is not None:
                 seed = zlib.crc32(struct.pack('<i', row), seed)
@@ -85,28 +86,34 @@ def lobby_role_ui(ctx):
             # Read-only ImGui IDs identify the focused rendered widget. Ordinary
             # dpad/arrow navigation does all movement; no forced item focus.
             for direction in directions:
+                visited = set()
                 for _ in range(steps):
                     current = state()
                     record['navigation'].append({k: current.get(k) for k in
                         ('ui_nav_id', 'ui_nav_window_id', 'ui_nav_window', 'menu_owner', 'current_menu_player')})
-                    if focused(label, row):
+                    if focused(label, row, current):
                         return
+                    point = current['ui_nav_window_id'], current['ui_nav_id']
+                    if point in visited:
+                        break
+                    visited.add(point)
                     move(direction, device)
+            if focused(label, row):
+                return
             shot('could_not_focus_' + label.replace(' ', '_'))
-            raise AssertionError(f'{device} could not focus {label!r} on row {row}; {state()}')
+            raise AssertionError(f'{device} could not focus {label!r} on row {row}, last focus {point}')
 
-        def host_options():
-            # The game's documented pad window-switch gesture: hold X and tap
-            # a shoulder. Releasing X commits the selected window.
+        def focus_actions():
+            # Hold X while moving through the window switcher with RB. The
+            # selected window gets focus when X is released.
+            inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=True)
+            wait(lambda: inst.bridge.call('ui_state')['windowing_target'], 'open pad window switcher')
             for _ in range(8):
-                if state()['ui_nav_window'].startswith('Hosting options'):
-                    return
-                inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=True)
-                time.sleep(0.09)
+                if inst.bridge.call('ui_state')['windowing_target'] == 'Session actions':
+                    break
                 pad(10)
-                inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=False)
-                time.sleep(0.18)
-            raise AssertionError('pad window navigation could not reach Hosting options')
+            inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=False)
+            wait(lambda: state()['ui_nav_window'] == 'Session actions', 'pad reaches Players footer')
 
         def ownership():
             return probe('"" + LobbyCurrentPlayerID() + "|" + LobbyGetCurrentInputID() + "|" + '
@@ -155,8 +162,14 @@ def lobby_role_ui(ctx):
             record['new_owner'] = {'state': state(), 'ownership': claimed}
 
             if transfer != 'host_only':
-                seek('Rename', second['id'], device='pad')
-                seek('##screen', second['id'], device='pad', directions=('right', 'left'), steps=3)
+                if transfer == 'host_and_leader':
+                    # From P1's role actions, Down enters P2's row at Team.
+                    seek('##team', second['id'], device='pad', directions=('down',))
+                    seek('##screen', second['id'], device='pad', directions=('right',))
+                else:
+                    # With team editing restricted to the host, the next
+                    # available selector on P2's row is Screen.
+                    seek('##screen', second['id'], device='pad', directions=('down', 'up'))
                 activate('pad')
                 pad(11)  # Screen2 -> Screen1, through the rendered dropdown.
                 activate('pad')
@@ -179,7 +192,7 @@ def lobby_role_ui(ctx):
                      'new host changes another player team through dropdown')
                 record['host_team_changed'] = state()
 
-            host_options()
+            focus_actions()
             seek('Close lobby', device='pad')
             key('Down')
             wait(lambda: state()['menu_owner'] == 0, 'old keyboard player reclaims interaction')
@@ -234,7 +247,7 @@ def lobby_role_ui(ctx):
 
     # Dear ImGui captures keyboard navigation. An authorized Escape must still
     # reach the shared lobby's Back callback, rather than getting swallowed.
-    inst = ctx.instance('role_ui_keyboard_back', width=1280, height=720,
+    inst = ctx.instance('role_ui_keyboard_back', width=640, height=360,
                         keys={'mp_port': '25844', 'playername': 'Keyboard Back', 'master_volume': '0'})
     record = metrics['authorized_keyboard_back'] = {}
     try:
@@ -242,6 +255,20 @@ def lobby_role_ui(ctx):
         time.sleep(0.3)
         key('Space')
         wait(lambda: state()['online']['hosting'], 'keyboard Back smoke hosts a lobby')
+        ui = inst.bridge.call('ui_state')
+        tabs = next(w['rect'] for w in ui['windows'] if w['name'] == '##lobby_sections')
+        # Players is the middle tab before a mode is selected.
+        x, y = int((tabs[0] + tabs[2]) / 2), int((tabs[1] + tabs[3]) / 2)
+        for buttons in (0, 1, 0):
+            inst.bridge.call('pointer', x=x, y=y, buttons=buttons)
+            time.sleep(0.08)
+        wait(lambda: state()['ui_nav_window'] == 'Players', 'short viewport opens the Players tab')
+        inst.bridge.call('pointer', enabled=False)
+        for _ in range(14):
+            if focused('Close lobby'):
+                break
+            key('Down')
+        assert focused('Close lobby'), 'short viewport could not scroll from the roster to Close'
         record['before'] = state()
         started = time.monotonic()
         key('Escape')

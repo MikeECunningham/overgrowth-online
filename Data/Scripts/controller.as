@@ -30,7 +30,7 @@ float border_size = 10.0f;
 vec4 border_color = vec4(0.75f,0.75f,0.75f,0.75f);
 vec4 border_color_locked = vec4(1.0f,1.0f,1.0f,1.0f);
 bool controller_active = GetControllerActive();
-vec2 mouse_position;
+MenuInputSource last_menu_source = MenuMouse;
 bool controller_wraparound = false;
 float input_interval_timer = 0.0f;
 float input_longpress_timer = 0.0f;
@@ -154,6 +154,7 @@ int controller_player = 0;
 void SetControllerPlayer(int player) {
 	if(IsPlayerMenuContext()) player = GetPlayerMenuInputID();
 	controller_player = max(0, player);
+	if(imGUI !is null) imGUI.menuInputPlayer = controller_player;
 	// Menu ownership is separate from the controls profile being edited.
 	SetConfigValueInt("controller_menu_owner", max(0, GetLocalPlayerIndexForInputID(controller_player)));
 }
@@ -571,8 +572,8 @@ void UpdateController() {
 	}
 	if(first_run) {
 		SetControllerPlayer(controller_player);
-		mouse_position = imGUI.guistate.mousePosition;
-		controller_active = GetControllerActive();
+		last_menu_source = GetMenuInputSource(controller_player);
+		controller_active = last_menu_source != MenuMouse && GetControllerActive();
 		if(controller_active) {
 			GetNextItem(Direction::DOWN);
 		}
@@ -581,9 +582,19 @@ void UpdateController() {
 	if(controller_paused) {
 		return;
 	}
-	if(current_controller_item_state == kMainController && !current_item_locked) UpdateStickScroll();
+	MenuInputSource source = GetMenuInputSource(controller_player);
+	bool changed_source = source != last_menu_source;
+	last_menu_source = source;
+	if(changed_source) {
+		input_interval_timer = 0.0f;
+		input_longpress_timer = 0.0f;
+		previous_scroll_direction = 0;
+	}
+	bool direction_pressed = GetInputPressed(controller_player, "menu_up") || GetInputPressed(controller_player, "menu_down")
+	                     || GetInputPressed(controller_player, "menu_left") || GetInputPressed(controller_player, "menu_right");
+	if(current_controller_item_state == kMainController && !current_item_locked && source != MenuMouse) UpdateStickScroll();
 	if(controller_active) {
-		if(mouse_position != imGUI.guistate.mousePosition){
+		if(source == MenuMouse || (changed_source && source == MenuKeyboard && !direction_pressed && !GetInputPressed(controller_player, "menu_return"))) {
 			DeactivateCurrentItem();
 			if(current_controller_item_state != kMainController) {
 				SetCurrentControllerItem(last_active_controller);
@@ -602,7 +613,7 @@ void UpdateController() {
 				UpdateInput();
 			}
 		}
-	} else if(GetInputPressed(controller_player, "menu_up") || GetInputPressed(controller_player, "menu_down") || GetInputPressed(controller_player, "menu_left") || GetInputPressed(controller_player, "menu_right")) {
+	} else if(direction_pressed) {
 		imGUI.receiveMessage(IMMessage("close_all_open_menus"));
 		if(current_controller_item_state != kMainController) {
 			DisableControllerSubmenu();
@@ -610,7 +621,6 @@ void UpdateController() {
 		if(current_item !is null) {
 			SetItemActive(current_item);
 		}
-		mouse_position = imGUI.guistate.mousePosition;
 		controller_active = true;
 		SaveControllerActive(true);
 

@@ -100,6 +100,7 @@ class IMGUI : public IMEventListener {
    public:
     int guiid;
 
+    int menuInputPlayer = -1;  // Menus opt in to pointer/navigation arbitration for their owner.
     GUIState guistate;  // current state of the GUI, updated at 'update'
 
     IMUIContext* IMGUI_IMUIContext;  // UI features from the engine

@@ -1036,6 +1036,7 @@ void AttachIMUI(ASContext* ctx) {
                                 "GUIState guistate",
                                 asOFFSET(IMGUI, guistate));
 
+    ctx->RegisterObjectProperty("IMGUI", "int menuInputPlayer", asOFFSET(IMGUI, menuInputPlayer));
     ctx->RegisterObjectMethod("IMGUI", "void setBackgroundLayers( uint numLayers )", asMETHOD(IMGUI, setBackgroundLayers), asCALL_THISCALL);
     ctx->RegisterObjectMethod("IMGUI", "void setForegroundLayers( uint numLayers )", asMETHOD(IMGUI, setForegroundLayers), asCALL_THISCALL);
     ctx->RegisterObjectMethod("IMGUI", "void setHeaderHeight( float _headerSize )", asMETHOD(IMGUI, setHeaderHeight), asCALL_THISCALL);

@@ -237,9 +237,17 @@ static bool Finite3(const vec3& v) {
     return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
 }
 
+static std::string CampaignForLevel(const Online& online, const std::string& path) {
+    // Freeplay can launch a map also listed in a campaign. Peers must use
+    // the lobby's selected rules even when both modes share the same XML.
+    if (online.LobbyMode() == "freeplay" || online.LobbyMode() == "sandbox")
+        return online.LobbyCampaign();
+    return ModLoading::Instance().WhichCampaignLevelBelongsTo(path);
+}
+
 void Online::ChangeLevel(const string& id) {
     mode_teams_.clear();
-    campaign_id = ModLoading::Instance().WhichCampaignLevelBelongsTo(id);
+    campaign_id = CampaignForLevel(*this, id);
     host_started_level = false;
     lobby_start_pending_ = true;
     campaign_main_avatar_id_ = static_cast<ObjectID>(-1);
@@ -830,9 +838,12 @@ void Online::SetLevelLoaded() {
         AssignPeerAvatars(LocalPeerID());
         BroadcastLobby();
 
-        campaign_id = ModLoading::Instance().WhichCampaignLevelBelongsTo(level_name);
-        // (the empty level, Data/Levels/nothing.xml, loads as a new level: no path of its own)
-        LOG_ASSERT(!Engine::Instance()->GetSceneGraph()->level_path_.isValid() || level_name == Engine::Instance()->GetSceneGraph()->level_path_.GetOriginalPathStr());
+        campaign_id = CampaignForLevel(*this, level_name);
+        // Empty levels have no source path. Some stock campaign manifests use
+        // different capitalization from the resolved level on disk.
+        const Path& loaded_path = graph->level_path_;
+        LOG_ASSERT(!loaded_path.isValid() || level_name == loaded_path.GetOriginalPathStr() ||
+                   FindFilePath(level_name, kAnyPath, false).GetFullPathStr() == loaded_path.GetFullPathStr());
     }
 }
 
@@ -2199,7 +2210,7 @@ void Online::NoteHostSaved(SceneGraph* sg) {
     // somewhere new, that's the level's name from now on
     if (sg != nullptr && sg->level_path_.isValid() && sg->level_path_.GetOriginalPathStr() != level_name) {
         level_name = sg->level_path_.GetOriginalPathStr();
-        campaign_id = ModLoading::Instance().WhichCampaignLevelBelongsTo(level_name);
+        campaign_id = CampaignForLevel(*this, level_name);
         LOGI << "Overgrowth Online editing: joiners now load " << level_name << std::endl;
     }
     if (nav_current_unsaved_ && sg != nullptr && sg->GetNavMesh() != nullptr) {

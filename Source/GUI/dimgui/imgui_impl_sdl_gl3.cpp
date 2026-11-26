@@ -60,18 +60,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <algorithm>
 #include <cstddef>
-#include <map>
-
-static bool g_KeyboardLobbyClaim = false;
-static void ClaimKeyboardLobbyOwner() {
-    Online* online = Online::Instance();
-    const int keyboard = Input::Instance()->LocalKeyboardPlayerIndex();
-    if (online->IsActive() && online->LobbyWaiting() && keyboard >= 0) {
-        config.GetRef("controller_menu_owner") = keyboard;
-        g_KeyboardLobbyClaim = true;
-    }
-}
+#include <iterator>
 
 // Data
 static double g_Time = 0.0f;
@@ -218,7 +209,6 @@ bool ImGui_ImplSdlGL3_ProcessEvent(SDL_Event* event) {
             return true;
         }
         case SDL_MOUSEBUTTONDOWN: {
-            ClaimKeyboardLobbyOwner();
             if (event->button.button == SDL_BUTTON_LEFT) g_MousePressed[0] = true;
             if (event->button.button == SDL_BUTTON_RIGHT) g_MousePressed[1] = true;
             if (event->button.button == SDL_BUTTON_MIDDLE) g_MousePressed[2] = true;
@@ -230,9 +220,8 @@ bool ImGui_ImplSdlGL3_ProcessEvent(SDL_Event* event) {
         }
         case SDL_KEYDOWN:
         case SDL_KEYUP: {
-            if (event->type == SDL_KEYDOWN && !event->key.repeat && !io.WantTextInput) ClaimKeyboardLobbyOwner();
             int key = KeyRemap(event->key.keysym.sym);
-            if (key >= 0 && key < 512) {
+            if (key >= 0 && key < 512 && !event->key.repeat) {
                 io.KeysDown[key] = (event->type == SDL_KEYDOWN);
             }
             io.KeyShift = ((SDL_GetModState() & KMOD_SHIFT) != 0);
@@ -352,32 +341,50 @@ static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
     Input* devices = Input::Instance();
     Online* online = Online::Instance();
     int actual = devices->GetLocalPlayerInputID(0);
+    static uint64_t last_input_serial = 0;
     if (online->IsActive() && online->LobbyWaiting()) {
-        // Everyone can navigate their own permitted lobby controls. Record the
-        // controller that actually acted so script/native permission checks
-        // apply to that player, independently of the designated local leader.
-        static std::map<int, bool> was_active;
-        static const char* actions[] = {"menu_return", "menu_cancel", "menu_input", "menu_window",
-            "menu_left", "menu_right", "menu_up", "menu_down", "menu_prev_tab", "menu_next_tab",
-            "left", "right", "up", "down", "menu_scroll_up", "menu_scroll_down"};
+        // Attribute each action to its seat, including when the keyboard is
+        // shared with the leader's bindings but belongs to another player.
         for (unsigned local = 0; local < devices->GetNumLocalPlayers(); ++local) {
             const int candidate = devices->GetLocalPlayerInputID(local);
-            const PlayerInput* player = devices->GetController(candidate);
-            bool active = false;
-            if (player && player->enabled && !player->remote_controlled)
-                for (const char* action : actions) active = active || MenuInputDepth(*player, action) > 0.2f;
-            if (active && !was_active[candidate] && !g_KeyboardLobbyClaim && !ignore_input)
-                config.GetRef("controller_menu_owner") = static_cast<int>(local);
-            was_active[candidate] = active;
+            const uint64_t serial = devices->GetMenuInputSerial(candidate);
+            if (serial <= last_input_serial ||
+                (devices->GetMenuInputSource(candidate) != Input::MenuInputSource::Controller &&
+                 static_cast<int>(local) != devices->LocalKeyboardPlayerIndex())) continue;
+            if (!ignore_input) config.GetRef("controller_menu_owner") = static_cast<int>(local);
+            last_input_serial = serial;
         }
         actual = devices->GetLocalPlayerInputID(config["controller_menu_owner"].toNumber<int>());
+    } else {
+        last_input_serial = std::max(last_input_serial, devices->GetMenuInputSerial(actual));
     }
-    g_KeyboardLobbyClaim = false;
+    using Source = Input::MenuInputSource;
+    const Source source = devices->GetMenuInputSource(actual);
+    static Source previous_source = Source::Mouse;
+    static int previous_input = -1;
+    if (source == Source::Keyboard) io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    else io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    ImGuiContext* context = ImGui::GetCurrentContext();
+    if (!ignore_input && (source != previous_source || actual != previous_input)) {
+        if (previous_source == Source::Keyboard && source != Source::Keyboard)
+            std::fill(std::begin(io.KeysDown), std::end(io.KeysDown), false);
+        ImGui::NavMoveRequestCancel();
+        context->NavWindowingTarget = nullptr;
+        context->NavWindowingToggleLayer = false;
+        std::fill(std::begin(io.NavInputsDownDuration), std::end(io.NavInputsDownDuration), -1.0f);
+        context->NavDisableMouseHover = source != Source::Mouse;
+        context->NavDisableHighlight = source == Source::Mouse;
+        // Leave an active text editor (and its draft) intact on pointer motion.
+        if (context->ActiveId != 0 && context->ActiveId != context->InputTextState.ID) {
+            ImGui::ClearActiveID();
+        }
+    }
+    previous_source = source;
+    previous_input = actual;
     const PlayerInput* input = devices->GetController(actual);
-    if (ignore_input || input == nullptr || !input->enabled || input->remote_controlled) return;
+    if (ignore_input || source == Source::Mouse || input == nullptr || !input->enabled || input->remote_controlled) return;
     // Scroll the focused form (or its enclosing scroll area) even when the
     // mouse is parked on another pane. Stock script menus scroll their own lists.
-    ImGuiContext* context = ImGui::GetCurrentContext();
     const float scroll = MenuInputDepth(*input, "menu_scroll_down") - MenuInputDepth(*input, "menu_scroll_up");
     if (context && scroll != 0.0f && (online->LobbyWaiting() || !devices->GetGrabMouse())) {
         ImGuiWindow* window = context->NavWindow;
@@ -385,7 +392,7 @@ static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
         if (window && window->WasActive && !(window->Flags & ImGuiWindowFlags_NoInputs))
             ImGui::SetScrollY(window, window->Scroll.y + scroll * std::min(io.DeltaTime, 0.1f) * 640.0f);
     }
-    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    if (source == Source::Controller) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.NavInputs[ImGuiNavInput_Activate] = MenuInputDepth(*input, "menu_return");
     io.NavInputs[ImGuiNavInput_Cancel] = MenuInputDepth(*input, "menu_cancel");
     io.NavInputs[ImGuiNavInput_Input] = MenuInputDepth(*input, "menu_input");
@@ -394,10 +401,10 @@ static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
     io.NavInputs[ImGuiNavInput_DpadRight] = MenuInputDepth(*input, "menu_right");
     io.NavInputs[ImGuiNavInput_DpadUp] = MenuInputDepth(*input, "menu_up");
     io.NavInputs[ImGuiNavInput_DpadDown] = MenuInputDepth(*input, "menu_down");
-    io.NavInputs[ImGuiNavInput_LStickLeft] = MenuInputDepth(*input, "left");
-    io.NavInputs[ImGuiNavInput_LStickRight] = MenuInputDepth(*input, "right");
-    io.NavInputs[ImGuiNavInput_LStickUp] = MenuInputDepth(*input, "up");
-    io.NavInputs[ImGuiNavInput_LStickDown] = MenuInputDepth(*input, "down");
+    io.NavInputs[ImGuiNavInput_LStickLeft] = MenuInputDepth(*input, "menu_stick_left");
+    io.NavInputs[ImGuiNavInput_LStickRight] = MenuInputDepth(*input, "menu_stick_right");
+    io.NavInputs[ImGuiNavInput_LStickUp] = MenuInputDepth(*input, "menu_stick_up");
+    io.NavInputs[ImGuiNavInput_LStickDown] = MenuInputDepth(*input, "menu_stick_down");
     io.NavInputs[ImGuiNavInput_FocusPrev] = MenuInputDepth(*input, "menu_prev_tab");
     io.NavInputs[ImGuiNavInput_FocusNext] = MenuInputDepth(*input, "menu_next_tab");
     io.NavInputs[ImGuiNavInput_TweakSlow] = MenuInputDepth(*input, "menu_prev_tab");

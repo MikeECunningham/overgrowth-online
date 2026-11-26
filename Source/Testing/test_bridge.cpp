@@ -1176,8 +1176,10 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
             return result;
         };
         out["active_id"] = gui.ActiveId;
+        out["hovered_id"] = gui.HoveredId;
         out["nav_id"] = gui.NavId;
         out["nav_window"] = gui.NavWindow ? gui.NavWindow->Name : "";
+        out["windowing_target"] = gui.NavWindowingTarget ? gui.NavWindowingTarget->Name : "";
         out["want_text_input"] = gui.IO.WantTextInput;
         if (gui.NavWindow) {
             ImRect rect = gui.NavWindow->NavRectRel[gui.NavLayer];

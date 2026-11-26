@@ -552,14 +552,14 @@ void CaptureFrame() {
     const std::string camp = campaign ? campaign->GetCampaignID() : net->LobbyCampaign();
     record["campaign"] = camp;
     record["mode"] = net->IsActive() ? net->LobbyMode() : camp;
-    record["lobby"] = net->IsHosting() && (!net->IsLocalOnlySession() || net->GetLobbySlots().size() > 1);
+    record["lobby"] = net->IsHosting() && (!net->IsLocalOnlySession() || !net->LobbyMap().empty() || net->GetLobbySlots().size() > 1);
     record["local_only"] = net->IsLocalOnlySession();
     record["map_name"] = graph->level_name_.empty() ? SplitPathFileName(CurrentMap()).second : graph->level_name_;
-    record["mode_name"] = camp.empty() ? (net->LobbyBuild() ? "Build" : "Sandbox") : camp;
+    record["mode_name"] = net->LobbyMode() == "freeplay" ? "Freeplay" : net->LobbyBuild() ? "Build" : "Sandbox";
     if (!camp.empty()) {
         auto lookup = camp;
         auto metadata = ModLoading::Instance().GetCampaign(lookup);
-        if (!metadata.title.str().empty()) record["mode_name"] = metadata.title.str();
+        record["mode_name"] = metadata.title.str().empty() ? camp : metadata.title.str();
         for (const auto& entry : metadata.levels)
             if (MapPath("Data/Levels/" + entry.path.str()) == CurrentMap() && !entry.title.str().empty())
                 record["map_name"] = entry.title.str();

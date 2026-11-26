@@ -133,12 +133,7 @@ void Update() {
             if(Online_HasActiveIncompatibleMods()) {
                 QueueBasicPopup("Error", "Unsupported mods detected!\nPlease disable them before trying to play online!\n\n" + Online_GetActiveIncompatibleModsString());
             } else {
-                if(GetConfigValueInt("difficulty_preset_value") == 0){
-                    this_ui.SendCallback( "multiplayer_menu.as" );
-                    this_ui.SendCallback( "difficulty_menu.as" );
-                } else {
-                    this_ui.SendCallback( "multiplayer_menu.as" );
-                }
+                this_ui.SendCallback("multiplayer_menu.as");
             }
         }
         else if( message.name == "Play" ) 

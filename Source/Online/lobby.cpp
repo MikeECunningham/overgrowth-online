@@ -322,6 +322,8 @@ bool Online::EnsureLocalSession() {
     local_only_session_ = true;
     loading = !loaded;
     lobby_start_pending_ = !loaded;
+    lobby_map_.clear();  // Direct Play did not select a level from a lobby.
+    lobby_build_ = false;
     if (ScriptableCampaign* campaign = engine->GetCurrentCampaign()) {
         campaign_id = campaign->GetCampaignID();
         lobby_mode_ = lobby_campaign_ = campaign_id;
@@ -1333,7 +1335,7 @@ void Online::ApplyManualTeam(PlayerID id) {
 }
 
 bool Online::UsesLobbyTeams() const {
-    return lobby_force_teams_ || lobby_build_ ||
+    return lobby_force_teams_ || lobby_build_ || lobby_mode_ == "freeplay" ||
         lobby_mode_.find("sandbox") != std::string::npos || lobby_campaign_.find("sandbox") != std::string::npos ||
         (lobby_mode_.empty() && lobby_campaign_.empty() && campaign_id.empty());
 }

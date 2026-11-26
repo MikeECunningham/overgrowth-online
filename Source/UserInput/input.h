@@ -79,6 +79,10 @@ class Input {
     void BindLocalKeyboard(int local_index);
     int LocalKeyboardPlayerIndex() const { return keyboard_local_player_; }
     void RemoveLocalPlayerInput(unsigned local_index);
+    enum class MenuInputSource { Mouse, Keyboard, Controller };
+    void RecordMenuPointerOrKey(const SDL_Event& event);
+    MenuInputSource GetMenuInputSource(int input_id) const;
+    uint64_t GetMenuInputSerial(int input_id) const;
     void RecordKeyboardJoinEvent(const SDL_Event& event);
     bool KeyboardJoinPressed();
     void SetKeyboardMenuNavigationShared(bool shared) { keyboard_menu_shared_ = shared; }
@@ -168,6 +172,17 @@ class Input {
     std::map<int, std::map<std::string, InjectedKey> > injected_player_keys_;
     std::map<int, std::array<float, 2> > injected_player_look_;
 
+    struct MenuActivity {
+        MenuInputSource source = MenuInputSource::Mouse;
+        uint64_t serial = 0;
+    };
+    MenuActivity MenuActivityForPlayer(int input_id) const;
+    uint64_t LastMenuControllerPress(int input_id) const;
+    std::map<int, MenuInputSource> polled_menu_sources_;
+    std::array<uint64_t, SDL_NUM_SCANCODES> menu_key_presses_{};
+    uint64_t last_menu_pointer_activity_ = 0;
+    uint64_t menu_input_sequence_ = 0;
+    MenuActivity mouse_keyboard_menu_activity_;
     unsigned num_players_;
     int keyboard_local_player_ = 0;
     bool keyboard_join_pressed_ = false;

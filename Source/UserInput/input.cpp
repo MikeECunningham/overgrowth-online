@@ -349,8 +349,68 @@ void Input::SetGrabMouse(bool grab) {
     }
 }
 
+// Both regular input and events consumed by the UI pass through here.
+// Releases and OS key repeat belong to the original gesture.
+void Input::RecordMenuPointerOrKey(const SDL_Event& event) {
+    switch (event.type) {
+        case SDL_MOUSEMOTION:
+            if (event.motion.x == mouse_.pos_[0] && event.motion.y == mouse_.pos_[1] &&
+                (!grab_mouse_ || (!event.motion.xrel && !event.motion.yrel))) return;
+            break;
+        case SDL_MOUSEWHEEL:
+            if (!event.wheel.x && !event.wheel.y) return;
+            break;
+        case SDL_MOUSEBUTTONDOWN:
+            break;
+        case SDL_KEYDOWN:
+            if (event.key.repeat) return;
+            mouse_keyboard_menu_activity_.source = MenuInputSource::Keyboard;
+            mouse_keyboard_menu_activity_.serial = ++menu_input_sequence_;
+            menu_key_presses_[event.key.keysym.scancode] = menu_input_sequence_;
+            return;
+        default:
+            return;
+    }
+    mouse_keyboard_menu_activity_.source = MenuInputSource::Mouse;
+    mouse_keyboard_menu_activity_.serial = ++menu_input_sequence_;
+    last_menu_pointer_activity_ = menu_input_sequence_;
+}
+
+Input::MenuActivity Input::MenuActivityForPlayer(int input_id) const {
+    MenuActivity activity;
+    if (input_id == GetLocalPlayerInputID(keyboard_local_player_) || (keyboard_menu_shared_ && input_id == 0)) {
+        activity = mouse_keyboard_menu_activity_;
+    } else {
+        activity.source = MenuInputSource::Controller;
+    }
+    const uint64_t pad_serial = LastMenuControllerPress(input_id);
+    if (pad_serial > activity.serial) {
+        activity.source = MenuInputSource::Controller;
+        activity.serial = pad_serial;
+    }
+    return activity;
+}
+
+uint64_t Input::LastMenuControllerPress(int input_id) const {
+    uint64_t serial = 0;
+    for (const auto& entry : open_joysticks_) {
+        const auto& device = entry.second.GetConst();
+        if (device.player_input == input_id) serial = std::max(serial, device.joystick.LastMenuPress());
+    }
+    return serial;
+}
+
+Input::MenuInputSource Input::GetMenuInputSource(int input_id) const {
+    return MenuActivityForPlayer(input_id).source;
+}
+
+uint64_t Input::GetMenuInputSerial(int input_id) const {
+    return MenuActivityForPlayer(input_id).serial;
+}
+
 void Input::HandleEvent(const SDL_Event& event) {
     PROFILER_ZONE(g_profiler_ctx, "Input::HandleEvent");
+    RecordMenuPointerOrKey(event);
     RecordKeyboardJoinEvent(event);
     // Redirect input events to the controller
     switch (event.type) {
@@ -491,9 +551,9 @@ void Input::HandleEvent(const SDL_Event& event) {
                             default:
                                 break;
                         }
-                        joystick_sequence_id += iter->second->joystick.HandleInputChange(input, sdl_joy->value, joystick_sequence_id);
+                        joystick_sequence_id += iter->second->joystick.HandleInputChange(input, sdl_joy->value, joystick_sequence_id, menu_input_sequence_);
                         if (opposite_input != ControllerInput::NONE) {
-                            joystick_sequence_id += iter->second->joystick.HandleInputChange(opposite_input, 0.0f, joystick_sequence_id);
+                            joystick_sequence_id += iter->second->joystick.HandleInputChange(opposite_input, 0.0f, joystick_sequence_id, menu_input_sequence_);
                         }
                         break;
                     }
@@ -517,7 +577,7 @@ void Input::HandleEvent(const SDL_Event& event) {
                 const std::vector<SDL_GameControllerButtonBind>& gamepad_bind = iter->second->gamepad_bind;
                 for (size_t i = 0; i < gamepad_bind.size(); ++i) {
                     if (gamepad_bind[i].bindType == SDL_CONTROLLER_BINDTYPE_BUTTON && gamepad_bind[i].value.button == button->button) {
-                        joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, (button->state == SDL_PRESSED), joystick_sequence_id);
+                        joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, (button->state == SDL_PRESSED), joystick_sequence_id, menu_input_sequence_);
                         break;
                     }
                 }
@@ -539,40 +599,40 @@ void Input::HandleEvent(const SDL_Event& event) {
                             case SDL_HAT_LEFTUP:
                                 if (gamepad_bind[i].value.hat.hat_mask == SDL_HAT_LEFT ||
                                     gamepad_bind[i].value.hat.hat_mask == SDL_HAT_UP) {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id, menu_input_sequence_);
                                 } else {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id, menu_input_sequence_);
                                 }
                                 break;
                             case SDL_HAT_RIGHTUP:
                                 if (gamepad_bind[i].value.hat.hat_mask == SDL_HAT_RIGHT ||
                                     gamepad_bind[i].value.hat.hat_mask == SDL_HAT_UP) {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id, menu_input_sequence_);
                                 } else {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id, menu_input_sequence_);
                                 }
                                 break;
                             case SDL_HAT_LEFTDOWN:
                                 if (gamepad_bind[i].value.hat.hat_mask == SDL_HAT_LEFT ||
                                     gamepad_bind[i].value.hat.hat_mask == SDL_HAT_DOWN) {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id, menu_input_sequence_);
                                 } else {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id, menu_input_sequence_);
                                 }
                                 break;
                             case SDL_HAT_RIGHTDOWN:
                                 if (gamepad_bind[i].value.hat.hat_mask == SDL_HAT_RIGHT ||
                                     gamepad_bind[i].value.hat.hat_mask == SDL_HAT_DOWN) {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id, menu_input_sequence_);
                                 } else {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id, menu_input_sequence_);
                                 }
                                 break;
                             default:
                                 if (gamepad_bind[i].value.hat.hat_mask == hat->value) {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 1.0f, joystick_sequence_id, menu_input_sequence_);
                                 } else {
-                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id);
+                                    joystick_sequence_id += iter->second->joystick.HandleInputChange((ControllerInput::Input)i, 0.0f, joystick_sequence_id, menu_input_sequence_);
                                 }
                                 break;
                         }
@@ -670,9 +730,17 @@ void Input::ProcessController(int controller_id, float timestep) {
         return;
     }
 
+    const bool catch_kbmouse = controller_id == GetLocalPlayerInputID(keyboard_local_player_);
+    const uint64_t last_mkb = catch_kbmouse || (controller_id == 0 && keyboard_menu_shared_)
+                                  ? mouse_keyboard_menu_activity_.serial : 0;
+    const uint64_t last_pad = LastMenuControllerPress(controller_id);
+    const MenuInputSource menu_source = GetMenuInputSource(controller_id);
+    const bool changed_menu_source = polled_menu_sources_[controller_id] != menu_source;
+    polled_menu_sources_[controller_id] = menu_source;
     // Set all keydown counts to negative
     PlayerInput::KeyDownMap& kd = control.key_down;
     for (auto& iter : kd) {
+        if (changed_menu_source && iter.first.compare(0, 5, "menu_") == 0) iter.second = KeyState();
         iter.second.count *= -1;
         iter.second.depth = 0.0f;
     }
@@ -703,7 +771,7 @@ void Input::ProcessController(int controller_id, float timestep) {
         }
     }
     // Joystick input
-    if (allow_controller_input_ && (use_controller_input_ || num_players_ > 1)) {
+    if (allow_controller_input_ && (use_controller_input_ || num_players_ > 1 || menu_source == MenuInputSource::Controller)) {
         const int local_index = std::max(0, LocalPlayerIndexForInputID(controller_id));
         const std::string profile = "gamepad_" + std::to_string(local_index);
         const bool invert_x = config[profile + "_invert_x_look"].toNumber<bool>();
@@ -718,6 +786,11 @@ void Input::ProcessController(int controller_id, float timestep) {
             for (const auto& iter2 : bm) {
                 if (iter2.second) {
                     std::string binding = iter2.first;
+                    if (binding.compare(0, 5, "menu_") == 0) {
+                        if (menu_source != MenuInputSource::Controller || joystick.MenuBindingPredates(binding, last_mkb)) continue;
+                    } else if (!use_controller_input_ && num_players_ == 1) {
+                        continue;
+                    }
                     if (invert_x) {
                         if (binding == "look_left") binding = "look_right";
                         else if (binding == "look_right") binding = "look_left";
@@ -747,12 +820,16 @@ void Input::ProcessController(int controller_id, float timestep) {
     }
     // Gameplay follows the keyboard's joined player. Menu navigation also
     // reaches P1 so the couch can manage its lobby using the keyboard.
-    const bool catch_kbmouse = controller_id == GetLocalPlayerInputID(keyboard_local_player_);
     if (catch_kbmouse || controller_id == 0) {
         static const std::string kKey = "key";
         const StrMap& key_map = bindings_[kKey];
         for (const auto& iter : key_map) {
             if (!catch_kbmouse && (!keyboard_menu_shared_ || iter.first.compare(0, 5, "menu_") != 0)) continue;
+            if (iter.first.compare(0, 5, "menu_") == 0) {
+                const bool mouse_bind = iter.second.compare(0, 5, "mouse") == 0;
+                if (menu_source != (mouse_bind ? MenuInputSource::Mouse : MenuInputSource::Keyboard)) continue;
+                if (!mouse_bind && menu_key_presses_[StringToSDLScancode(iter.second)] < std::max(last_pad, last_menu_pointer_activity_)) continue;
+            }
             if (IsKeyDown(iter.second.c_str())) {
                 PlayerInputKeyDown(&control.key_down[iter.first]);
                 use_controller_input_ = false;
@@ -957,7 +1034,12 @@ void Input::ProcessBindings() {
                             break;
                     }
                     if (bind.bindType != SDL_CONTROLLER_BINDTYPE_NONE) {
-                        js->joystick.ProcessBinding(input, xb_iter.first);
+                        const std::string& action = xb_iter.first;
+                        js->joystick.ProcessBinding(input, action);
+                        if (action == "left" || action == "right" || action == "up" || action == "down") {
+                            // Analog menu scrolling follows the pad's movement bindings.
+                            js->joystick.ProcessBinding(input, "menu_stick_" + action);
+                        }
                     }
                 }
             }
