@@ -1639,6 +1639,14 @@ def _survival_waves(ctx):
 SCENARIOS["survival_waves"] = _survival_waves
 
 
+def _survival_recall(ctx):
+    from .survival_recall_suite import survival_recall
+    return survival_recall(ctx)
+
+
+SCENARIOS["survival_recall"] = _survival_recall
+
+
 def _survival_rewards(ctx):
     from .survival_rewards_suite import survival_rewards
     return survival_rewards(ctx)
@@ -1653,3 +1661,75 @@ def _survival_shop(ctx):
 
 
 SCENARIOS["survival_shop"] = _survival_shop
+
+
+def _campaign_race_equipment(ctx):
+    from .survival_shop_suite import campaign_race_equipment
+    return campaign_race_equipment(ctx)
+
+
+SCENARIOS["campaign_race_equipment"] = _campaign_race_equipment
+
+def _player_profiles(ctx):
+    from .player_profiles_suite import player_profiles
+    return player_profiles(ctx)
+
+SCENARIOS["player_profiles"] = _player_profiles
+
+def _profile_victories(ctx):
+    from .player_profiles_suite import profile_victories
+    return profile_victories(ctx)
+
+SCENARIOS["profile_victories"] = _profile_victories
+
+
+def _profile_intermission(ctx):
+    from .player_profiles_suite import profile_intermission
+    return profile_intermission(ctx)
+
+
+SCENARIOS["profile_intermission"] = _profile_intermission
+
+
+def _profile_map_pool(ctx):
+    from .profile_map_pool_suite import profile_map_pool
+    return profile_map_pool(ctx)
+
+SCENARIOS["profile_map_pool"] = _profile_map_pool
+
+def _progression_damage(ctx):
+    from .progression_damage_suite import progression_damage
+    return progression_damage(ctx)
+
+SCENARIOS["progression_damage"] = _progression_damage
+
+
+def _profile_menus(ctx):
+    from .profile_menus_suite import profile_menus
+    return profile_menus(ctx)
+
+SCENARIOS["profile_menus"] = _profile_menus
+
+
+def _profile_campaign_survival(ctx):
+    from .profile_campaign_survival_suite import profile_campaign_survival
+    return profile_campaign_survival(ctx)
+
+
+SCENARIOS["profile_campaign_survival"] = _profile_campaign_survival
+
+
+def _survival_status_hud(ctx):
+    from .survival_status_hud_suite import survival_status_hud
+    return survival_status_hud(ctx)
+
+
+SCENARIOS["survival_status_hud"] = _survival_status_hud
+
+
+def _progression_falls(ctx):
+    from .progression_falls_suite import progression_falls
+    return progression_falls(ctx)
+
+
+SCENARIOS["progression_falls"] = _progression_falls

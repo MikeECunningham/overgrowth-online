@@ -1,4 +1,5 @@
 // Local lobby forms and device ownership. Apache-2.0.
+#include <Online/local_profiles.h>
 #include "lobby_bindings.h"
 #include <Scripting/angelscript/ascontext.h>
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
@@ -73,6 +74,10 @@ CScriptArray* OptionChoices(const LobbyOption& option) {
 
 unsigned MenuLocalPlayer();
 unsigned MenuPlayerID() { return Online::Instance()->LobbyPlayerIDForLocalIndex(MenuLocalPlayer()); }
+std::string ProfileSeatView(unsigned id) { return LocalProfiles::LobbyView(id, MenuPlayerID()); }
+bool ProfileSeatEdit(unsigned id, const std::string& op, const std::string& key, const std::string& value) {
+    return Online::Instance()->EditLobbyProfile(id, MenuPlayerID(), op, key, value);
+}
 int CurrentLocalPlayerIndex() { return static_cast<int>(MenuLocalPlayer()); }
 int LeaderInputID() {
     Online* online = Online::Instance();
@@ -390,8 +395,8 @@ void UpdateLocalLobbyInput() {
     static bool had_session = false;
     if (!engine->IsLevelLoaded()) scaling_adoption_blocked = false;
     else if ((had_session && !online->IsActive()) || online->IsAwaitingShutdown()) scaling_adoption_blocked = true;
-    if (!scaling_adoption_blocked && online->CanAdoptLocalSession() && engine->IsLevelLoaded() && online->DifficultyScalingEnabled()) {
-        online->EnsureLocalSession();  // reuse the private simulation for solo scaling; no listen socket
+    if (!scaling_adoption_blocked && online->CanAdoptLocalSession() && engine->IsLevelLoaded() && (online->DifficultyScalingEnabled() || LocalProfiles::HasPrimary())) {
+        online->EnsureLocalSession();  // Solo scaling and a chosen profile use the private simulation.
     }
     // Explicit Leave must finish its transition out of this world before the
     // automatic solo fallback is allowed to create another private session.
@@ -532,6 +537,16 @@ void AttachLobby(ASContext* context) {
     context->RegisterObjectProperty("LobbyPlayer", "string slot_uid", asOFFSET(LobbyPlayer, slot_uid));
     context->RegisterObjectProperty("LobbyPlayer", "int slot_index", asOFFSET(LobbyPlayer, slot_index));
 #define LOBBY_FN(declaration, function) context->RegisterGlobalFunction(declaration, asFUNCTION(function), asCALL_CDECL)
+    LOBBY_FN("uint ProfileRevision()", LocalProfiles::Revision);
+    LOBBY_FN("string ProfileSettingsView()", LocalProfiles::SettingsView);
+    LOBBY_FN("string ProfileView(const string &in)", LocalProfiles::View);
+    LOBBY_FN("bool ProfileEdit(const string &in,const string &in,const string &in,const string &in)", LocalProfiles::Edit);
+    LOBBY_FN("bool ProfileSetModSetting(const string &in,const string &in,int)", LocalProfiles::SetModSetting);
+    LOBBY_FN("int ProfileGetModSetting(const string &in,const string &in)", LocalProfiles::GetModSetting);
+    LOBBY_FN("string ProfileGetModData(const string &in,const string &in,const string &in)", LocalProfiles::GetData);
+    LOBBY_FN("bool ProfileSetModData(const string &in,const string &in,const string &in,const string &in)", LocalProfiles::SetData);
+    LOBBY_FN("string LobbyProfileView(uint)", ProfileSeatView);
+    LOBBY_FN("bool LobbyProfileEdit(uint,const string &in,const string &in,const string &in)", ProfileSeatEdit);
     LOBBY_FN("string SessionGetModData(const string &in)", SessionMods::GetData);
     LOBBY_FN("bool SessionSetModData(const string &in, const string &in)", SessionMods::SetData);
     LOBBY_FN("bool SessionCanManageSaves()", ManageSaves);

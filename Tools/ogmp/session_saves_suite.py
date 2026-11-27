@@ -179,8 +179,8 @@ def session_saves(ctx):
     wait(cold, lambda: cold.bridge.call("progression", actor=owner)["view"]["held"] > large_held,
          "earn XP above the old ceiling")
     shop = cold.bridge.call("progression", actor=owner)["view"]
-    cost = next(card["cost"] for card in shop["cards"] if card["id"] == "damage")
-    assert cold.bridge.call("progression", actor=owner, action="buy", key="damage")["submitted"]
+    cost = next(card["cost"] for card in shop["cards"] if card["id"] == "bone_damage")
+    assert cold.bridge.call("progression", actor=owner, action="buy", key="bone_damage")["submitted"]
     remaining = shop["held"] - cost
     wait(cold, lambda: any(row["display_held"] == remaining for row in cold.bridge.status()["progression_ui"]),
          "HUD shows full balance after purchase")

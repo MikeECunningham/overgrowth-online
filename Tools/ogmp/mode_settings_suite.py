@@ -48,7 +48,7 @@ def _rows(inst):
 
 
 def lobby_freeplay(ctx):
-    host = ctx.instance("freeplay_host", keys={**RENDER_KEYS, "mp_port": "28751"})
+    host = ctx.instance("freeplay_host", width=1280, height=720, keys={**RENDER_KEYS, "mp_port": "28751"})
     guest = ctx.instance("freeplay_guest", keys={**RENDER_KEYS, "mp_port": "28752"})
     peers = (host, guest)
     fixture = "Data/Levels/freeplay_host_map.xml"
@@ -85,11 +85,49 @@ def lobby_freeplay(ctx):
               f' if(lobby_modes[mode].maps[m].path=="{path}") LobbyChooseMap(mode,m);')
         host.bridge.wait(lambda: _probe(guest, "LobbyGetMap()") == path, 20, what="map selection replicated")
 
+    def click_random_map(query):
+        _code(host, f'small_panel=0;show_mode_cards=false;map_filter="{query}";')
+
+        def random_rect():
+            return next((w["rect"] for w in host.bridge.call("ui_state")["windows"]
+                         if w["name"].startswith("Mode and map/maps_")), None)
+
+        rect = host.bridge.wait(random_rect, 10, what="map choices visible")
+        x = int((rect[0] + rect[2]) / 2)
+        for y in range(int(rect[1]) + 6, int(rect[3]) - 4, 6):
+            host.bridge.call("pointer", x=x, y=y, buttons=0)
+            time.sleep(.07)
+            hint = _probe(host, "lobby_visible_hint")
+            if hint == "Choose a random map from this list.":
+                break
+            assert not hint.endswith("Loads when the host starts."), (rect, y, hint)
+        else:
+            raise AssertionError(f"Random card missing in map list {rect}")
+        for buttons in (1, 0):
+            host.bridge.call("pointer", x=x, y=y, buttons=buttons)
+            time.sleep(.1)
+        host.bridge.call("pointer", enabled=False)
+
+    def roll_with_filter(peer, query):
+        mode = "lobby_modes[LobbySelectedMode()]"
+        return _probe(peer, f'LobbyChooseRandomMap(LobbySelectedMode(), {mode}.MatchingMaps("{query}"), '
+                            f'LobbySelectedMap({mode}))')
+
     choose("sandbox")
     assert _probe(host, "LobbyGetCampaign()") == "com-wolfire-sandbox-levels"
     maps = int(_probe(host, "lobby_modes[LobbySelectedMode()].maps.length()"))
     assert maps > 1
     assert _probe(host, "LobbyGetMap()").endswith("tree_canyon_summer.xml")
+    first_map = _probe(host, "LobbyGetMap()")
+    click_random_map("")
+    new_map = _probe(host, "LobbyGetMap()")
+    assert new_map != first_map
+    host.bridge.wait(lambda: _probe(guest, "LobbyGetMap()") == new_map, 10, what="shared random map")
+    assert int(_probe(host, "LobbySelectedMap(lobby_modes[LobbySelectedMode()])")) >= 0
+    assert roll_with_filter(host, "absent-mp-fixture") == "false"
+    assert roll_with_filter(guest, "") == "false"
+    assert _probe(host, "LobbyGetMap()") == new_map
+    choose_map(first_map)
     launch()
     for peer in peers:
         assert "tree_canyon_summer" in peer.bridge.status()["level"].lower()
@@ -113,7 +151,10 @@ def lobby_freeplay(ctx):
         assert _probe(peer, 'GetCurrCampaignID() == ""', "level") == "true"
     guest.bridge.wait(lambda: guest.bridge.me()["teams"] == "lobby_team_2", 15, what="guest uses its lobby team")
     end()
-    choose_map(fixture)
+    # A filtered roll can select a host-only file; its concrete path is
+    # replicated, transferred on launch, and restored by a saved lobby.
+    click_random_map("FREEPLAY_HOST_MAP")
+    host.bridge.wait(lambda: _probe(guest, "LobbyGetMap()") == fixture, 10, what="filtered host-only map")
     launch()
     assert _probe(host, "SessionSave(1)", "level") == "true"
     card = Path(host.writedir, "Data/SessionSaves/slot1.json")

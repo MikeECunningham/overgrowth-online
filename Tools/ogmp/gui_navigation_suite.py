@@ -125,26 +125,26 @@ def _native_draft(ctx):
         time.sleep(0.25)
         g.key('Space')
         g.wait(lambda: g.status()['online']['lobby_waiting'], 'rendered Host')
-        g.key('Space')  # Initial selected Rename button, using the keyboard.
-        g.wait(lambda: g.probe('editing_name') != '-1', 'name editor')
-        ui = g.ui()
-        field = ui['nav_rect']
-        window = next(w['rect'] for w in ui['windows'] if w['name'] == 'Edit player name')
-        # Last row is the form's ordinary Save button, above its16px padding.
-        save = [window[0] + 16, window[3] - 50, window[0] + 146, window[3] - 16]
+        g.key('Space')  # The seat's initially focused profile selector.
+        g.key('Down')
+        g.key('Space')
+        g.wait(lambda: g.probe('new_profile_seat') != '-1', 'inline New Profile editor')
+        field = g.ui()['nav_rect']
         g.click(field)
         g.inst.bridge.call('text', text='HoverDraft')
-        time.sleep(0.15)
-        draft = g.probe('name_buffer')
-        assert 'HoverDraft' in draft, draft
+        g.wait(lambda: g.probe('new_profile_name') == 'HoverDraft', 'live text input')
+        draft = g.probe('new_profile_name')
         active = g.ui()['active_id']
-        g.pointer(save)
-        assert g.probe('name_buffer') == draft, 'hover reset the unsaved name'
+        # Create sits directly below the inline editor. Moving there must
+        # preserve the current text and keep focus until the click.
+        create = [field[0], field[3] + 6, field[0] + 48, field[3] + 24]
+        g.pointer(create)
+        assert g.probe('new_profile_name') == draft
         assert g.ui()['active_id'] == active, 'hover stole text input focus'
         image = g.shot('native_live_draft_hover')
-        g.click(save)
-        g.wait(lambda: g.probe('editing_name') == '-1', 'rendered Save')
-        assert g.status()['online']['players'][0]['name'] == draft, 'Save used the pre-edit value'
+        g.click(create)
+        g.wait(lambda: g.probe('new_profile_seat') == '-1', 'clicking Create saves the live draft')
+        assert g.status()['online']['players'][0]['name'] == draft
         assert not script_errors(g.inst), script_errors(g.inst)
         return {'draft': draft, 'screenshot': image}
     finally:

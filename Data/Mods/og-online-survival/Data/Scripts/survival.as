@@ -46,7 +46,13 @@ class Raider {
     int id = -1;  // Pending a safe spawn or reconstruction from a save.
     int spawn_attempt = 0;
     float retry_at = 0;
+    int staged_actor = -1, staged_weapon = -1;
 }
+class Forecast {
+    int battery, wave, team, members, seed;
+    array<Raider@> fighters;
+}
+array<Forecast@> forecasts;
 class Wave {
     int number;
     array<int> teams;
@@ -57,6 +63,7 @@ array<int> corpses;
 array<float> remove_at;
 int text_id = -1, score_id = -1;
 string status_text, score_text;
+float status_width = 0, status_height = 0;
 int score_height = 0;
 int last_result_press = -2;
 float next_hud = -1.0f;
@@ -421,6 +428,77 @@ array<Raider@> PlanWave(int seed, int number, int wave, int members, int team) {
     return plan;
 }
 
+void DeleteStaged(int id) {
+    if (id < 0 || !ObjectExists(id)) return;
+    Object@ object = ReadObjectFromID(id);
+    ScriptParams@ params = object.GetScriptParams();
+    if (!object.GetEnabled() && params.HasParam("Survival Staged") && params.GetInt("Survival Staged") != 0)
+        QueueDeleteObjectID(id);
+}
+
+void DiscardPrepared(Raider@ r) {
+    DeleteStaged(r.staged_actor);
+    DeleteStaged(r.staged_weapon);
+    r.staged_actor = r.staged_weapon = -1;
+}
+
+void DiscardForecast(int index) {
+    Forecast@ f = forecasts[index];
+    for (uint i = 0; i < f.fighters.length(); ++i) DiscardPrepared(f.fighters[i]);
+    forecasts.removeAt(index);
+}
+
+Forecast@ Formation(int number, int wave, int team, int members) {
+    int seed = LobbyGetModeSetting("survival_seed");
+    for (int i = int(forecasts.length()) - 1; i >= 0; --i) {
+        Forecast@ f = forecasts[i];
+        if (f.team != team) continue;
+        if (f.battery == number && f.wave == wave && f.members == members && f.seed == seed) return f;
+        DiscardForecast(i);
+    }
+    Forecast@ f = Forecast();
+    f.battery = number; f.wave = wave; f.team = team; f.members = members; f.seed = seed;
+    f.fighters = PlanWave(seed, number, wave, members, team);
+    forecasts.insertLast(f);
+    return f;
+}
+
+// Build one body or weapon per director tick, ahead of combat on every peer.
+// The graphics context, physics world and AngelScript instances belong to the
+// game thread. Disabled objects have no AI or collision while waiting.
+void PrepareNextWave(const array<PlayerState> &in seats) {
+    bool next_battery = phase == resting;
+    if (!next_battery && phase != preparing && !(phase == fighting && launched < wave_count)) return;
+    array<int> present = RosterTeams(seats);
+    for (int i = int(forecasts.length()) - 1; i >= 0; --i) {
+        int team = forecasts[i].team;
+        if (present.find(team) < 0 || (!next_battery && Members(seats, team, true).isEmpty()))
+            DiscardForecast(i);
+    }
+    for (uint i = 0; i < present.length(); ++i) {
+        int team = present[i];
+        if (!next_battery && eliminated.find(team) >= 0) continue;
+        int count = Members(seats, team, !next_battery).length();
+        if (count == 0) continue;
+        if (!next_battery) count = max(count, ScoreFor(team).peak_members);
+        Forecast@ f = Formation(next_battery ? battery + 1 : battery, next_battery ? 1 : launched + 1, team, count);
+        for (uint j = 0; j < f.fighters.length(); ++j) {
+            Raider@ r = f.fighters[j];
+            // The original deployment anchor is inside the playable world.
+            // Map scripts can inspect objects even while their AI is disabled.
+            vec3 parking = home;
+            if (r.staged_actor < 0) {
+                r.staged_actor = Online_PrepareSurvivalObject(actors[r.kind], parking);
+                return;
+            }
+            if (r.weapon >= 0 && r.staged_weapon < 0) {
+                r.staged_weapon = Online_PrepareSurvivalObject(weapons[r.weapon], parking);
+                return;
+            }
+        }
+    }
+}
+
 // Version-one saves only stored team and slot. Reconstruct those original
 // opponents once; new snapshots store the purchases made at wave launch.
 int LegacyEnemyTier() {
@@ -455,8 +533,10 @@ bool Spawn(Raider@ r, int wave, const array<int> &in targets, const array<int> &
     placement = MixSeed(MixSeed(placement + uint(r.team)) + uint(r.slot)) + uint(r.spawn_attempt);
     if (!SpawnSpot(targets, anchor, SpawnRadii(battery), r.spawn_attempt % 7, pos, rally, placement)) return false;
     int kind = r.kind;
-    int id = CreateObject(actors[kind], true);
+    int id = r.staged_actor;
+    if (!Online_DeploySurvivalObject(id, pos)) id = CreateObject(actors[kind], true);
     if (!MovementObjectExists(id)) return false;
+    r.staged_actor = -1;
     r.id = id;
     Object@ o = ReadObjectFromID(id);
     o.SetTranslation(pos);
@@ -469,7 +549,9 @@ bool Spawn(Raider@ r, int wave, const array<int> &in targets, const array<int> &
     SetTags(id, EnemyTags(r.team, present));
     int weapon = r.weapon;
     if (weapon >= 0) {
-        int item = CreateObject(weapons[weapon], true);
+        int item = r.staged_weapon;
+        if (!Online_DeploySurvivalObject(item, pos)) item = CreateObject(weapons[weapon], true);
+        r.staged_weapon = -1;
         if (ObjectExists(item)) {
             Object@ w = ReadObjectFromID(item);
             w.SetTranslation(pos);
@@ -502,9 +584,11 @@ void Launch(const array<PlayerState> &in seats) {
         // Losing a teammate cannot make the last wave cheaper than the opener.
         TeamScore@ score = ScoreFor(team);
         score.peak_members = max(score.peak_members, n);
-        array<Raider@> formation = PlanWave(LobbyGetModeSetting("survival_seed"), battery, launched, score.peak_members, team);
-        for (uint j = 0; j < formation.length(); ++j) w.remaining.insertLast(formation[j]);
+        Forecast@ f = Formation(battery, launched, team, score.peak_members);
+        for (uint j = 0; j < f.fighters.length(); ++j) w.remaining.insertLast(f.fighters[j]);
+        f.fighters.resize(0);  // the live wave now owns these objects
     }
+    while (!forecasts.isEmpty()) DiscardForecast(int(forecasts.length()) - 1);
     waves.insertLast(w);
     due = the_time + wave_interval;
 }
@@ -514,7 +598,7 @@ void CleanupGear() {
     for (uint i = 0; i < items.length(); ++i) {
         int id = items[i];
         ScriptParams@ params = ReadObjectFromID(id).GetScriptParams();
-        if ((params.HasParam("Survival Weapon") || params.HasParam("Campaign Weapon Owner")) &&
+        if (!params.HasParam("Survival Recall Slot") && (params.HasParam("Survival Weapon") || params.HasParam("Campaign Weapon Owner")) &&
             ReadItemID(id).HeldByWhom() < 0 && ReadItemID(id).StuckInWhom() < 0) QueueDeleteObjectID(id);
     }
 }
@@ -668,6 +752,10 @@ bool Restore(JSONValue s, const array<PlayerState> &in seats) {
     for (int i = 0; i < GetNumCharacters(); ++i) {
         MovementObject@ mo = ReadCharacter(i);
         ScriptParams@ p = ReadObjectFromID(mo.GetID()).GetScriptParams();
+        if (p.HasParam("Survival Staged") && p.GetInt("Survival Staged") != 0) {
+            QueueDeleteObjectID(mo.GetID());
+            continue;
+        }
         if (!p.HasParam("Survival Slot")) continue;
         bool adopted = false;
         bool current = Up(mo.GetID()) && p.HasParam("Survival Battery") && p.GetInt("Survival Battery") == battery;
@@ -682,10 +770,16 @@ bool Restore(JSONValue s, const array<PlayerState> &in seats) {
         }
         if (!adopted) QueueDeleteObjectID(mo.GetID());
     }
+    array<int>@ items = GetObjectIDsType(_item_object);
+    for (uint i = 0; i < items.length(); ++i) {
+        ScriptParams@ p = ReadObjectFromID(items[i]).GetScriptParams();
+        if (p.HasParam("Survival Staged") && p.GetInt("Survival Staged") != 0) QueueDeleteObjectID(items[i]);
+    }
     return true;
 }
 
 void BeginDefeat() {
+    while (!forecasts.isEmpty()) DiscardForecast(int(forecasts.length()) - 1);
     Online_ChallengeEncounterWipe(WaveKey(waves.length() == 0 ? max(1, launched) : waves[0].number));
     eliminated = teams;
     // Hold the final living opponents in the scene during the death camera.
@@ -695,6 +789,7 @@ void BeginDefeat() {
         for (int j = int(w.remaining.length()) - 1; j >= 0; --j) {
             Raider@ r = w.remaining[j];
             if (Up(r.id)) continue;
+            DiscardPrepared(r);
             if (MovementObjectExists(r.id) && ReadCharacterID(r.id).GetIntVar("knocked_out") != 0)
                 ++ScoreFor(r.team).kills;
             w.remaining.removeAt(j);
@@ -735,20 +830,23 @@ void Fight(const array<PlayerState> &in seats) {
         BeginDefeat();
         return;
     }
-    int spawn_budget = 3;  // spread model/physics creation across ticks on crowded maps
+    int spawn_budget = 3;
+    bool built_actor = false;  // a short countdown or a new seat can leave some bodies unprepared
     for (int i = int(waves.length()) - 1; i >= 0; --i) {
         Wave@ w = waves[i];
         for (int j = int(w.remaining.length()) - 1; j >= 0; --j) {
             Raider@ r = w.remaining[j];
             if (eliminated.find(r.team) >= 0) {
+                DiscardPrepared(r);
                 if (MovementObjectExists(r.id)) QueueDeleteObjectID(r.id);
             } else if (r.id < 0) {
-                if (spawn_budget > 0 && the_time >= r.retry_at) {
+                bool cold = r.staged_actor < 0;
+                if (spawn_budget > 0 && (!cold || !built_actor) && the_time >= r.retry_at) {
                     --spawn_budget;
                     if (!Spawn(r, w.number, Members(seats, r.team, true), present)) {
                         ++r.spawn_attempt;
                         r.retry_at = the_time + 0.6f;
-                    }
+                    } else if (cold) built_actor = true;
                 }
                 continue;
             } else if (Up(r.id)) {
@@ -837,6 +935,7 @@ void Update(int is_paused) {
         if (MovementObjectExists(corpses[i])) QueueDeleteObjectID(corpses[i]);
         corpses.removeAt(i); remove_at.removeAt(i);
     }
+    if (the_time + 0.2f < due) PrepareNextWave(seats);
     if (phase == fighting) { Fight(seats); CountdownTick(); return; }
     if (phase == preparing || phase == victory || phase == resting) {
         if (HasSurvivor(seats)) awaiting_deployment = false;
@@ -866,7 +965,10 @@ void Update(int is_paused) {
             if (winning_slots.find(int(seats[i].id)) >= 0 && MovementObjectExists(seats[i].avatar_id))
                 winners.insertLast(seats[i].avatar_id);
         ProgressionSurvivalClear(battery, 0, winners);
-        if (ProgressionBeginShop(false)) due += max(0, ProgressionSurvivalShopSeconds());
+        if (ProgressionBeginShop(false)) {
+            Online_RecallSurvivalWeapons();
+            due += max(0, ProgressionSurvivalShopSeconds());
+        }
         Publish(); SessionAutosave();
     } else if (phase == resting) {
         ++battery; StartBattery(seats); Publish();
@@ -997,8 +1099,17 @@ void UpdateStatusText() {
         TextCanvasTexture@ canvas = level.GetTextElement(text_id);
         canvas.ClearTextCanvas();
         TextStyle style; style.font_face_id = GetFontFaceID("Data/Fonts/Lato-Regular.ttf", 26);
-        canvas.SetPenColor(255,255,255,255); canvas.SetPenPosition(vec2(0,34));
-        canvas.AddText(line, style, UINT32MAX);
+        canvas.SetPenColor(255,255,255,255);
+        array<string>@ rows = line.split("\n");
+        status_width = 0;
+        status_height = 14.0f + 30.0f * rows.length();
+        for (uint i = 0; i < rows.length(); ++i) {
+            TextMetrics metrics;
+            canvas.GetTextMetrics(rows[i], style, metrics, UINT32MAX);
+            status_width = max(status_width, ceil(metrics.advance_x / 64.0f) + 20.0f);
+            canvas.SetPenPosition(vec2(10, 30 + 30 * i));
+            canvas.AddText(rows[i], style, UINT32MAX);
+        }
         canvas.UploadTextCanvasToTexture();
     }
 }
@@ -1021,9 +1132,15 @@ void DrawGUI() {
     }
     DrawNeutralMarkers();
     if (text_id < 0 || status_text == "") return;
+    vec2 placement = ProgressionLayoutArenaScore(20, 18, status_width, status_height);
+    float top = GetScreenHeight() - 18;
+    HUDImage@ panel = hud.AddImage();
+    panel.SetImageFromPath("Data/Textures/ui/whiteblock.tga");
+    panel.color = vec4(0.04f, 0.04f, 0.05f, 0.82f);
+    panel.position = vec3(placement.x, top - status_height * placement.y, 3);
+    panel.scale = vec3(status_width * placement.y / panel.GetWidth(), status_height * placement.y / panel.GetHeight(), 1);
     HUDImage@ image = hud.AddImage();
     image.SetImageFromText(level.GetTextElement(text_id));
-    vec2 placement = ProgressionLayoutArenaScore(20, 18, 512, 80);
     image.scale = vec3(placement.y, placement.y, 1);
-    image.position = vec3(placement.x, GetScreenHeight() - 18 - 80 * placement.y, 4);
+    image.position = vec3(placement.x, top - 80 * placement.y, 4);
 }

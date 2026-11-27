@@ -22,6 +22,21 @@ class LobbyModeChoice {
     array<LobbyMapChoice@> maps;
     TextureAssetRef texture;
     bool texture_loaded = false;
+
+    string last_filter;
+    array<int>@ filtered;
+    array<int>@ MatchingMaps(const string &in filter) {
+        if(filtered !is null && last_filter == filter) return filtered;
+        last_filter = filter;
+        @filtered = array<int>();
+        string query = ToLowerCase(filter);
+        for(uint i = 0; i < maps.length(); ++i) {
+            if(query == "" || ToLowerCase(maps[i].title).findFirst(query) >= 0) {
+                filtered.insertLast(int(i));
+            }
+        }
+        return filtered;
+    }
 }
 
 array<LobbyModeChoice@> lobby_modes;
@@ -69,6 +84,7 @@ void LobbyOfferMap(LobbyModeChoice@ mode, const string &in path, const string &i
         }
     }
     mode.maps.insertLast(LobbyMapChoice(level_path, title, LobbyTexturePath(thumbnail)));
+    @mode.filtered = null;
 }
 
 void LobbyReadModes() {
@@ -196,4 +212,13 @@ bool LobbyChooseMap(int mode_index, int map_index) {
         return false;
     }
     return LobbySetSelection(mode.id, mode.campaign, mode.maps[map_index].path, mode.build);
+}
+
+bool LobbyChooseRandomMap(int mode_index, const array<int> &in matches, int selected) {
+    if(matches.length() == 0) return false;
+    // Reroll to a different map whenever the filter offers an alternative.
+    int skip = matches.length() > 1 ? matches.find(selected) : -1;
+    int pick = rand() % (int(matches.length()) - (skip >= 0 ? 1 : 0));
+    if(skip >= 0 && pick >= skip) ++pick;
+    return LobbyChooseMap(mode_index, matches[pick]);
 }

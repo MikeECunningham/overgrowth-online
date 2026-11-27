@@ -58,14 +58,15 @@ def stealth_stats(ctx):
     leader = data(host,owner)["view"]["team_leader"]
     buyer = host if leader == owner else guest
     cards = {c["id"]: c for c in data(buyer,leader)["view"]["cards"]}
-    assert {"health","damage","speed","stealth_passive","stealth_active","luck"} <= cards.keys(), data(buyer,leader)
-    assert all(cards[key]["rarity"] == 0 for key in ("health","damage","speed","stealth_passive","stealth_active","luck"))
+    common_stats = {"health","bone_damage","flesh_damage","fall_resistance","speed","stealth_passive","stealth_active","luck"}
+    assert common_stats <= cards.keys(), data(buyer,leader)
+    assert all(cards[key]["rarity"] == 0 for key in common_stats)
     assert cards["luck"]["cost"] == cards["health"]["cost"]
     assert "+16% of base durability" in cards["health"]["description"]
     assert "7% of base range" in cards["stealth_active"]["description"]
     assert "+4 percentage points" in cards["luck"]["description"]
     untrained_speed = float(probe("", "run_speed/_base_run_speed", hero))
-    for key in ("stealth_passive","stealth_active","luck","speed"):
+    for key in ("stealth_passive","stealth_active","luck","speed","bone_damage"):
         assert data(buyer,leader,action="buy",key=key)["submitted"]
     def installed():
         return all(stats(p,r["avatar_id"]).get("progression_stealth_passive") == 1 and
@@ -129,19 +130,19 @@ def stealth_stats(ctx):
 
     # Run the real tethered victim damage path for one quarter second, without
     # relying on animation timing or an AI's choice to resist/release the hold.
-    def choke(health,damage):
-        _code(host, f'progression_damage={damage};campaign_authored_damage=1;CampaignApplyAuthoredScaling();'
-              'for(uint i=0;i<weapon_slots.length();++i) weapon_slots[i]=-1;', near)
+    def choke(health,holder):
+        _code(host, 'campaign_authored_damage=1;SetCampaignScaling(1,1,1,0);'
+              'for(uint i=0;i<weapon_slots.length();++i) weapon_slots[i]=-1;', holder)
         return 1-float(probe(f'progression_health={health};campaign_authored_resistance=1;'
                             'SetCampaignScaling(1,1,1,0);game_difficulty=.5;temp_health=1;permanent_health=1;'
                             'invincible=false;equipped_damage_factor=1;ko_shield=0;'
-                            f'tether_id={near};tethered=_TETHERED_REARCHOKED;Timestep step(.25f,1);'
+                            f'tether_id={holder};tethered=_TETHERED_REARCHOKED;Timestep step(.25f,1);'
                             'HandleTethering(step);tethered=_TETHERED_FREE;', 'temp_health', observer))
-    base, faster, opposed = choke(0,0),choke(0,10),choke(10,10)
+    base, faster, opposed = choke(0,near),choke(0,hero),choke(10,hero)
     assert math.isclose(base,.125,abs_tol=1e-5),base
-    assert math.isclose(faster/base,1.9868421,abs_tol=1e-4),(base,faster)
+    assert math.isclose(faster/base,1.12,abs_tol=1e-4),(base,faster)
     assert math.isclose(opposed/faster,1/2.3157895,abs_tol=1e-4),(faster,opposed)
     assert all(not script_errors(p) for p in peers), [script_errors(p) for p in peers]
     return {"passed":True,"metrics":{"shared_stealth_rank":1,"shared_luck_rank":1,"reward_chance":.24,
                                       "sight_perception":1.5,"hearing_perception":1.225,
-                                      "choke_damage":{"base":base,"damage_10":faster,"health_10_damage_10":opposed}},"notes":[]}
+                                      "choke_damage":{"base":base,"bone_rank_1":faster,"health_10_bone_1":opposed}},"notes":[]}

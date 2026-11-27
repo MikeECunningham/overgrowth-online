@@ -13,6 +13,7 @@
 #include <Main/engine.h>
 #include <Main/scenegraph.h>
 #include <Online/online.h>
+#include <Online/friendly_progression.h>
 #include <UserInput/input.h>
 
 #include <imgui.h>
@@ -20,12 +21,15 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 namespace DifficultyHUD {
 namespace {
 Json::Value layout;
+unsigned shop_host;
+vec2 shop_inset(0.0f);
 std::string cached_payload;
 Json::Value cached_snapshot;
 TextureAssetRef panel_art, heading_art;
@@ -44,12 +48,14 @@ Json::Value Rect(float left, float top, float right, float bottom) {
 }
 
 void BeginFrame() {
+    shop_inset = vec2(0.0f);
     layout = Json::Value(Json::objectValue);
     layout["drawn"] = false;
     layout["rows"] = Json::Value(Json::arrayValue);
 }
 
 const Json::Value& Inspect() { return layout; }
+vec2 ShopInset(unsigned player) { return player == shop_host ? shop_inset : vec2(0.0f); }
 
 void Dispose() {
     panel_art.clear();
@@ -84,7 +90,10 @@ void Draw(Engine& engine) {
         if (!local_host) return;
         count = static_cast<int>(std::max(1u, online->LocalLobbyPlayerCount()));
     }
-    if (engine.PlayerHasMenu(Input::Instance()->GetLocalPlayerInputID(local_index)) || scene->level->HasScriptFocus()) return;
+    // PlayerHasMenu also reports the progression shop, which replaces the personal pause menus.
+    const bool survival_shop = online->IsSurvivalMode() && FriendlyProgression::ShopOpen();
+    if ((!survival_shop && engine.PlayerHasMenu(Input::Instance()->GetLocalPlayerInputID(local_index))) ||
+        scene->level->HasScriptFocus()) return;
     if (!engine.GetSplitScreen()) { camera = 0; count = 1; }
     const auto view = LocalViewports::ForPlayer(camera, count);
     // ImGui positions use logical window coordinates, including on HiDPI displays.
@@ -114,10 +123,27 @@ void Draw(Engine& engine) {
     ImFont* heading = ImGui_ImplSdlGL3_MenuFont(true);
     if (!body) body = ImGui::GetFont();
     if (!heading) heading = body;
+    const bool compact = survival_shop && (view_width < 1180.0f || view_height < 320.0f);
     const float scale = std::max(0.9f, std::min(1.25f, view_height / 720.0f));
-    const float margin = 16.0f * scale, padding = 14.0f * scale, gap = 6.0f * scale;
-    const float font_size = 22.0f * scale, title_size = 30.0f * scale;
-    const float panel_width = std::min(540.0f * scale, view_width - 2.0f * margin);
+    const float margin = (compact ? 4.0f : 16.0f) * scale;
+    const float padding = (compact ? 5.0f : 14.0f) * scale, gap = (compact ? 2.0f : 6.0f) * scale;
+    const float font_size = (compact ? 17.0f : 22.0f) * scale, title_size = (compact ? 19.0f : 30.0f) * scale;
+    float panel_width = std::min(540.0f * scale, view_width - 2.0f * margin);
+    if (compact) {
+        // Leave the equipment lists and controller actions room in small or split viewports.
+        char next[96];
+        std::snprintf(next, sizeof(next), "Next wave ~%.1fx  |  Pressure %+.1f%%",
+                      cached_snapshot["rating"]["next"].asDouble(), 100.0 * cached_snapshot["progression"]["pressure"].asDouble());
+        const auto title = rows.front();
+        panel_width = view_width - 2 * margin;
+        const auto summary = title + "  |  " + next;
+        if (heading->CalcTextSizeA(title_size, FLT_MAX, 0, summary.c_str()).x <= panel_width - 2 * padding)
+            rows = {summary};
+        else
+            rows = {title, next};
+    } else if (survival_shop) {
+        panel_width = std::min(panel_width, view_width * 0.32f);
+    }
     const float text_width = panel_width - 2.0f * padding;
     std::vector<float> row_heights;
     float panel_height = 2.0f * padding;
@@ -129,7 +155,8 @@ void Draw(Engine& engine) {
         panel_height += row_height + (i + 1 < rows.size() ? gap : 0.0f);
     }
     panel_height = std::min(panel_height, view_height - 2.0f * margin);
-    const ImVec2 at(bottom_right.x - margin - panel_width, top_left.y + margin);
+    const ImVec2 at(bottom_right.x - margin - panel_width,
+                    compact ? bottom_right.y - margin - panel_height : top_left.y + margin);
     const ImVec2 end(at.x + panel_width, at.y + panel_height);
 
     ImGui::SetNextWindowPos(at, ImGuiCond_Always);
@@ -139,6 +166,16 @@ void Draw(Engine& engine) {
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoBackground;
     if (ImGui::Begin("##host_difficulty_conditions", nullptr, flags)) {
+        if (survival_shop) {
+            shop_host = host;
+            shop_inset = compact ? vec2(0.0f, panel_height + 2 * margin) : vec2(panel_width + 2 * margin, 0.0f);
+            const ImVec2 dock_min(compact ? top_left.x : bottom_right.x - shop_inset.x(),
+                                  compact ? bottom_right.y - shop_inset.y() : top_left.y);
+            ImGui::GetBackgroundDrawList()->AddRectFilled(dock_min, bottom_right, IM_COL32(24, 21, 19, 249));
+            layout["shop_inset"] = Json::Value(Json::arrayValue);
+            layout["shop_inset"].append(shop_inset.x());
+            layout["shop_inset"].append(shop_inset.y());
+        }
         const uint32_t art_flags = PX_NOMIPMAP | PX_NOCONVERT | PX_NOREDUCE;
         if (!panel_art.valid() && FindFilePath("Data/Textures/ui/menus/main/black_square.png", kAnyPath, false).isValid())
             panel_art = engine.GetAssetManager()->LoadSync<TextureAsset>("Data/Textures/ui/menus/main/black_square.png", art_flags, 0);

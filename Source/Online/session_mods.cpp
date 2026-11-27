@@ -127,7 +127,10 @@ void Restore(const Json::Value& mods, Scope scope) {
 // Character deployment resets native XP attempts and freezes enemy stats.
 // Scripts already received their saved JSON before level initialization. Keep
 // any changes their lobby or level hooks have made since.
-void RestoreGameplay(const Json::Value& mods) {
+void RestoreGameplay(const Json::Value& save) {
+    const auto& mods = save["session_mods"];
+    if (!mods.isMember("og-online-progression"))
+        FriendlyProgression::SetSavedProfileRun("save-" + save["image_id"].asString());
     for (const auto& id : mods.getMemberNames())
         if (const auto* mod = ActiveMod(id)) Runtime(*mod, mods[id], false);
 }
@@ -235,10 +238,25 @@ void MigrateSave(Json::Value& save) {
     const char* id = "og-online-progression";
     auto& mods = save["session_mods"];
     if (!mods.isObject() || !mods.isMember(id) || !mods[id].isObject()) return;
-    // Both schemas already use independent XP options. Restore upgrades
-    // missing Luck at rank zero and retains pending hands from schema 3.
-    if (mods[id]["version"] == "2" || mods[id]["version"] == "3" || mods[id]["version"] == "4") {
-        mods[id]["version"] = "5";
+    auto& runtime = mods[id]["runtime"];
+    if (runtime.isObject()) {
+        const auto& old = static_cast<const Json::Value&>(runtime);
+        const bool missing = !old.isMember("profile_run") && !old.isMember("profile_event") && !old.isMember("profile_completion");
+        const bool empty = old["profile_run"] == "" && old["profile_event"] == "" &&
+                           old["profile_completion"].isUInt() && old["profile_completion"].asUInt() == 0;
+        if (missing || empty) {
+            // Pre-profile cards have no run identity. Reopening the same card
+            // must reproduce its receipts, including before its first milestone.
+            runtime["profile_run"] = "save-" + save["image_id"].asString();
+            runtime["profile_event"] = "";
+            runtime["profile_completion"] = 0u;
+        }
+    }
+    // Numeric weapon unlocks in earlier saves map to their categories during
+    // restore. Pending hands keep their first eligible category in draw order.
+    if (mods[id]["version"] == "2" || mods[id]["version"] == "3" || mods[id]["version"] == "4" ||
+        mods[id]["version"] == "5" || mods[id]["version"] == "6" || mods[id]["version"] == "7") {
+        mods[id]["version"] = "8";
         return;
     }
     if (mods[id]["version"] != "1") return;
@@ -258,7 +276,7 @@ void MigrateSave(Json::Value& save) {
         }
         prefs.removeMember("progression_combat");
     }
-    mods[id]["version"] = "5";
+    mods[id]["version"] = "8";
 }
 
 void KeepLobbyEdits(Json::Value& mods) {

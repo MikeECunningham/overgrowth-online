@@ -21,6 +21,7 @@
 //   limitations under the License.
 //
 //-----------------------------------------------------------------------------
+#include <Online/local_profiles.h>
 #include <thread>
 #include <chrono>
 #include "online.h"
@@ -966,6 +967,7 @@ void Online::StartMultiplayer(MultiplayerMode multiplayerMode, bool adopting_wor
 
     if (!adopting_world && !SessionSaves::Loading()) SessionMods::Clear();
     FriendlyProgression::NewSession();
+    LocalProfiles::ResetLobby();
     lobby_slots_.clear();
     lobby_auto_admission_ = true;
     online_session = new OnlineSession();

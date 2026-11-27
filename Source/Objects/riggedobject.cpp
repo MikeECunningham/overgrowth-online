@@ -1703,9 +1703,25 @@ void ApplyNewEdgeCollapseToModel(const Model& base_model,
 }
 }  // namespace
 
-void RiggedObject::Load(const std::string& character_path, vec3 pos, SceneGraph* scenegraph_ptr, OGPalette& palette) {
-    // CharacterRef char_ref = Characters::Instance()->ReturnRef(character_path);
-    CharacterRef char_ref = Engine::Instance()->GetAssetManager()->LoadSync<Character>(character_path);
+void RiggedObject::Load(const std::string& character_path, vec3 pos, SceneGraph* scenegraph_ptr, OGPalette& palette, const std::string& outfit) {
+    auto* assets = Engine::Instance()->GetAssetManager();
+    CharacterRef body = assets->LoadSync<Character>(character_path);
+    CharacterRef char_ref = body;
+    SkeletonAssetRef physics_rig;
+    if (!outfit.empty() && outfit != character_path) {
+        CharacterRef look = assets->LoadSync<Character>(outfit);
+        if (look.valid() && look->GetTag("species") == body->GetTag("species")) {
+            auto visual_rig = assets->LoadSync<SkeletonAsset>(look->GetSkeletonPath());
+            physics_rig = assets->LoadSync<SkeletonAsset>(body->GetSkeletonPath());
+            if (visual_rig.valid() && physics_rig.valid()) {
+                const auto& anatomy = physics_rig->GetData().bone_parents;
+                const auto& binding = visual_rig->GetData().bone_parents;
+                const auto shared = std::min(anatomy.size(), binding.size());
+                if (shared && std::equal(binding.begin(), binding.begin() + shared, anatomy.begin()))
+                    char_ref = look;
+            }
+        }
+    }
     scenegraph_ = scenegraph_ptr;
 
     // ofc = ObjectFiles::Instance()->ReturnRef(char_ref->GetObjPath());
@@ -1749,13 +1765,16 @@ void RiggedObject::Load(const std::string& character_path, vec3 pos, SceneGraph*
 
     model_id[0] = Models::Instance()->CopyModel(the_model_id);
     Model* model = &Models::Instance()->GetModel(model_id[0]);
-    floor_height = model->min_coords[1];
+    ObjectFileRef physics_object = char_ref->path_ == body->path_ ? ofc : assets->LoadSync<ObjectFile>(body->GetObjPath());
+    const int physics_model = physics_object->model_name == ofc->model_name ? the_model_id :
+                              mi->loadModel(physics_object->model_name, _MDL_CENTER);
+    floor_height = mi->GetModel(physics_model).min_coords[1];
 
     SetTranslation(pos);
 
     skeleton_.SetBulletWorld(scenegraph_->bullet_world_);
 
-    const std::string& skeleton_path = char_ref->GetSkeletonPath();
+    const std::string& skeleton_path = body->GetSkeletonPath();
 
     // Overgrowth Online: streamed poses name their skeleton (FNV-1a of its
     // file), so another machine never shows one body's pose on another
@@ -1768,7 +1787,7 @@ void RiggedObject::Load(const std::string& character_path, vec3 pos, SceneGraph*
     }
 
     FZXAssetRef fzx_ref;
-    std::string fzx_path = ofc->model_name.substr(0, ofc->model_name.size() - 3) + "fzx";
+    std::string fzx_path = physics_object->model_name.substr(0, physics_object->model_name.size() - 3) + "fzx";
     if (FileExists(fzx_path.c_str(), kDataPaths | kModPaths)) {
         // fzx_ref = FZXAssets::Instance()->ReturnRef(fzx_path);
         fzx_ref = Engine::Instance()->GetAssetManager()->LoadSync<FZXAsset>(fzx_path);
@@ -1780,7 +1799,7 @@ void RiggedObject::Load(const std::string& character_path, vec3 pos, SceneGraph*
     model->morph_transform_vec.resize(num_verts);
 
     // SkeletonAssetRef skeleton_asset_ref = SkeletonAssets::Instance()->ReturnRef(skeleton_path);
-    SkeletonAssetRef skeleton_asset_ref = Engine::Instance()->GetAssetManager()->LoadSync<SkeletonAsset>(skeleton_path);
+    SkeletonAssetRef skeleton_asset_ref = assets->LoadSync<SkeletonAsset>(char_ref->GetSkeletonPath());
     const SkeletonFileData& data = skeleton_asset_ref->GetData();
     model->bone_weights = data.model_bone_weights;
     model->bone_ids = data.model_bone_ids;
@@ -1836,7 +1855,7 @@ void RiggedObject::Load(const std::string& character_path, vec3 pos, SceneGraph*
         mt.script_weight = 1.0f;
         morph_targets.push_back(mt);
     }
-    if (!LoadSimplificationCache(char_ref->path_)) {
+    if (!LoadSimplificationCache(char_ref->path_, skeleton_asset_ref->checksum())) {
         const Model& base_model = Models::Instance()->GetModel(model_id[0]);
         WOLFIRE_SIMPLIFY::SimplifyModelInput smi;
         // Prepare model to pass to simplify algorithm
@@ -2006,12 +2025,25 @@ void RiggedObject::Load(const std::string& character_path, vec3 pos, SceneGraph*
                     morph_target.CalcVertsModified(model_id[lod_index], lod_index);
                 }
             }
-            SaveSimplificationCache(char_ref->path_);
+            SaveSimplificationCache(char_ref->path_, skeleton_asset_ref->checksum());
         } else {
             LOGI << "Simplification failed!" << std::endl;
         }
     }
 
+    // Some outfits add cosmetic tail bones. Bind those vertices to the closest
+    // ancestor on the gameplay skeleton, after loading the outfit's LOD cache.
+    const auto body_bones = physics_rig.valid() ? physics_rig->GetData().bone_parents.size() : data.bone_parents.size();
+    if (char_ref->path_ != body->path_ && data.bone_parents.size() > body_bones) {
+        for (int id : model_id) if (id >= 0) {
+            for (auto& indices : mi->GetModel(id).bone_ids) for (int k = 0; k < 4; ++k) {
+                int bone = static_cast<int>(indices[k]);
+                while (bone >= static_cast<int>(body_bones) && bone < static_cast<int>(data.bone_parents.size()))
+                    bone = data.bone_parents[bone];
+                indices[k] = static_cast<float>(std::max(0, bone));
+            }
+        }
+    }
     Model* attach_model = &Models::Instance()->GetModel(model_id[0]);
     blood_surface.AttachToModel(attach_model);
     blood_surface.sleep_time = game_timer.game_time;
@@ -2035,7 +2067,7 @@ void RiggedObject::Load(const std::string& character_path, vec3 pos, SceneGraph*
     fur_tex = Engine::Instance()->GetAssetManager()->LoadSync<TextureAsset>("Data/Textures/fur_fin.tga");
     Textures::Instance()->setWrap(GL_REPEAT, GL_REPEAT);
 
-    skeleton_.AlternateHull(ofc->model_name, Models::Instance()->GetModel(model_id[0]).old_center, model_char_scale);
+    skeleton_.AlternateHull(physics_object->model_name, mi->GetModel(physics_model).old_center, model_char_scale);
     display_bone_matrices.resize(skeleton_.physics_bones.size());
     display_bone_transforms.resize(skeleton_.physics_bones.size());
     animation_frame_bone_matrices.resize(skeleton_.physics_bones.size());
@@ -4070,7 +4102,9 @@ AnimationClient& RiggedObject::GetAnimClient() {
 
 static const int simp_cache_vers = 11;
 
-void RiggedObject::SaveSimplificationCache(const std::string& path) {
+const std::string& RiggedObject::AppearanceObjectPath() const { return ofc->path_; }
+
+void RiggedObject::SaveSimplificationCache(const std::string& path, unsigned short rig_checksum) {
     FILE* file;
     Path found_path = FindFilePath(path.c_str(), kAnyPath, false);
     if (found_path.isValid())
@@ -4079,7 +4113,8 @@ void RiggedObject::SaveSimplificationCache(const std::string& path) {
         LOGW << "Couldn't find path to \"" << path << "\" when saving simplification cache. This might result in a mod writing to the wrong directory" << std::endl;
         file = my_fopen((GetWritePath(CoreGameModID).c_str() + path + ".lod_cache").c_str(), "wb");
     }
-    unsigned short checksum = skeleton_.skeleton_asset_ref->checksum() +
+    if (!file) return;
+    unsigned short checksum = rig_checksum +
                               Models::Instance()->GetModel(model_id[0]).checksum;
     for (auto& morph_target : morph_targets) {
         checksum += morph_target.checksum;
@@ -4141,7 +4176,7 @@ void RiggedObject::SaveSimplificationCache(const std::string& path) {
     fclose(file);
 }
 
-bool RiggedObject::LoadSimplificationCache(const std::string& path) {
+bool RiggedObject::LoadSimplificationCache(const std::string& path, unsigned short rig_checksum) {
     char lod_cache_path[kPathSize];
     if (FindFilePath((path + ".lod_cache").c_str(), lod_cache_path, kPathSize, kAnyPath, false) == -1) {
         return false;
@@ -4151,18 +4186,15 @@ bool RiggedObject::LoadSimplificationCache(const std::string& path) {
         return false;
     }
     int vers;
-    fread(&vers, sizeof(int), 1, file);
-    if (vers != simp_cache_vers) {
-        return false;
-    }
-    unsigned short checksum = skeleton_.skeleton_asset_ref->checksum() +
+    std::unique_ptr<FILE, decltype(&fclose)> input(file, &fclose);
+    if (fread(&vers, sizeof(int), 1, file) != 1 || vers != simp_cache_vers) return false;
+    unsigned short checksum = rig_checksum +
                               Models::Instance()->GetModel(model_id[0]).checksum;
     for (auto& morph_target : morph_targets) {
         checksum += morph_target.checksum;
     }
     unsigned short file_checksum;
-    fread(&file_checksum, sizeof(unsigned short), 1, file);
-    if (file_checksum != checksum) {
+    if (fread(&file_checksum, sizeof(unsigned short), 1, file) != 1 || file_checksum != checksum) {
         return false;
     }
     for (unsigned i = 1; i < 4; ++i) {
@@ -4239,7 +4271,6 @@ bool RiggedObject::LoadSimplificationCache(const std::string& path) {
             }
         }
     }
-    fclose(file);
     return true;
 }
 

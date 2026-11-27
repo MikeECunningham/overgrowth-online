@@ -391,7 +391,7 @@ class RiggedObject : public Object {
     mat4 GetBoneRotation(int bone);
     vec3 GetBoneLinearVel(int bone);
     void SetSkeletonOwner(Object *owner);
-    void Load(const std::string &character_path, vec3 pos, SceneGraph *_scenegraph, OGPalette &palette);
+    void Load(const std::string &character_path, vec3 pos, SceneGraph *_scenegraph, OGPalette &palette, const std::string &outfit);
     void SetAnimUpdatePeriod(int update_script_period);
     float FetchRotation();
     void SetDamping(float amount);
@@ -426,8 +426,9 @@ class RiggedObject : public Object {
     void InvalidatedItem(ItemObjectScriptReader *invalidated);
     int GetTimeBetweenLastTwoAnimUpdates();
     int GetTimeSinceLastAnimUpdate();
-    void SaveSimplificationCache(const std::string &path);
-    bool LoadSimplificationCache(const std::string &path);
+    const std::string &AppearanceObjectPath() const;
+    void SaveSimplificationCache(const std::string &path, unsigned short rig_checksum);
+    bool LoadSimplificationCache(const std::string &path, unsigned short rig_checksum);
     void CreateFurModel(int model_id, int fur_model_id);
     void MoveRagdollPart(const std::string &label, const vec3 &position, float strength_mult) const;
     void FixedRagdollPart(int boneID, const vec3 &position) const;

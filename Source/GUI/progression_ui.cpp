@@ -1,5 +1,6 @@
 // Per-seat experience readout and progression shop. Apache-2.0.
 #include "progression_ui.h"
+#include "difficulty_hud.h"
 
 #include <imgui.h>
 #include <GUI/dimgui/imgui_impl_sdl_gl3.h>
@@ -14,6 +15,7 @@
 #include <Main/engine.h>
 #include <Main/scenegraph.h>
 #include <Online/friendly_progression.h>
+#include <Online/weapon_categories.h>
 #include <Online/armor_protection.h>
 #include <Online/online.h>
 #include <UserInput/input.h>
@@ -52,8 +54,8 @@ int arena_announcement_frame = -1;
 
 constexpr float stats_width = 174.0f;
 constexpr float stats_line_height = 22.0f;
-// Name, five stats, optional Luck, two armor lines, with padding and section gaps.
-constexpr float full_stats_height = 9 * stats_line_height + 25.0f;
+// Name, seven combat stats, optional Luck and two armor lines.
+constexpr float full_stats_height = 11 * stats_line_height + 25.0f;
 
 float gameplay_scale(const Box& area) {
     const float scale = std::max(0.55f, std::min({1.16f, area.w / 420.0f, area.h / 480.0f}));
@@ -152,7 +154,7 @@ struct Seat {
     double next_move = 0;
     bool accept_down = false, back_down = false;
     unsigned reward_generation = 0;
-    uint16_t next_reward_key = 0;
+    uint16_t next_reward_key = 0, next_shop_key = 0;
     uint32_t next_reward_pad = 0;
     ImVec2 previous_mouse{-10000,-10000};
     void reset_list() { focus.clear(); scroll = {}; dropdown = false; drag_column = -1; }
@@ -171,7 +173,10 @@ struct Artwork {
 Artwork card_art(const std::string& id, int material) {
     if (id == "health") return {nullptr, "VIT"};
     if (id == "restore_health") return {nullptr, "HEAL"};
-    if (id == "damage") return {nullptr, "DMG"};
+    if (id == "damage") return {nullptr, "DMG"}; // A pending reward from an older save.
+    if (id == "bone_damage") return {nullptr, "BONE"};
+    if (id == "flesh_damage") return {nullptr, "FLESH"};
+    if (id == "fall_resistance") return {nullptr, "FALL"};
     if (id == "speed") return {nullptr, "SPD"};
     if (id == "stealth_passive") return {nullptr, "STL"};
     if (id == "stealth_active") return {nullptr, "SNK"};
@@ -192,9 +197,11 @@ Artwork card_art(const std::string& id, int material) {
     };
     if (id.size() == 7 && id.compare(0, 6, "armor_") == 0 && id[6] >= '0' && id[6] <= '8')
         return armor[id[6] - '0'];
-    for (const auto& weapon : FriendlyProgression::Weapons()) if (id == weapon.key)
-        return {weapon.artwork, id == "dagger" ? "DGR" : id == "sword" ? "SWD" :
-                weapon.offhand ? "KNF" : id == "spear" ? "SPR" : id == "staff" ? "STF" : "WPN", false, true, id == "staff"};
+    if (const auto* weapon = WeaponCategories::Find(id)) {
+        const auto& art = weapon->skins.front().artwork;
+        return {art.empty() ? nullptr : art.c_str(), id == "dagger" ? "DGR" : id == "sword" ? "SWD" :
+                weapon->offhand ? "KNF" : id == "spear" ? "SPR" : id == "staff" ? "STF" : "WPN", false, true, id == "staff"};
+    }
     if (id == "race_upgrade") return {nullptr, "RACE"};
     if (id == "recruit") return {"Character/turner", "BOT"};
     return {"Character/rabbitguard", "AI"};
@@ -231,7 +238,7 @@ void draw_card_art(ImDrawList* draw, const Box& area, const Artwork& art, ImU32 
         auto item = thumbnails.find(art.path);
         if (item == thumbnails.end()) {
             item = thumbnails.emplace(art.path, TextureAssetRef()).first;
-            const std::string path = std::string("Data/UI/spawner/thumbs/") + art.path + ".png";
+            const std::string path = std::string(art.path).compare(0, 5, "Data/") == 0 ? art.path : std::string("Data/UI/spawner/thumbs/") + art.path + ".png";
             if (FindFilePath(path.c_str(), kAnyPath, false).isValid())
                 item->second = Engine::Instance()->GetAssetManager()->LoadSync<TextureAsset>(path, PX_NOMIPMAP|PX_NOCONVERT|PX_NOREDUCE, 0);
         }
@@ -311,7 +318,9 @@ void stats_column(ImDrawList* draw, Box box, const Json::Value& stats, float sca
         y += line;
     };
     row("Durability", "x"+number(stats["durability"].asDouble()));
-    row("Damage", "x"+number(stats["damage"].asDouble()));
+    row("Bone damage", "x"+number(stats["bone_damage"].asDouble()));
+    row("Flesh damage", "x"+number(stats["flesh_damage"].asDouble()));
+    row("Fall resistance", number(stats["fall_resistance"].asDouble()*100,1)+"%");
     row("Movement", "x"+number(stats["movement"].asDouble()));
     row("Passive stealth", number((1-stats["passive_range"].asDouble())*100)+"%");
     row("Active stealth", number((1-stats["active_range"].asDouble())*100)+"%");
@@ -342,7 +351,7 @@ float input_depth(const PlayerInput* input, const char* key) {
     return it != input->key_down.end() && it->second.count > 0 ? it->second.depth : 0.0f;
 }
 
-enum class Action { TargetMenu, Target, PageShop, PageLoadout, PageTeam, Buy, Heal, Equip, Sell, Leader, Ready, Loop };
+enum class Action { TargetMenu, Target, PageShop, PageLoadout, PageTeam, Buy, Heal, Equip, EquipRace, Sell, Leader, Ready, Loop };
 struct Button {
     std::string id, title, detail, badge;
     Action action;
@@ -358,8 +367,13 @@ struct Panel {
     std::array<Box, 2> list{};
     std::array<float, 2> total{};
     float scale;
-    bool columns = false;
+    bool columns = false, compact_cards = false;
     std::vector<Button> buttons;
+    struct Heading { const char* title; float y; };
+    std::vector<Heading> sections;
+    std::string empty_upgrades;
+    Box empty_text{};
+    float empty_font_size = 0;
 };
 
 std::string target_name(const Json::Value& rows, uint32_t id, const std::string& fallback) {
@@ -368,28 +382,32 @@ std::string target_name(const Json::Value& rows, uint32_t id, const std::string&
     return fallback;
 }
 
-Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::Value& v) {
+Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::Value& v, bool keyboard_owner) {
     Panel p{};
     p.bounds = area;
     p.scale = std::max(0.48f, std::min({1.22f, area.w/490.0f, area.h/375.0f}));
-    const float s = p.scale, pad = 12*s, gap = 6*s, line = 30*s;
+    const float s = p.scale, pad = 12*s, gap = 6*s, line = 36*s;
+    const float primary = std::max(30.f, 48*s);
     const float sidebar = 174*s;
     p.stats = {area.x+area.w-pad-sidebar,area.y+pad,sidebar,area.h-2*pad};
     const float x = area.x+pad, w = area.w-2*pad-sidebar-gap;
     float y = area.y+pad;
-    p.heading = {x,y,w,line}; y += line+gap;
+    p.heading = {x,y,w,30*s}; y += p.heading.h+gap;
     const float bottom = area.y+area.h-pad;
     p.wallet = {x,y,w,33*s}; y += p.wallet.h+gap;
     const bool paid = v["shop_enabled"].asBool();
     const bool ready = v["ready"].asBool();
     const bool loop = v["can_loop"].asBool();
     const float footer_width = loop ? (w-gap)*0.5f : w;
-    p.buttons.push_back({"ready",ready ? "Ready  [x]" : "Ready", "", "", Action::Ready,
-                         {x+w-footer_width,bottom-line,footer_width,line},paid || loop || !ready});
+    std::string ready_label = ready ? "Ready  [x]" : "Ready";
+    if (keyboard_owner) ready_label += "   [Enter]";
+    p.buttons.push_back({"ready",ready_label, "", "", Action::Ready,
+                         {x+w-footer_width,bottom-primary,footer_width,primary},paid || loop || !ready});
     if (loop)
         p.buttons.push_back({"loop", v["loop"].asBool() ? "Loop campaign  [x]" : "Loop campaign  [ ]", "", "", Action::Loop,
-                             {x,bottom-line,footer_width,line},!ready});
-    p.note = {x,bottom-line-gap-35*s,w,35*s};
+                             {x,bottom-primary,footer_width,primary},!ready});
+    const float note_height = (area.h < 430 ? 24 : 35)*s;
+    p.note = {x,bottom-primary-gap-note_height,w,note_height};
     if (!paid) return p;
     const bool can_buy = v["can_buy"].asBool();
     const bool shared = v["shared"].asBool();
@@ -401,18 +419,19 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     for (const auto& card : cards) if (card["id"].asString() == "restore_health") recovery = &card;
     const float target_width = recovery ? (w-gap)*.36f : w;
     p.buttons.push_back({"target", name + (targets.size() > 1 ? "   v" : ""), "", "", Action::TargetMenu,
-                         {x,y,target_width,line}, targets.size() > 1});
+                         {x,y,target_width,recovery ? primary : line}, targets.size() > 1});
     if (recovery) {
         const auto& card = *recovery;
         const double spend = card["cost"].asDouble();
         const int quote = card.get("heal_quote", card["cost"]).asInt();
-        std::string text = "Heal   " + std::to_string(quote) + " / " + std::to_string(card["full_cost"].asInt()) + " XP";
+        std::string text = (keyboard_owner ? std::string("Heal [Space]   ") : std::string("Heal   ")) +
+                           std::to_string(quote) + " / " + std::to_string(card["full_cost"].asInt()) + " XP";
         if (spend < quote)
             text += "   Spend " + number(spend, spend == std::floor(spend) ? 0 : 2) + " XP";
         p.buttons.push_back({"restore_health",text,card["description"].asString(),"",Action::Heal,
-                             {x+target_width+gap,y,w-target_width-gap,line},card["available"].asBool()});
+                             {x+target_width+gap,y,w-target_width-gap,primary},card["available"].asBool()});
     }
-    y += line+gap;
+    y += (recovery ? primary : line)+gap;
     p.columns = w >= 615*s && area.h >= 450 && !seat.dropdown;
     if (!p.columns && !seat.dropdown) {
         const int tabs = int(can_buy) + 1 + int(shared);
@@ -448,19 +467,66 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     }
     if (can_buy && (p.columns || seat.page == Page::Shop)) {
         Box list = p.list[0];
-        const int columns = std::max(1, static_cast<int>((list.w-rail+gap)/(141*s+gap)));
+        int columns = std::max(1, static_cast<int>((list.w-rail+gap)/(141*s+gap)));
+        p.compact_cards = list.h < 25*s+(list.w-rail-(columns-1)*gap)/columns;
+        if (p.compact_cards) columns = std::max(1, static_cast<int>((list.w-rail+gap)/(220*s+gap)));
         const float size = (list.w-rail-(columns-1)*gap)/columns;
-        int index = 0;
+        const float height = p.compact_cards ? std::max(42*s,std::min(68*s,list.h-25*s)) : size;
+        static const char* titles[] = {"Stats", "Armor", "Daggers", "Main-hand weapons", "Characters"};
+        std::array<std::vector<const Json::Value*>,5> groups;
         for (const auto& card : cards) {
-            if (card["id"].asString() == "restore_health") continue;
-            const int col = index%columns, r = index/columns;
-            p.buttons.push_back({card["id"].asString(),card["label"].asString(),card["description"].asString(),
-                                 std::to_string(card["cost"].asInt())+" XP",Action::Buy,
-                                 {list.x+col*(size+gap),list.y+r*(size+gap),size,size},card["available"].asBool(),true,UINT32_MAX,
-                                 static_cast<unsigned>(std::max(0,std::min(4,card["rarity"].asInt()))), card["armor_material"].asInt()});
-            ++index;
+            const auto id = card["id"].asString();
+            if (id == "restore_health") continue;
+            size_t group = 0;
+            if (card["armor_material"].asInt()) group = 1;
+            else if (const auto* weapon = WeaponCategories::Find(id)) group = weapon->offhand ? 2 : 3;
+            else if (id == "race_upgrade" || id == "recruit" || id == "ai") group = 4;
+            groups[group].push_back(&card);
         }
-        p.total[0] = ((index+columns-1)/columns)*(size+gap);
+        for (size_t group = 0; group < groups.size(); ++group) {
+            if (groups[group].empty()) continue;
+            p.sections.push_back({titles[group],list.y+p.total[0]});
+            p.total[0] += 25*s;
+            const float first_row = list.y+p.total[0];
+            int index = 0;
+            for (const auto* entry : groups[group]) {
+                const auto& card = *entry;
+                const int col = index%columns, r = index/columns;
+                p.buttons.push_back({card["id"].asString(),card["label"].asString(),card["description"].asString(),
+                                     std::to_string(card["cost"].asInt())+" XP",Action::Buy,
+                                     {list.x+col*(size+gap),first_row+r*(height+gap),size,height},card["available"].asBool(),true,UINT32_MAX,
+                                     static_cast<unsigned>(std::max(0,std::min(4,card["rarity"].asInt()))), card["armor_material"].asInt()});
+                ++index;
+            }
+            p.total[0] += ((index+columns-1)/columns)*(height+gap)+gap;
+        }
+        if (p.sections.empty()) {
+            const bool profile_unlocks = v.isMember("map_unlock_count");
+            if (profile_unlocks && v["map_unlock_count"].asUInt() == 0) {
+                p.empty_upgrades = "No upgrades unlocked for this map.";
+            } else {
+                p.empty_upgrades = recovery ? "Use Heal above for recovery. No other upgrades are available for this character."
+                                            : "No upgrades available for this character on this map.";
+                if (targets.size() > 1) p.empty_upgrades += " Select another character to check their upgrades.";
+            }
+            if (profile_unlocks) {
+                p.empty_upgrades += "\n\nEarn 1 token for 10 campaign clears, 10 Arena match wins, or 10 Survival batteries. "
+                                    "Spend it on Roll upgrade in Settings > Profiles or your lobby entry. "
+                                    "Everyone shares new unlocks on the next map.";
+            }
+            const float width = std::max(1.0f, list.w - rail - 2*gap);
+            auto measure = [&](float size) {
+                return font(false)->CalcTextSizeA(size, std::numeric_limits<float>::max(), width, p.empty_upgrades.c_str()).y;
+            };
+            p.empty_font_size = 17*s;
+            float text_height = measure(p.empty_font_size);
+            if (text_height + 2*gap > list.h) {
+                p.empty_font_size = 15*s;
+                text_height = measure(p.empty_font_size);
+            }
+            p.empty_text = {list.x+gap, list.y+gap, width, text_height};
+            p.total[0] = text_height + 2*gap;
+        }
     }
     const unsigned c = p.columns && can_buy ? 1 : 0;
     if (p.columns || seat.page == Page::Loadout) {
@@ -473,14 +539,21 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
                 item.isMember("price") ? "Sell this carried item for its full shop price." : "");
         }
         p.total[c] += gap;
-        const int equipped = v["big_weapon"].asInt();
+        const std::string equipped = v["main_category"].asString();
         const bool edit = !ready && v["can_equip"].asBool();
-        row(c,Action::Equip,"equip_none",equipped == 0 ? "(*)  No main weapon" : "( )  No main weapon",edit);
-        for (const auto& weapon : FriendlyProgression::Weapons()) {
-            if (!v[std::string("owned_")+weapon.key].asBool()) continue;
-            const bool selected = weapon.offhand ? v["dagger"].asBool() && v["dagger_variant"].asInt() == weapon.selection : equipped == weapon.selection;
+        for (const auto& race : v["races"]) {
+            const auto id = race["id"].asString();
+            const bool selected = id == v["equipped_race"].asString();
+            row(c,Action::EquipRace,"race_"+id, std::string(selected ? "(*)  " : "( )  ") + race["name"].asString(),
+                edit && !selected,UINT32_MAX,"Equip this race.");
+        }
+        p.total[c] += gap;
+        row(c,Action::Equip,"equip_none",equipped.empty() ? "(*)  No main weapon" : "( )  No main weapon",edit);
+        for (const auto& weapon : WeaponCategories::Catalog()) {
+            if (!v[std::string("owned_")+weapon.id].asBool()) continue;
+            const bool selected = weapon.offhand ? v["offhand_category"].asString() == weapon.id : equipped == weapon.id;
             const std::string mark = weapon.offhand ? (selected ? "[x]  " : "[ ]  ") : (selected ? "(*)  " : "( )  ");
-            row(c,Action::Equip,std::string("equip_")+weapon.key,mark+weapon.label,edit);
+            row(c,Action::Equip,std::string("equip_")+weapon.id,mark+weapon.label,edit);
         }
     }
     if (shared && (p.columns || seat.page == Page::Team)) {
@@ -510,6 +583,7 @@ void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, 
         case Action::Buy: case Action::Heal: action = "buy"; break;
         case Action::Sell: action = "sell"; break;
         case Action::Equip: action = "equip"; key = btn.id.substr(6); break;
+        case Action::EquipRace: action = "equip_race"; key = btn.id.substr(5); break;
         case Action::Ready: action = "ready"; key.clear(); break;
         case Action::Loop: action = "loop"; key = v["loop"].asBool() ? "no" : "yes"; break;
         case Action::Leader: action = "leader"; target = btn.target; key.clear(); break;
@@ -520,19 +594,33 @@ void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, 
         s.notice_until = now+1.8;
     }
 }
-// Consume key-down events once, including a tap released between rendered frames.
-int reward_shortcut(Seat& seat, const Keyboard& keys, bool accepting) {
-    const uint16_t unseen = keys.keycode_input_buffer_sequence_counter - seat.next_reward_key;
-    seat.next_reward_key = keys.keycode_input_buffer_sequence_counter;
-    if (!accepting) return -1;
+// The buffer contains physical presses, including a tap released between frames.
+size_t first_new_key(const Keyboard& keys, uint16_t& cursor) {
+    const uint16_t unseen = keys.keycode_input_buffer_sequence_counter - cursor;
+    cursor = keys.keycode_input_buffer_sequence_counter;
     const size_t count = std::min<size_t>(unseen,keys.keycode_input_buffer_count);
-    for (size_t i = keys.keycode_input_buffer_count-count; i < keys.keycode_input_buffer_count; ++i) {
+    return keys.keycode_input_buffer_count-count;
+}
+int reward_shortcut(Seat& seat, const Keyboard& keys, bool accepting) {
+    const size_t first = first_new_key(keys,seat.next_reward_key);
+    if (!accepting) return -1;
+    for (size_t i = first; i < keys.keycode_input_buffer_count; ++i) {
         const auto& key = keys.keycode_input_buffer[i];
         if (key.mod & (KMOD_CTRL | KMOD_SHIFT | KMOD_ALT | KMOD_GUI)) continue;
         if (key.scancode >= SDL_SCANCODE_1 && key.scancode <= SDL_SCANCODE_4) return key.scancode-SDL_SCANCODE_1;
         if (key.scancode >= SDL_SCANCODE_KP_1 && key.scancode <= SDL_SCANCODE_KP_4) return key.scancode-SDL_SCANCODE_KP_1;
     }
     return -1;
+}
+SDL_Scancode shop_shortcut(Seat& seat, const Keyboard& keys, bool accepting) {
+    const size_t first = first_new_key(keys,seat.next_shop_key);
+    if (accepting) for (size_t i = first; i < keys.keycode_input_buffer_count; ++i) {
+        const auto& key = keys.keycode_input_buffer[i];
+        if (key.mod & (KMOD_CTRL | KMOD_SHIFT | KMOD_ALT | KMOD_GUI)) continue;
+        const auto code = static_cast<SDL_Scancode>(key.scancode);
+        if (code == SDL_SCANCODE_RETURN || code == SDL_SCANCODE_KP_ENTER || code == SDL_SCANCODE_SPACE || code == SDL_SCANCODE_E) return code;
+    }
+    return SDL_SCANCODE_UNKNOWN;
 }
 
 void checkpoint_reward(ImDrawList* draw, const Box& viewport, const Box& wallet, const Box& stats,
@@ -666,7 +754,7 @@ void navigate(const Panel& p, Seat& seat, int dx, int dy) {
 void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, Box area, Seat& seat,
           const PlayerInput* input, bool mouse_owner, double now, Json::Value& audit) {
     ImGuiIO& io = ImGui::GetIO();
-    Panel p = build_panel(seat,area,player,view);
+    Panel p = build_panel(seat,area,player,view,mouse_owner);
     const float s = p.scale;
     if (!selected(p,seat.focus)) {
         seat.focus = "ready";
@@ -726,7 +814,12 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     seat.old_dx = dx; seat.old_dy = dy;
     const bool accept = input_depth(input,"menu_return") > 0.5f;
     const bool back = input_depth(input,"menu_cancel") > 0.5f;
-    const bool accept_press = accept && !seat.accept_down;
+    const auto& keys = Input::Instance()->getKeyboard();
+    const auto shortcut = shop_shortcut(seat,keys,mouse_owner && !io.WantTextInput);
+    const bool reserved = mouse_owner && (keys.isScancodeDown(SDL_SCANCODE_RETURN,KIMF_ANY) ||
+                                          keys.isScancodeDown(SDL_SCANCODE_KP_ENTER,KIMF_ANY) ||
+                                          keys.isScancodeDown(SDL_SCANCODE_SPACE,KIMF_ANY));
+    const bool accept_press = shortcut == SDL_SCANCODE_E || (accept && !seat.accept_down && !reserved && shortcut == SDL_SCANCODE_UNKNOWN);
     if (back && !seat.back_down) {
         if (seat.dropdown) { seat.reset_list(); seat.focus = "target"; }
         else seat.focus = "ready";
@@ -742,8 +835,10 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     const std::string clock = seconds >= 0 ? std::to_string(seconds)+"s" : "";
     label(draw,{p.heading.x,p.heading.y,p.heading.w-(clock.empty()?0:52*s),p.heading.h},title+"  /  "+player.playername,25*s,ivory,true);
     if (!clock.empty()) label(draw,{p.heading.x+p.heading.w-49*s,p.heading.y,49*s,p.heading.h},clock,22*s,gold,true);
-    balance(draw,seat.wallet,p.wallet,now,s);
-    stats_column(draw,p.stats,view["stats"],s);
+    if (p.wallet.w) {
+        balance(draw,seat.wallet,p.wallet,now,s);
+        stats_column(draw,p.stats,view["stats"],s);
+    }
     if (p.columns) {
         const bool can_buy = view["can_buy"].asBool();
         for (int c = 0; c <= int(can_buy); ++c) {
@@ -756,9 +851,34 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     bool clicked = mouse_owner && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     const Button* chosen = nullptr;
     audit["visible_cards"] = Json::Value(Json::arrayValue);
+    const auto& grid = p.list[0];
+    if (!p.empty_upgrades.empty()) {
+        Box text = p.empty_text;
+        text.y -= seat.scroll[0];
+        draw->PushClipRect(grid.min(), grid.max(), true);
+        label(draw, text, p.empty_upgrades, p.empty_font_size, muted, false, true);
+        draw->PopClipRect();
+        audit["empty_upgrades"] = p.empty_upgrades;
+    }
+    if (!p.sections.empty()) {
+        draw->PushClipRect(grid.min(),grid.max(),true);
+        for (const auto& section : p.sections) {
+            const float sy = section.y-seat.scroll[0];
+            audit["sections"].append(section.title);
+            if (sy+25*s <= grid.y || sy >= grid.y+grid.h) continue;
+            label(draw,{grid.x,sy,grid.w-12*s,24*s},section.title,17*s,ivory,true);
+            const float left = grid.x + font(true)->CalcTextSizeA(17*s,10000,0,section.title).x+8*s;
+            draw->AddLine({left,sy+11*s},{grid.x+grid.w-12*s,sy+11*s},IM_COL32(137,119,92,255),s);
+        }
+        draw->PopClipRect();
+    }
     for (const auto& b : p.buttons) {
         if (!visible(b,p,seat)) continue;
         Box box = screen_box(b,seat);
+        if (b.action == Action::Heal || b.action == Action::Ready)
+            for (float edge : {box.x,box.y,box.x+box.w,box.y+box.h}) audit["action_rects"][b.id].append(edge);
+        if (b.action == Action::EquipRace)
+            for (float edge : {box.x, box.y, box.x+box.w, box.y+box.h}) audit["race_rects"][b.id].append(edge);
         const auto& list = p.list[b.column];
         if (b.in_list) draw->PushClipRect(list.min(),list.max(),true);
         bool hovered = hover_mouse && box.contains(io.MousePos) && (!b.in_list || list.contains(io.MousePos));
@@ -775,7 +895,17 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
         }
         draw->AddRectFilled(box.min(),box.max(),surface,3*s);
         draw->AddRect(box.min(),box.max(),border,3*s,0,focused ? 3*s : s);
-        if (card) {
+        if (card && p.compact_cards) {
+            const float edge = 5*s, icon = std::min(box.h-2*edge,box.w*.25f);
+            draw_card_art(draw,{box.x+edge,box.y+edge,icon,box.h-2*edge},card_art(b.id,b.armor_material),tier.accent);
+            const float tx = box.x+icon+2*edge, width = box.w-icon-3*edge;
+            const float badge_h = 16*s, title_h = box.h-2*edge-badge_h;
+            float title_size = 16*s;
+            while (title_size > 12*s && font(true)->CalcTextSizeA(title_size,10000,width,b.title.c_str()).y > title_h)
+                title_size -= s;
+            label(draw,{tx,box.y+edge,width,title_h},b.title,title_size,ivory,true,true);
+            label(draw,{tx,box.y+box.h-edge-badge_h,width,badge_h},b.badge+"   "+tier.name,13*s,tier.accent);
+        } else if (card) {
             const float edge = 9*s, content = box.w - 2*edge, art_h = box.h * 0.44f;
             draw_card_art(draw,{box.x+edge,box.y+edge,content,art_h},card_art(b.id, b.armor_material),tier.accent);
             const float title_y = box.y+edge+art_h+4*s, footer_y = box.y+box.h-32*s;
@@ -815,7 +945,9 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     audit["columns"] = p.columns;
     audit["page"] = !view["shop_enabled"].asBool() ? "ready" :
                     seat.page == Page::Shop ? "shop" : seat.page == Page::Loadout ? "equipment" : "team";
-    audit["stats_drawn"] = true;
+    audit["stats_drawn"] = p.wallet.w > 0;
+    if (shortcut == SDL_SCANCODE_SPACE) chosen = selected(p,"restore_health");
+    if (shortcut == SDL_SCANCODE_RETURN || shortcut == SDL_SCANCODE_KP_ENTER) chosen = selected(p,"ready");
     if (chosen) dispatch(*chosen,seat,player.player_id,view,now);
 }
 }
@@ -928,7 +1060,10 @@ void Draw(Engine& engine) {
         // A Survival battery's reward hand is the first part of that seat's intermission.
         const bool battery_reward = view["shop_open"].asBool() && online->IsSurvivalMode() && view["reward_pending"].asBool();
         bool open = view["shop_open"].asBool() && !battery_reward;
-        const Box area = gameplay_viewport(std::max(0,player.screen-1),count,display);
+        Box area = gameplay_viewport(std::max(0,player.screen-1),count,display);
+        const vec2 inset = DifficultyHUD::ShopInset(player.player_id);
+        area.w -= inset.x();
+        area.h -= inset.y();
         if (area.w < 1 || area.h < 1) continue;
         const int actual = devices->GetLocalPlayerInputID(player.local_index);
         const PlayerInput* input = devices->GetController(actual);
@@ -942,6 +1077,7 @@ void Draw(Engine& engine) {
         if (!display_reward) seat.reward_generation = 0;
         seat.wallet.update(view,now);
         if (open && !seat.shopping) {
+            seat.next_shop_key = devices->getKeyboard().keycode_input_buffer_sequence_counter;
             seat.target = player.player_id;
             seat.page = view["can_buy"].asBool() ? Page::Shop : Page::Loadout;
             seat.reset_list();

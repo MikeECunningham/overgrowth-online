@@ -191,7 +191,8 @@ class MovementObject : public Object {
     float net_restore_fraction = 1.0f;
     bool net_has_wound = false;
     // Overgrowth Online: become the character the owner switched to (no random colours)
-    void ApplyNetworkCharacter(const std::string& path);
+    void ApplyNetworkCharacter(const std::string& path, bool refresh_outfit = false);
+    std::string profile_outfit;
     double net_local_since_ms = 0.0;   // Overgrowth Online: when it last became ours to run (OnlineClockMs)
     double net_revive_grace_ms = 0.0;  // Overgrowth Online: until then (OnlineClockMs) hotspots leave it alone (just revived)
     std::string rig_character_path;  // the character file the current rig was built from

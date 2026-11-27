@@ -631,6 +631,9 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                     c["item_connections"].append(entry);
                 }
                 c["char_path"] = mo->character_path;
+                c["profile_outfit"] = mo->profile_outfit;
+                c["appearance_object"] = mo->rigged_object()->AppearanceObjectPath();
+                c["skeleton_id"] = mo->rigged_object()->network_skeleton_id;
                 c["campaign_scaling_source"] = mo->GetScriptParams()->HasParam("Campaign Scaling Source") ?
                     mo->GetScriptParams()->ASGetInt("Campaign Scaling Source") : -1;
                 for (const auto& field : {std::make_pair("campaign_scaling_slot", "Campaign Scaling Slot"),
@@ -708,7 +711,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
                     if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetFloatVar(name);
                 }
                 for (const char* name : {"species", "ko_shield", "max_ko_shield", "campaign_ai_tweak", "campaign_armor_regions",
-                                         "progression_health", "progression_damage", "progression_speed", "progression_stealth_passive", "progression_stealth_active"}) {
+                                         "progression_health", "progression_fall_resistance", "progression_speed", "progression_stealth_passive", "progression_stealth_active"}) {
                     if (mo->ASHasVar(name)) c["combat_stats"][name] = mo->ASGetIntVar(name);
                 }
                 if (mo->ASHasVar("g_wearing_metal_armor"))

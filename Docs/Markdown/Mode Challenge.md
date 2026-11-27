@@ -149,6 +149,37 @@ In Survival, a finite upgrade timer adds its seconds to the next battery
 countdown. Zero keeps the ordinary break. Players can shop until the first wave
 deploys, or mark themselves ready earlier. Infinite waits for players to finish.
 
+**Cosmetic progression** and **Non-cosmetic progression** are independent
+checkboxes in Settings → Mod settings → Friendly Progression. When either is enabled,
+a profile earns one token for every 10 campaign levels cleared, 10 Arena matches
+won or 10 Survival batteries survived. Each mode tracks its own milestones.
+Named profiles retain unfinished milestones across sessions, and loading an
+earlier save preserves credit for clears already counted. Both roll buttons
+appear in **Settings → Profiles** for the selected profile and in each player's
+lobby entry when their corresponding options are enabled. **Roll cosmetic** and
+**Roll upgrade** each spend one token from the same balance and draw from that
+profile's remaining prizes.
+
+Profiles start with zero gameplay upgrades. On each fresh map the host combines
+the upgrades of participating humans across teams. Anyone in that lobby can use
+the combined pool for the map, including bots and late joiners. Unlocks first
+affect the shop and free upgrade choices at the next map start. Saved maps retain
+their original pool. Guests keep their progress and unlocks for the current
+session.
+
+Each basic stat unlock covers all purchasable ranks of that stat. Armor unlocks
+one material for one body slot. Race and companion AI unlock one step at a time.
+An upgrade roll first draws among rarity tiers that contain eligible, unowned
+upgrades, with relative weights of 65,536, 512, 64, 8 and 1 from common through
+legendary. It then chooses uniformly within that tier. Only the eight basic stats
+are common. With every tier available, the chance to draw a remaining stat is
+about 99.1%. Higher armor, race and training tiers require their previous unlock.
+
+Cosmetic rolls use per-item weights of 32 for common, 16 for uncommon, 8 for
+rare, 3 for epic and 1 for legendary. Turning cosmetic progression off restores
+the profile's original outfits and weapon selections. Turning it on again
+restores the saved cosmetic collection.
+
 **Independent upgrades** give each player a wallet and an individual shop on
 their screen. Use the target selector for self or friendly bots. **Shared
 upgrades** give each team a wallet. Its first connected human by seat ID leads
@@ -162,13 +193,20 @@ Bots can receive gear and AI training. The multiplayer upgrade timer can
 advance everyone after 10, 15, 30, 60 or 120 seconds.
 Infinite waits for everyone. Solo Campaign and Arena shops wait for the player.
 
+In the shop, **Space** buys the displayed heal for the selected target and
+**Enter** or **keypad Enter** toggles Ready for the keyboard player. **E** or
+the controller’s confirm button activates the focused control. Stats, armor,
+daggers, main-hand weapons and character upgrades each start their own row.
+Race upgrades and recruitment are in the Characters section.
+
 Each stat card shows the gain for its next rank. The gain decreases linearly
 from the first rank through rank 20. Every later rank gives the same gain as
 rank 20, while purchase prices continue to rise.
 
 | Purchase | XP | Effect |
 | --- | ---: | --- |
-| Durability, damage, speed | 16, 23, 34 for the first three ranks of each stat | First rank adds 16%, 12% or 6% of the base stat, respectively. Rank 20 and later add 4%, 3% or 1.5%. |
+| Durability, bone damage, flesh damage, speed | 16, 23, 34 for the first three ranks of each stat | Durability starts at +16%, either damage stat at +12%, and speed at +6%. From rank 20 the respective gains are +4%, +3% and +1.5%. |
+| Fall resistance | Same prices as the other stats | The first rank reduces damage from a high-speed landing by about 10.7%. It also protects ragdolls during long descents. The character's authored fall multiplier still applies, and level death volumes enforce their map boundaries. |
 | Passive or active stealth | Same prices as the other stats | Sight and hearing ranges shrink by 7% of their original range at rank 1 and by 0.25% per rank from rank 20 onward. |
 | Luck | Same prices as the other stats | Increases the chance of a free choice and improves the odds of drawing higher-priced upgrades |
 | Restore health | Up to 8 + 2 per completed campaign level, Arena round or Survival wave | The card shows current price / maximum XP. The most depleted of permanent, temporary, blood and block health determines the price, rounded to the nearest XP. Any injury costs at least 1 XP. A healthy fighter shows 0 XP. If your balance is smaller than the quote, you can spend it all to repair that fraction of each health pool and reduce ongoing bleeding. A free choice heals in full. |
@@ -177,10 +215,18 @@ rank 20, while purchase prices continue to rise.
 | Chitin | 310–600 | Second limb guard or first chest, back or head piece |
 | Dog armor | 465–900 | Upgrades any Chitin slot |
 | Therium grey | 775–1,500 | Upgrades any Dog armor slot |
-| Dagger | 140 | Separate offhand toggle |
-| Staff, spear, sword or broadsword | 360, 880, 1,040 or 1,280 | Select one large weapon or choose None |
+| Daggers and throwing knives | 350 | Separate offhand toggle |
+| Sticks and scabbards, tools and torches, staves, machetes and hatchets | 450, 475, 500, 600 | Select one main-hand category |
+| Spears and glaives, swords, hammers, broadswords | 1,000, 1,200, 1,320, 1,480 | Select one main-hand category |
 | Recruit | 2,400 for the team's first | Starts at Casual AI. Subsequent recruits cost 2.25× the preceding price |
 | Train a bot | 1,800, 3,400, then 8,600 | Hardcore, Expert, then Nightmare. Nightmare earns XP and buys its lowest stat ranks at each shop |
+
+Equipment lists each race the selected fighter can wear, from their starting race
+through their highest purchase. Selecting a race is free. A new purchase equips
+the new race. Shared purchases go to the next human with the lowest *purchased*
+tier, even when a teammate chooses to wear a lower tier. Companions keep a
+separate selection. Save cards preserve the owned range and equipped race for
+each unit.
 
 Weapon unlocks belong to the recipient for the session. Their selected loadout
 returns on the next deployment, including checkpoint retries. Weapons that
@@ -191,8 +237,63 @@ is selected. Selecting both a large weapon and a dagger gives exactly that pair.
 
 The stats column shows each player’s armor. The green bar shows banked XP as a share of the projected final balance, which includes the estimated reward from remaining enemies. The purple bar shows pending XP against the estimated reward for the current encounter. Both bars display the actual balance for the player or shared team.
 
-All six stat cards keep their neutral Common appearance at every rank.
+All eight stat cards keep their neutral Common appearance at every rank.
 Active stealth reduces detection range while crouched and passive stealth
-applies otherwise. During an unarmed or staff rear
-choke, the holder’s attack damage increases knockout speed and the defender’s
-durability extends the time they can resist.
+applies otherwise. Bone damage increases blunt impacts and the knockout speed
+of unarmed or staff rear chokes. Flesh damage increases cuts and the bleeding
+they cause. An attack that does both applies each multiplier to its own portion.
+The defender's durability also extends the time they can resist a choke.
+
+### Weapon categories and skins
+
+A shop unlock buys a gameplay category. Its new weapon uses the recipient's
+selected skin. Bots receive the mundane skin. A dropped, stolen, recovered or
+sold item retains its appearance. Its resale price comes from the category.
+Existing saves merge variant purchases and pending reward cards into the same
+categories. Painted flint knives share the plain flint knife's category.
+The Cinderbreathe knife, spear, sword, broadsword and sword scabbard share
+their dog equivalents. The two glaives retain separate entries because their
+reach differs. The glass and metal macuahuitls have different collision meshes.
+
+An active mod can put a `weapon_categories.xml` file beside its `mod.xml`.
+Use a stable mod-prefixed category ID and a stable skin ID within each category.
+The first skin is the mundane item. A category without alternatives still has
+a shop card. Use `Extend` to add a skin to an existing category. For example,
+a mod with ID `my-arsenal` could declare the following items, using its own
+item XML and thumbnail paths.
+
+```xml
+<WeaponCategories>
+  <Category id="my-arsenal.sabre" label="Sabre" hand="main" price="sword" rarity="3">
+    <Skin id="plain" label="Plain sabre" path="Data/Items/MyArsenal/sabre.xml"
+          artwork="Data/UI/MyArsenal/sabre.png" rarity="0"/>
+    <Skin id="royal" label="Royal sabre" path="Data/Items/MyArsenal/royal_sabre.xml"
+          artwork="Data/UI/MyArsenal/royal_sabre.png" rarity="4"/>
+  </Category>
+  <Extend id="spear">
+    <Skin id="my-arsenal.oak" label="Oak spear" path="Data/Items/MyArsenal/oak_spear.xml"
+          artwork="Data/UI/MyArsenal/oak_spear.png" rarity="1"/>
+  </Extend>
+</WeaponCategories>
+```
+
+Choose `main` or `off` for the loadout slot. Price families are `dagger`,
+`stick`, `tool`, `machete`, `staff`, `spear`, `sword`, `hammer` and
+`broadsword`. Category rarity colors the shop unlock. Skin rarity ranges
+from 0 (common) to 4 (legendary) and determines the cosmetic roll weight.
+Each physical item path can belong to one category. Skin files share the
+representative's gameplay declarations, including mass, grip, reach, line
+points and materials, attack overrides, reactions and animations. Point their
+appearance XMLs at the same model and sharpness map to preserve the physical
+collision hull and thrown-weapon penetration. Color and normal textures may
+vary. The `cubemap` shader uses a distinct tangent-enabled model representation
+and must match across skins. The comparison accepts reordered XML attributes,
+indentation and equivalent numeric spellings for grip hand count, reach,
+reach multiplier, point coordinates and mass with the same units. It preserves
+element order, unit suffixes, mesh and sharpness-map paths and unknown fields,
+even when different declarations might behave alike. Bullet derives a weapon's physical hull
+from its model path. The item supplies the combat-line materials. Scenery
+uses its own object-level material overrides. The registry skips incomplete
+items, including missing animations and appearance dependencies, and logs
+skins with mismatched mechanics. Online players need the same asset mod
+installed to display its physical items.

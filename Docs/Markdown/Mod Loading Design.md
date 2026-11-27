@@ -121,6 +121,50 @@ the level and the first adapter to register a given hook and key owns it.
 Use `level.GetHookFloat(hook_path, name, value)` to read a live float declared
 by that hook. It returns false if the hook or float is unavailable.
 
+### System settings and player profiles
+
+A mod can add a tab to **Settings → Mod settings** by declaring its controls in
+`mod.xml`. Settings persist in the local write directory. The mod ID scopes both
+setting keys and subprofile IDs.
+
+```xml
+<ModSettings>
+    <Setting key="collection" label="Use collection outfits" type="checkbox" default="0"/>
+    <Setting key="reward_style" label="Reward style" type="choice" default="1">
+        <Choice>Quiet</Choice>
+        <Choice>Show card</Choice>
+    </Setting>
+</ModSettings>
+<ProfileLayers>
+    <SubProfile id="rewards" active_when="collection"/>
+    <SubProfile id="records"/>
+</ProfileLayers>
+```
+
+Read a control with `ProfileGetModSetting(mod_id, key)`. Checkboxes return zero
+or one. Choice values are zero-based indices. Each declared subprofile has its
+own cosmetic selections and JSON data. An enabled `active_when` control selects
+that subprofile's cosmetics. A subprofile without a control can store records
+independently. If multiple overlays are enabled, Friendly Progression's
+collection takes precedence, followed by mod ID and subprofile ID in lexical
+order.
+
+Use `ProfileGetModData(profile_name, mod_id, subprofile_id)` and
+`ProfileSetModData(profile_name, mod_id, subprofile_id, json)` to read or replace
+the subprofile's JSON. An empty data field returns JSON `null`. An unknown
+profile or inactive declaration returns an empty string on read. Check the
+boolean result of writes. Existing profiles can receive a subprofile the first
+time a newly installed mod writes data. Removing a profile removes every
+subprofile, including those belonging to disabled or uninstalled mods.
+
+System settings operate on the current machine. Lobby selectors and purchases
+use the host's profiles. Remote players can change their assigned profiles and
+cosmetics through the lobby controls. Peers receive selected cosmetics, lobby
+names, and the unlocks displayed in the lobby. Arbitrary mod profile data stays
+in the local archive, at `Data/player_profiles.json` in the write
+directory. Session saves refer to profiles by stable identity, so renaming a
+profile preserves its assignments.
+
 ### Synchronize and save gameplay data
 
 The host calls `SessionSetModData(mod_id, json_string)` with a JSON object.

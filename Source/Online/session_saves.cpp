@@ -109,7 +109,7 @@ bool ValidVec(const Json::Value& v) {
 bool ValidArenaState(const Json::Value& value) {
     if (!value.isObject() || value.get("version", 0) != 1 || !value["round"].isInt() ||
         value["round"].asInt() < 1 || value["round"].asInt() > 1000000 ||
-        !value["phase"].isInt() || value["phase"].asInt() < 0 || value["phase"].asInt() > 6 ||
+        !value["phase"].isInt() || value["phase"].asInt() < 0 || value["phase"].asInt() > 7 ||
         !value["max_points"].isInt() || value["max_points"].asInt() < 1 || value["max_points"].asInt() > 1000000 ||
         !value["match_size"].isInt() || value["match_size"].asInt() < 1 || value["match_size"].asInt() > 4096 ||
         !value["weapons"].isBool() || !value["ffa"].isBool()) return false;
@@ -374,6 +374,9 @@ void OnReturnToLobby() {
 }
 void SceneLoaded() {
     client_scene = Online::Instance()->IsClient();
+    // A saved map already has its original shared unlock pool. Fresh maps
+    // sample the participating profiles once, before the first game tick.
+    if (stage != Stage::LoadWorld) FriendlyProgression::CaptureMapUpgrades();
     initial_save = !client_scene;
     scene_ready = Clock::now();
 }
@@ -529,7 +532,7 @@ void Update() {
             // Level entry resets pending XP and shopping time. Restore these once,
             // after deployment, including when Arena is waiting for shoppers.
             if (!pending["lobby"].asBool()) net->RestoreGameRules(pending["rules"]);
-            SessionMods::RestoreGameplay(pending["session_mods"]);
+            SessionMods::RestoreGameplay(pending);
             ledger_applied = true;
         }
         if (arena_restore.get("round", 0).asInt() > 0 && arena_round == 0) return;

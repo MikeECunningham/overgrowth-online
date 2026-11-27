@@ -176,14 +176,14 @@ def friendly_progression(ctx):
     new_leader = p2 if leader==p1 else p1
     old_machine,new_machine=(h,g) if leader==p1 else (g,h)
     before=wallet(new_machine,new_leader)
-    act(new_machine,new_leader,'buy','damage')
+    act(new_machine,new_leader,'buy','bone_damage')
     time.sleep(.3)
     assert wallet(old_machine,leader)==before,"unauthorized team member spent XP"
     assert act(old_machine,leader,'leader',target=new_leader)
     wait(lambda: view(new_machine,new_leader)["team_leader"]==new_leader,"logical team leadership transferred")
-    assert act(new_machine,new_leader,'buy','damage')
+    assert act(new_machine,new_leader,'buy','bone_damage')
     wait(lambda: wallet(old_machine,leader)[0]==before[0]-16,"team leader debits shared wallet")
-    assert any(t["damage"]==1 for t in data(h,p1)["ledger"]["teams"])
+    assert any(t["bone_damage"]==1 for t in data(h,p1)["ledger"]["teams"])
     # The leader pays the injured teammate's quote from the team wallet.
     other_actor = avatar(old_machine, leader)
     _code(old_machine, "permanent_health=.5f;temp_health=.5f;blood_health=1;block_health=1;", other_actor)

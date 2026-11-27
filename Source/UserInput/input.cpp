@@ -1000,6 +1000,10 @@ void Input::ProcessBindings() {
             // Menu scrolling follows the physical stick independently of camera remaps and inversion.
             js->joystick.ProcessBinding(ControllerInput::R_STICK_YN, "menu_scroll_up");
             js->joystick.ProcessBinding(ControllerInput::R_STICK_YP, "menu_scroll_down");
+            js->joystick.ProcessBinding(ControllerInput::L_TRIGGER, "menu_profile_category_prev");
+            js->joystick.ProcessBinding(ControllerInput::R_TRIGGER, "menu_profile_category_next");
+            js->joystick.ProcessBinding(ControllerInput::LB, "menu_profile_skin_prev");
+            js->joystick.ProcessBinding(ControllerInput::RB, "menu_profile_skin_next");
             StrMap& gamepad_map = bindings_[gamepad_name];
             for (auto& xb_iter : gamepad_map) {
                 const std::string& input_str = xb_iter.second;

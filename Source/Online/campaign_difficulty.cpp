@@ -4,6 +4,8 @@
 #include <Online/campaign_equipment.h>
 #include <Online/armor_protection.h>
 #include <Online/friendly_progression.h>
+#include <Online/weapon_categories.h>
+#include <Online/local_profiles.h>
 #include <Online/online.h>
 #include <Online/online_utility.h>
 #include <AI/navmesh.h>
@@ -1946,9 +1948,12 @@ std::string Online::DifficultyHUDSnapshot() {
     const bool growth = master && (rates["time"].asInt() || (performance_mode && performance_rate) || completion_rate);
     const bool party_stats = applied.stats && (applied.humans > 1 || applied.bots > 0);
     const bool ai = applied.ai_enabled && CampaignDifficulty::AIAmount(applied.humans, applied.pressure, applied.ai_rate) > 0;
-    const bool scaled = retained_factors || retained_extras || ((eligible_npcs || arena) && (party_stats || ai || growth || applied.pressure > 0.00001));
+    // Both modes schedule new opponents after a gap with no living enemies.
+    const bool schedules_enemies = arena || IsSurvivalMode();
+    const bool scaled = retained_factors || retained_extras || ((eligible_npcs || schedules_enemies) && (party_stats || ai || growth || applied.pressure > 0.00001));
     result["scaled_context"] = scaled;
-    result["visible"] = authoritative && gameplay && scaled && !CoopCutscene() && !RemoteCutsceneActive() && !graph->level->DialogueCameraControl();
+    result["visible"] = authoritative && gameplay && scaled && !(IsSurvivalMode() && graph->level->showing_results) &&
+                        !CoopCutscene() && !RemoteCutsceneActive() && !graph->level->DialogueCameraControl();
     result["rating"]["current"] = result["current"]["threat"];
     result["rating"]["next"] = result["next"]["threat"];
     result["rating"]["approximate"] = true;
@@ -2045,12 +2050,9 @@ struct ProgressionEquipmentState {
 };
 
 namespace {
-const char* SelectedWeapon(const FriendlyProgression::Build& build, bool offhand) {
-    if (offhand ? !build.dagger : !build.big_weapon) return nullptr;
-    for (const auto& weapon : FriendlyProgression::Weapons())
-        if (weapon.offhand == offhand && weapon.selection == (offhand ? build.dagger_variant : build.big_weapon))
-            return weapon.path;
-    return nullptr;
+const WeaponCategories::Category* SelectedWeapon(const FriendlyProgression::Build& build, bool offhand) {
+    const auto& id = offhand ? build.offhand_weapon : build.main_weapon;
+    return id.empty() ? nullptr : WeaponCategories::Find(id);
 }
 
 Object* OwnedWeapon(SceneGraph* graph, const ProgressionEquipmentState::Weapon& entry) {
@@ -2063,7 +2065,7 @@ Object* OwnedWeapon(SceneGraph* graph, const ProgressionEquipmentState::Weapon& 
 
 void PrepareProgressionWeapons(Online* online, SceneGraph* graph, MovementObject* actor,
                                const FriendlyProgression::Build& build, ProgressionEquipmentState::Seat& seat) {
-    if (seat.prepared || (!build.big_weapon && !build.dagger)) return;
+    if (seat.prepared || (build.main_weapon.empty() && build.offhand_weapon.empty())) return;
     seat.prepared = true;
     bool kept_starting_dagger = false;
     std::set<ObjectID> seen;
@@ -2087,12 +2089,12 @@ void PrepareProgressionWeapons(Online* online, SceneGraph* graph, MovementObject
         const auto& asset = item->item_ref();
         if (!asset.valid() || asset->GetItemType() != _weapon) continue;
         bool dagger = asset->GetLabel() == "knife";
-        for (const auto& weapon : FriendlyProgression::Weapons())
-            if (object->obj_file == weapon.path) { dagger = weapon.offhand; break; }
+        if (const auto* category = WeaponCategories::ForItem(object->obj_file)) dagger = category->offhand;
         // A bought large weapon replaces the supplied large weapon. A bought
         // dagger supplements one supplied dagger, except with a chosen large
         // weapon: that pair is the complete selected loadout.
-        const bool replace = dagger ? build.dagger && (build.big_weapon || kept_starting_dagger) : build.big_weapon != 0;
+        const bool replace = dagger ? !build.offhand_weapon.empty() && (!build.main_weapon.empty() || kept_starting_dagger)
+                                    : !build.main_weapon.empty();
         if (dagger && !replace) kept_starting_dagger = true;
         if (!replace) continue;
         seat.replaced.push_back({id, actor->GetID(), object->obj_file});
@@ -2110,13 +2112,11 @@ void PrepareProgressionWeapons(Online* online, SceneGraph* graph, MovementObject
 }
 
 bool IssueProgressionWeapon(Online* online, SceneGraph* graph, MovementObject* actor,
-                            const char* path, bool offhand, ProgressionEquipmentState::Seat& seat) {
-    auto& assets = *Engine::Instance()->GetAssetManager();
-    auto weapon = assets.LoadSync<Item>(path);
-    if (!weapon.valid()) return false;
+                            const WeaponCategories::Category& category, const PlayerState& member, ProgressionEquipmentState::Seat& seat) {
+    const bool offhand = category.offhand;
     auto& tracked = seat.weapons[offhand ? 1 : 0];
     Object* item = OwnedWeapon(graph, tracked);
-    if (item && item->obj_file != path) {
+    if (item && WeaponCategories::ForItem(item->obj_file) != &category) {
         // A mid-level reward can replace a sheathed or held weapon. Leave
         // the old item in the world if it was thrown or taken by somebody else.
         const auto& attachments = actor->rigged_object()->attached_items.items;
@@ -2132,6 +2132,12 @@ bool IssueProgressionWeapon(Online* online, SceneGraph* graph, MovementObject* a
         tracked = {};
         item = nullptr;
     }
+    // Cosmetics are chosen only when creating a physical item. A recovered
+    // purchase keeps the same skin even if its owner switched profiles.
+    const std::string path = item ? item->obj_file : WeaponCategories::Appearance(category,
+        member.is_bot ? "" : LocalProfiles::WeaponSkin(member.player_id, category.id)).path;
+    auto weapon = Engine::Instance()->GetAssetManager()->LoadSync<Item>(path);
+    if (!weapon.valid()) return false;
     AttachmentSlotList slots;
     actor->rigged_object()->AvailableItemSlots(weapon, &slots);
     // Prefer opposite hips. Long weapons without a sheath attachment start
@@ -2207,8 +2213,8 @@ void Online::RefreshProgressionLoadouts(bool arena_round) {
         for (int slot = 0; slot < 2; ++slot) {
             auto& tracked = entry.second.weapons[slot];
             Object* item = OwnedWeapon(graph, tracked);
-            const char* selected = SelectedWeapon(build, slot == 1);
-            if (item && selected && item->obj_file == selected) continue;
+            const auto* selected = SelectedWeapon(build, slot == 1);
+            if (item && selected && WeaponCategories::ForItem(item->obj_file) == selected) continue;
             if (item) graph->map_editor->DeleteID(item->GetID());
             tracked = {};
         }
@@ -2235,12 +2241,14 @@ void Online::ApplyProgressionEquipment(SceneGraph* graph) {
         if (!actor || !actor->as_context || !actor->rigged_object() || !actor->ASHasVar("progression_ai")) continue;
         const auto build = FriendlyProgression::GetBuild(member.player_id);
         const int ai = member.is_bot && build.trained ? build.ai : -1;
-        if (actor->ASGetIntVar("progression_health") != build.health || actor->ASGetIntVar("progression_damage") != build.damage ||
+        const bool has_fall_rank = actor->ASHasVar("progression_fall_resistance");
+        if (actor->ASGetIntVar("progression_health") != build.health ||
+            (has_fall_rank && actor->ASGetIntVar("progression_fall_resistance") != build.fall_resistance) ||
             actor->ASGetIntVar("progression_speed") != build.speed || actor->ASGetIntVar("progression_ai") != ai ||
             actor->ASGetIntVar("progression_stealth_passive") != build.stealth_passive ||
             actor->ASGetIntVar("progression_stealth_active") != build.stealth_active) {
             actor->ASSetIntVar("progression_health", build.health);
-            actor->ASSetIntVar("progression_damage", build.damage);
+            if (has_fall_rank) actor->ASSetIntVar("progression_fall_resistance", build.fall_resistance);
             actor->ASSetIntVar("progression_speed", build.speed);
             actor->ASSetIntVar("progression_stealth_passive", build.stealth_passive);
             actor->ASSetIntVar("progression_stealth_active", build.stealth_active);
@@ -2283,9 +2291,10 @@ void Online::ApplyProgressionEquipment(SceneGraph* graph) {
         if (seat.avatar != member.object_id) { seat.issued = 0; seat.prepared = false; seat.avatar = member.object_id; }
         PrepareProgressionWeapons(this, graph, actor, build, seat);
         for (int slot = 0; slot < 2; ++slot) {
-            const char* path = SelectedWeapon(build, slot == 1);
             const int bit = 1 << slot;
-            if (path && !(seat.issued & bit) && IssueProgressionWeapon(this, graph, actor, path, slot == 1, seat))
+            if (seat.issued & bit) continue;
+            const auto* category = SelectedWeapon(build, slot == 1);
+            if (category && IssueProgressionWeapon(this, graph, actor, *category, member, seat))
                 seat.issued |= bit;
         }
     }

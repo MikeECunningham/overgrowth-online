@@ -546,8 +546,8 @@ void MovementObject::SetNetworkProxy(bool proxy, bool resume) {
     }
 }
 
-void MovementObject::ApplyNetworkCharacter(const std::string& path) {
-    if (path == rig_character_path) {
+void MovementObject::ApplyNetworkCharacter(const std::string& path, bool refresh_outfit) {
+    if (!refresh_outfit && path == rig_character_path) {
         return;
     }
     if (!OnlineUtility::IsSafeCharacterPath(path)) {
@@ -565,8 +565,12 @@ void MovementObject::ApplyNetworkCharacter(const std::string& path) {
     if (HasFunction("void CheckSpecies()") && HasFunction("void CacheSkeletonInfo()") && HasFunction("void ResetLayers()")) {
         // aschar.as SwitchCharacter without dropping weapons (the stream says
         // what it holds) or random colours (the owner's come with its palette)
-        as_context->Execute("this_mo.char_path = \"" + path + "\"; character_getter.Load(this_mo.char_path); if(params.HasParam(\"Species\")) { params.SetString(\"Species\", character_getter.GetTag(\"species\")); } CheckSpecies(); "
-                            "this_mo.RecreateRiggedObject(this_mo.char_path); ResetLayers(); CacheSkeletonInfo();");
+        std::string change;
+        if (!refresh_outfit) {
+            change = "this_mo.char_path = \"" + path + "\"; character_getter.Load(this_mo.char_path); "
+                     "if(params.HasParam(\"Species\")) { params.SetString(\"Species\", character_getter.GetTag(\"species\")); } CheckSpecies(); ";
+        }
+        as_context->Execute(change + "this_mo.RecreateRiggedObject(this_mo.char_path); ResetLayers(); CacheSkeletonInfo();");
         if (HasFunction("void ResetSecondaryAnimation(bool include_tail)")) {
             as_context->Execute("ResetSecondaryAnimation(true);");  // (as SwitchCharacter: ears, tail, arms of the new body)
         }
@@ -1870,7 +1874,7 @@ void MovementObject::CreateRiggedObject() {
         rigged_object_->Load(character_path,
                              position,
                              scenegraph_,
-                             palette);
+                             palette, profile_outfit);
     }
     //}
     for (auto& i : palette) {

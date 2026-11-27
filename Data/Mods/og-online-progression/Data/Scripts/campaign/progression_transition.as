@@ -30,6 +30,7 @@ void FinishProgressionTransition() {
 
 void AdvanceCampaign(const string &in next_level) {
     if(progression_transition_pending || Online_IsClient()) return;
+    ProgressionCampaignComplete();
     if(ProgressionBeginShop(next_level == "")) {
         progression_destination = next_level;
         progression_transition_pending = true;

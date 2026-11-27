@@ -93,10 +93,10 @@ def progression_purchases(ctx):
               'ProgressionCheckpoint();ProgressionResetAttempt();}')
 
     for _ in range(30):
-        if view()["held"] >= 20000:
+        if view()["held"] >= 25000:
             break
         earn(100)
-    assert view()["held"] >= 20000 and view(p2)["held"] >= 5400
+    assert view()["held"] >= 25000 and view(p2)["held"] >= 5400
     shop()
     assert buy(p1, "recruit") == 2400
     first = next(p["id"] for p in _rows(game) if p["bot"])
@@ -106,7 +106,7 @@ def progression_purchases(ctx):
     second = next(p["id"] for p in _rows(game) if p["bot"] and p["id"] != first)
     assert build(second)["owner"] == p2 and cards(p1)["recruit"]["cost"] == 12150
     assert cards(rival)["recruit"]["cost"] == 2400
-    assert not ({"health", "speed", "damage"} & cards(p1, first).keys())
+    assert not ({"health", "speed", "bone_damage", "flesh_damage", "fall_resistance"} & cards(p1, first).keys())
     ai_prices = []
     for tier, cost in enumerate((1800, 3400, 8600), start=1):
         ai_prices.append(buy(p1, "ai", first))
@@ -118,8 +118,8 @@ def progression_purchases(ctx):
     assert buy(p1, "armor_3", first) == 155
     for region, price in enumerate((155, 155, 195, 195, 175, 175), 3):
         assert buy(p2, f"armor_{region}") == price
-    assert buy(p1, "dagger") == 140
-    assert buy(p1, "sword") == 1040 and buy(p1, "spear") == 880
+    assert buy(p1, "dagger") == 350
+    assert buy(p1, "sword") == 1200 and buy(p1, "spear") == 1000
     assert view()["owned_sword"] and view()["owned_spear"] and view()["owned_dagger"]
     for key, choice in (("none", 0), ("spear", 2), ("sword", 1)):
         act(p1, "equip", key)
@@ -152,11 +152,11 @@ def progression_purchases(ctx):
     # Only the trained ally earns XP. Confirm its stats rise at the next
     # shop, with at most one rank difference, alongside normal player XP.
     earn(15)
-    assert build(first)["health"] == build(first)["damage"] == build(first)["speed"] == 0
+    assert build(first)["health"] == build(first)["bone_damage"] == build(first)["flesh_damage"] == build(first)["speed"] == 0
     shop()
-    ranks = [build(first)[k] for k in ("health", "damage", "speed")]
+    ranks = [build(first)[k] for k in ("health", "bone_damage", "flesh_damage", "speed", "fall_resistance")]
     assert min(ranks) > 0 and max(ranks) - min(ranks) <= 1, ranks
-    assert all(build(second)[k] == 0 for k in ("health", "damage", "speed"))
+    assert all(build(second)[k] == 0 for k in ("health", "bone_damage", "flesh_damage", "speed", "fall_resistance"))
     assert cards(p1, first)["armor_3"]["label"] == "Chitin / Left forearm"
     assert buy(p1, "armor_3", first) == 310
     act(p1, "equip", "spear")

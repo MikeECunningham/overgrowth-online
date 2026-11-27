@@ -27,6 +27,7 @@ constexpr RankGains kStealthGain{.07, .0025}, kLuckGain{.04, .01};
 
 inline float DurabilityMultiplier(int rank) { return static_cast<float>(1.0 + kDurabilityGain.Total(rank)); }
 inline float DamageMultiplier(int rank) { return static_cast<float>(1.0 + kDamageGain.Total(rank)); }
+inline float FallDamageMultiplier(int rank) { return 1.0f / DamageMultiplier(rank); }
 inline float SpeedMultiplier(int rank) { return static_cast<float>(1.0 + kSpeedGain.Total(rank)); }
 inline float StealthRangeMultiplier(int rank) { return static_cast<float>(std::max(0.0, 1.0 - kStealthGain.Total(rank))); }
 inline int StatPrice(int rank, double base, double linear, double quadratic) {

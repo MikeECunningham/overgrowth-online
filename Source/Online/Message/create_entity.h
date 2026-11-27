@@ -43,9 +43,10 @@ class CreateEntity : public OnlineMessageBase {
     vec3 pos;
     ObjectID entity_object_id;
     bool stripped_npc = false;
+    bool staged = false;
 
    public:
-    CreateEntity(const string& path, const vec3& pos, ObjectID entity_object_id, bool stripped_npc = false);
+    CreateEntity(const string& path, const vec3& pos, ObjectID entity_object_id, bool stripped_npc = false, bool staged = false);
 
     static binn* Serialize(void* object);
     static void Deserialize(void* object, binn* l);

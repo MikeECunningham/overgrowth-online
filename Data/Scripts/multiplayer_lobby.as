@@ -5,6 +5,7 @@
 #include "music_load.as"
 #include "multiplayer_lobby_modes.as"
 #include "lobby_difficulty.as"
+#include "lobby_profiles.as"
 
 MusicLoad ml("Data/Music/menu.xml");
 IMGUI@ imGUI;
@@ -40,6 +41,7 @@ bool CanGoBack() {
         RemovePopup();
         return false;
     }
+    if(new_profile_seat >= 0) { new_profile_seat = -1; return false; }
     if(editing_name >= 0) {
         editing_name = -1;
         return false;
@@ -70,6 +72,7 @@ void Dispose() {
     ClearControllerItems();
     imGUI.clear();
     lobby_modes.resize(0);
+    profile_rows.resize(0);
     preview_texture.Clear();
     preview_path = "";
 }
@@ -103,7 +106,8 @@ void Update() {
     UpdateKeyboardMouse();
     imGUI.update();
     if(GetInputPressed(controller_player, "menu_cancel")) {
-        if(editing_name >= 0) editing_name = -1;
+        if(new_profile_seat >= 0) new_profile_seat = -1;
+        else if(editing_name >= 0) editing_name = -1;
         else if(lobby_difficulty_open && !ImGui_IsAnyPopupOpen()) { lobby_difficulty_open = false; focus_lobby_form = true; }
         else if(!ImGui_IsAnyPopupOpen()) this_ui.SendCallback("back");
     }
@@ -119,7 +123,7 @@ void Update() {
             lobby_displayed_mode = mode;
         }
     }
-    LobbySetJoinInputEnabled(!lobby_difficulty_open && !LobbyMigrationBusy() && editing_name < 0 && !ImGui_IsAnyItemActive() && !ImGui_IsAnyPopupOpen());
+    LobbySetJoinInputEnabled(!lobby_difficulty_open && !LobbyMigrationBusy() && editing_name < 0 && new_profile_seat < 0 && !ImGui_IsAnyItemActive() && !ImGui_IsAnyPopupOpen());
 }
 
 void Resize() { imGUI.doScreenResize(); setBackGround(); }
@@ -276,12 +280,18 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
         float list_height = min(230.0f * scale, max(100.0f, size.y * 0.35f));
         ImGui_BeginChild("maps", vec2(0.0f, list_height), true);
         MPWindowScale(1.0f);
-        string query = ToLowerCase(map_filter);
+        array<int>@ matches = mode.MatchingMaps(map_filter);
         int selected_map = LobbySelectedMap(mode);
-        for(uint i = 0; i < mode.maps.length(); ++i) {
-            if(query != "" && ToLowerCase(mode.maps[i].title).findFirst(query) < 0) {
-                continue;
-            }
+        ImGui_BeginDisabled(matches.length() == 0);
+        if(MPButton("Random map", vec2(-1.0f, 36.0f)) && LobbyChooseRandomMap(selected, matches, selected_map)) {
+            selected_map = LobbySelectedMap(mode);
+            notice = "";
+        }
+        LobbyHint("Choose a random map from this list.");
+        ImGui_EndDisabled();
+        if(matches.length() == 0) ImGui_TextColored(kLobbyDim, "No matching maps");
+        for(uint m = 0; m < matches.length(); ++m) {
+            int i = matches[m];
             if(MPComboOption(mode.maps[i].title + "##map" + i, int(i) == selected_map)) {
                 if(LobbyChooseMap(selected, int(i))) {
                     notice = "";
@@ -356,12 +366,15 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     for(uint i = 0; i < lobby_players.length(); ++i) {
         LobbyPlayer player = lobby_players[i];
         ImGui_PushID(int(player.id));
+        vec2 row_top = ImGui_GetCursorScreenPos();
+        vec3 team_color = LobbyTeamColor(player.team);
+        vec4 accent(team_color * (player.bot ? 0.42f : 0.8f) + vec3(player.bot ? 0.28f : 0.2f), 1.0f);
+        ImDrawList_AddRectFilled(row_top-vec2(3,2), row_top+vec2(ImGui_GetContentRegionAvailWidth()+3, ImGui_GetTextLineHeight()+2),
+                                 ImGui_GetColorU32(vec4(accent.x, accent.y, accent.z, player.bot ? 0.10f : 0.20f)));
         ImGui_PushTextWrapPos(0.0f);
-        ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), player.slot_index + " / " + player.name);
+        ImGui_TextColored(accent, player.slot_index + " / " + player.name);
         ImGui_PopTextWrapPos();
-        LobbyHint(player.bot ? "AI player with a name and team. No controller or screen required." :
-            player.local ? "Local player. This computer's leader manages their name and screen." :
-                           "Remote player. Their local leader manages their name and screens.");
+        LobbyHint(player.placeholder ? "Available player slot." : player.bot ? "Computer-controlled teammate." : "Connected player.");
         string association = player.placeholder ? "Available player slot" : player.bot ? "Bot" : (player.local ? "Couch P" : "Remote P") + (player.local_index + 1);
         if(player.host || player.leader) {
             association += "\n" + (player.host && player.leader ? "Host / Leader" : player.host ? "Host" : "Local leader");
@@ -369,78 +382,22 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         if(!player.bot && !player.placeholder && !player.connected) {
             association += "\nDisconnected";
         }
-        ImGui_TextColored(kLobbyDim, association);
-        LobbyHint("Host: match decisions. Local leader: this computer's screens, names, and players.");
-        array<string> slot_types = {"Bot", "Player"};
+        ImGui_TextColored(accent, association);
+        LobbyHint("The host controls the match. The local leader manages this computer’s players and screens.");
         float selector_y = ImGui_GetCursorScreenPos().y;
-        int slot_type = player.bot ? 0 : 1;
-        ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy() || (!player.bot && !player.placeholder));
-        ImGui_PushItemWidth(-1.0f);
-        if(MPCombo("##slot_type", slot_type, slot_types)) LobbySetSlotPlayer(player.id, slot_type == 1);
-        ImGui_PopItemWidth();
-        ImGui_EndDisabled();
-        LobbyHint("A player placeholder waits for a joining human. The slot keeps its unit and upgrades.");
-        array<string> assign_names = {"Assign player..."};
-        array<uint> assign_ids;
-        for(uint who = 0; who < lobby_players.length(); ++who) {
-            if(!lobby_players[who].bot && !lobby_players[who].placeholder && lobby_players[who].id != player.id) {
-                assign_names.insertLast(lobby_players[who].name + " / slot " + lobby_players[who].slot_index);
-                assign_ids.insertLast(lobby_players[who].id);
-            }
-        }
-        int assignment = 0;
-        ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy() || assign_ids.length() == 0);
-        ImGui_PushItemWidth(-1.0f);
-        if(MPCombo("##slot_player", assignment, assign_names) && assignment > 0) LobbySwapSlots(assign_ids[assignment - 1], player.id);
-        ImGui_PopItemWidth();
-        ImGui_EndDisabled();
-        LobbyHint("Move this human into the slot's upgraded unit. Occupants swap; unit upgrades stay with their slots.");
-        if(show_handicaps && !player.bot) {
-            bool handicap = LobbyGetPlayerHandicap(player.id);
-            ImGui_BeginDisabled(!LobbyCanSetPlayerHandicap(player.id));
-            if(MPCheckbox("XP handicap", handicap)) LobbySetPlayerHandicap(player.id, handicap);
+        LobbyProfileRow@ profile;
+        if(!player.bot && !player.placeholder && player.connected) {
+            @profile = LobbyProfile(player.id);
+            DrawProfileSelector(profile, scale);
+        } else {
+            array<string> slot_types = {"Bot", "Player"};
+            int slot_type = player.bot ? 0 : 1;
+            ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy() || (!player.bot && !player.placeholder));
+            ImGui_PushItemWidth(-1.0f);
+            if(MPCombo("##slot_type", slot_type, slot_types)) LobbySetSlotPlayer(player.id, slot_type == 1);
+            ImGui_PopItemWidth();
             ImGui_EndDisabled();
-            LobbyHint("Defeat awards committed XP to " + LobbyShortName(player.name) + " (slot " + player.slot_index + "). Shared upgrades credit their team's wallet.");
-        }
-        if(player.local || player.bot || player.placeholder) {
-            ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanRenamePlayer(player.id));
-            float action_width = ImGui_GetContentRegionAvailWidth();
-            bool can_remove = !LobbyMigrationBusy() && LobbyCanRemovePlayer(player.id);
-            if(MPButton("Rename", vec2(can_remove ? (action_width - 8.0f) * 0.5f : -1.0f, 30.0f * scale))) {
-                editing_name = int(player.id);
-                name_buffer = player.name;
-                name_keyboard_open = LobbyCurrentLocalPlayerIndex() != GetLocalKeyboardPlayerIndex();
-            }
-            LobbyHint("Rename this player. Local leaders name humans; the host names bots.");
-            if(focus_lobby_form && LobbyInitialForm() == "Players") {
-                ImGui_SetItemDefaultFocus();
-                ImGui_SetKeyboardFocusHere(-1);
-                focus_lobby_form = false;
-            }
-            ImGui_EndDisabled();
-            if(can_remove) {
-                ImGui_SameLine(0.0f, 8.0f);
-                if(MPButton(player.bot || player.placeholder ? "Remove slot" : "Remove", vec2(-1.0f, 30.0f * scale))) {
-                    LobbyRemovePlayer(player.id);
-                }
-                LobbyHint(player.bot ? "Remove this bot. Host only." :
-                    "Remove this player and free their controller. Local leader only.");
-            }
-        } else if(!LobbyMigrationBusy() && LobbyCanRemovePlayer(player.id)) {
-            string removal_label = player.leader ? "Kick client" : "Remove";
-            if(MPButton(removal_label, vec2(-1.0f, 30.0f * scale))) {
-                LobbyRemovePlayer(player.id);
-            }
-            LobbyHint(player.leader ? "Disconnect this computer and all its players. Host only." :
-                                     "Remove this remote player. Host only.");
-        }
-        if(!player.bot && !LobbyMigrationBusy() && LobbyCanPromoteHost(player.id)) {
-            if(MPButton("Make host", vec2(-1.0f, 30.0f * scale))) LobbyPromoteHost(player.id);
-            LobbyHint("Transfer match control to this player. Choosing a remote player also transfers network hosting.");
-        }
-        if(!player.bot && !LobbyMigrationBusy() && LobbyCanPromoteLeader(player.id)) {
-            if(MPButton("Make local leader", vec2(-1.0f, 30.0f * scale))) LobbyPromoteLeader(player.id);
-            LobbyHint("Let this player manage this computer's screens, names, and local players.");
+            LobbyHint("A player placeholder waits for a joining human. The slot keeps its unit and upgrades.");
         }
         ImGui_NextColumn();
         // Align the Team and Screen selectors so Left/Right stays on this row.
@@ -480,8 +437,68 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
             ImGui_EndDisabled();
         }
         ImGui_NextColumn();
+        ImGui_Columns(1);
+        if(profile !is null) {
+            DrawLobbyCosmetics(profile, scale);
+            if(profile.problem != "") ImGui_TextColored(kLobbyWarn, profile.problem);
+            vec2 bottom = ImGui_GetCursorScreenPos();
+            DrawProfileReveal(profile, row_top, vec2(row_top.x + width, bottom.y), scale);
+        }
+        array<string> assign_names = {"Assign player..."};
+        array<uint> assign_ids;
+        for(uint who = 0; who < lobby_players.length(); ++who) {
+            if(!lobby_players[who].bot && !lobby_players[who].placeholder && lobby_players[who].id != player.id) {
+                assign_names.insertLast(lobby_players[who].name + " / slot " + lobby_players[who].slot_index);
+                assign_ids.insertLast(lobby_players[who].id);
+            }
+        }
+        int assignment = 0;
+        if(assign_ids.length() > 0) {
+            ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy() || assign_ids.length() == 0);
+            ImGui_PushItemWidth(-1.0f);
+            if(MPCombo("##slot_player", assignment, assign_names) && assignment > 0) LobbySwapSlots(assign_ids[assignment - 1], player.id);
+            ImGui_PopItemWidth();
+            ImGui_EndDisabled();
+            LobbyHint("Move this human into the slot's upgraded unit. Occupants swap; unit upgrades stay with their slots.");
+        }
+        if(show_handicaps && !player.bot) {
+            bool handicap = LobbyGetPlayerHandicap(player.id);
+            ImGui_BeginDisabled(!LobbyCanSetPlayerHandicap(player.id));
+            if(MPCheckbox("XP handicap", handicap)) LobbySetPlayerHandicap(player.id, handicap);
+            ImGui_EndDisabled();
+            LobbyHint("Defeat awards committed XP to " + LobbyShortName(player.name) + " (slot " + player.slot_index + "). Shared upgrades credit their team's wallet.");
+        }
+        if(player.bot || player.placeholder) {
+            ImGui_BeginDisabled(!LobbyCanRenamePlayer(player.id) || LobbyMigrationBusy());
+            if(MPButton("Rename", vec2(-1, 30.0f * scale))) {
+                editing_name = int(player.id);
+                name_buffer = player.name;
+                name_keyboard_open = LobbyCurrentLocalPlayerIndex() != GetLocalKeyboardPlayerIndex();
+            }
+            ImGui_EndDisabled();
+        }
+        if(!LobbyMigrationBusy() && LobbyCanRemovePlayer(player.id)) {
+            string label = player.bot || player.placeholder ? "Remove slot" : !player.local && player.leader ? "Kick client" : "Remove";
+            if(MPButton(label, vec2(-1, 30.0f * scale))) LobbyRemovePlayer(player.id);
+        }
+        if(!player.bot && !LobbyMigrationBusy() && LobbyCanPromoteHost(player.id)) {
+            if(MPButton("Make host", vec2(-1.0f, 30.0f * scale))) LobbyPromoteHost(player.id);
+            LobbyHint("Transfer match control to this player. Choosing a remote player also transfers network hosting.");
+        }
+        if(!player.bot && !LobbyMigrationBusy() && LobbyCanPromoteLeader(player.id)) {
+            if(MPButton("Make local leader", vec2(-1.0f, 30.0f * scale))) LobbyPromoteLeader(player.id);
+            LobbyHint("Let this player manage this computer's screens, names, and local players.");
+        }
+        vec2 row_end = ImGui_GetCursorScreenPos();
+        ImDrawList_AddRectFilled(vec2(row_top.x-4, row_top.y-2), vec2(row_top.x-2, row_end.y),
+                                 ImGui_GetColorU32(accent));
         ImGui_Separator();
         ImGui_PopID();
+        if(i + 1 < lobby_players.length()) {
+            ImGui_Columns(3, false);
+            ImGui_SetColumnWidth(0, width - team_width - screen_width);
+            ImGui_SetColumnWidth(1, team_width);
+        }
     }
     ImGui_Columns(1);
     ImGui_PopStyleVar();
@@ -689,9 +706,8 @@ void DrawNameForm(float scale) {
     float width = min(440.0f * scale, display.x - 48.0f);
     ImGui_SetNextWindowPos(vec2((display.x - width) * 0.5f, display.y * 0.30f), ImGuiSetCond_Always);
     ImGui_SetNextWindowSize(vec2(width, 0.0f), ImGuiSetCond_Always);
-    bool bot_name = false;
-    for(uint i = 0; i < lobby_players.length(); ++i) if(lobby_players[i].id == uint(editing_name)) bot_name = lobby_players[i].bot;
-    string heading = bot_name ? "Edit bot name" : "Edit player's name";
+    string heading = "Edit slot name";
+    for(uint i = 0; i < lobby_players.length(); ++i) if(lobby_players[i].id == uint(editing_name) && lobby_players[i].bot) heading = "Edit bot name";
     ImGui_Begin("Edit player name", ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
     MPWindowScale(scale);
@@ -728,7 +744,7 @@ void DrawNameForm(float scale) {
             editing_name = -1;
             notice = "";
         } else {
-            notice = "Use a valid name. The local leader names humans; the host names bots.";
+            notice = "Only the host can name slots. Use 3–24 letters, digits or spaces.";
         }
     }
     LobbyHint("Save this name.");
@@ -840,7 +856,7 @@ void DrawGUI() {
         if(!two_columns) {
             ImGui_SameLine();
             if(MPButton("Players", vec2(tab_w, tab_button_h))) { small_panel = 1; focus_lobby_form = true; }
-            LobbyHint("Manage players, names, teams, and this computer's screens.");
+            LobbyHint("Manage profiles, cosmetics, teams, and this computer's screens.");
         }
         if(show_mode_settings) {
             ImGui_SameLine();

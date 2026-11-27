@@ -63,9 +63,11 @@
 #include <Utility/strings.h>
 #include <Game/attackscript.h>
 #include <Graphics/bonetransform.h>
+#include <Online/online.h>
 
 #include <sstream>
 #include <cstring>
+#include <mutex>
 
 enum ASErrType {
     _ERR = 0,
@@ -262,6 +264,42 @@ class CBytecodeStream : public asIBinaryStream {
 const uint32_t script_bytecode_ver = 10;
 const uint32_t script_bytecode_program_build_length = 512;
 
+#if PLATFORM_LINUX && PLATFORM_64
+// Linux disables the on-disk cache below. A Survival wave usually needs the
+// same movement script several times, each with its own VM and globals. Keep
+// only bytecode produced by this process, keyed by the expanded source hash.
+class WaveBytecode : public asIBinaryStream {
+   public:
+    std::vector<unsigned char> bytes;
+    size_t offset = 0;
+    bool valid = true;
+    int Write(const void* data, asUINT count) override {
+        if (count == 0) return 0;
+        if (!valid || count > 8 * 1024 * 1024 - bytes.size()) {
+            valid = false;
+            return -1;
+        }
+        const auto* source = static_cast<const unsigned char*>(data);
+        bytes.insert(bytes.end(), source, source + count);
+        return 0;
+    }
+    int Read(void* data, asUINT count) override {
+        if (count == 0) return 0;
+        if (count > bytes.size() - offset) return -1;
+        std::memcpy(data, bytes.data() + offset, count);
+        offset += count;
+        return 0;
+    }
+};
+struct WaveScript {
+    std::string path;
+    unsigned long hash = 0;
+    WaveBytecode code;
+};
+static std::vector<WaveScript> wave_scripts;
+static std::mutex wave_script_mutex;
+#endif
+
 int ASModule::CompileScript(const Path& path) {
     fast_var_ptr_map.clear();
     var_ptr_by_name.clear();
@@ -305,7 +343,32 @@ int ASModule::CompileScript(const Path& path) {
         static const int kBufSize = 512;
         char buf[kBufSize];
         FormatString(buf, kBufSize, "%sData/ScriptBytecode/%s.bytecode", GetWritePath(script_file.file_path.GetModsource()).c_str(), script_name);
-        FILE* file = my_fopen(buf, "rb");
+#if PLATFORM_LINUX && PLATFORM_64
+        const bool wave_script = Online::Instance()->IsSurvivalMode() &&
+                                 module_->GetEngine()->GetGlobalPropertyIndexByName("this_mo") >= 0;
+        if (wave_script) {
+            WaveBytecode cached;
+            {
+                std::lock_guard<std::mutex> lock(wave_script_mutex);
+                for (const auto& entry : wave_scripts) if (entry.path == path.GetFullPathStr() && entry.hash == script_file.hash) {
+                    cached.bytes = entry.code.bytes;
+                    break;
+                }
+            }
+            // Module initialization can run script callbacks and create objects.
+            if (!cached.bytes.empty()) {
+                if (module_->LoadByteCode(&cached) >= 0) {
+                    bytecode_loaded = true;
+                    retry = false;
+                } else {
+                    auto* engine = module_->GetEngine();
+                    module_->Discard();
+                    AttachToEngine(engine);
+                }
+            }
+        }
+#endif
+        FILE* file = bytecode_loaded ? nullptr : my_fopen(buf, "rb");
         if (file) {
             // Compare the bytecode hash to the script hash to make sure it matches
 
@@ -398,6 +461,21 @@ int ASModule::CompileScript(const Path& path) {
 
 // If compile was successful, save bytecode
 
+#if PLATFORM_LINUX && PLATFORM_64
+            if (!retry && wave_script) {
+                WaveScript entry;
+                entry.path = path.GetFullPathStr();
+                entry.hash = script_file.hash;
+                if (module_->SaveByteCode(&entry.code) >= 0 && entry.code.valid && !entry.code.bytes.empty()) {
+                    std::lock_guard<std::mutex> lock(wave_script_mutex);
+                    wave_scripts.erase(std::remove_if(wave_scripts.begin(), wave_scripts.end(), [&](const WaveScript& other) {
+                        return other.path == entry.path;
+                    }), wave_scripts.end());
+                    if (wave_scripts.size() >= 4) wave_scripts.erase(wave_scripts.begin());
+                    wave_scripts.push_back(std::move(entry));
+                }
+            }
+#endif
 // Disabling on linux amd64 platoform because this routine does not work on that platform atm.
 // waiting for feedback on issue
 #if !(PLATFORM_LINUX && PLATFORM_64)

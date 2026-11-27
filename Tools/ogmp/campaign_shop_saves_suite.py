@@ -92,7 +92,8 @@ def campaign_shop_saves(ctx):
     assert [option["id"] for option in migrated["reward_cards"]] == choices
     assert migrated["stats"]["luck_rank"] == 0
     act(resumed, "reward", "damage")
-    wait(resumed, lambda: view(resumed)["stats"]["damage_rank"] == 1, "legacy reward remains claimable in play")
+    wait(resumed, lambda: view(resumed)["stats"]["flesh_damage_rank"] == 1, "legacy reward remains claimable in play")
+    assert view(resumed)["stats"]["bone_damage_rank"] == 1
     assert record(resumed,0).get("world",{}).get("campaign_transition") is None
     # Resolve the actual final chapter, preserve the chosen loop in an autosave,
     # then start a second fresh process with no campaign-script locals to reuse.

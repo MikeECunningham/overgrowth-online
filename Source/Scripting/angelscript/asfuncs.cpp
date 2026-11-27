@@ -40,6 +40,7 @@
 #include <Online/friendly_progression.h>
 #include <Online/progression_economy.h>
 #include <Online/session_saves.h>
+#include <Online/survival_equipment.h>
 #include <Scripting/angelscript/lobby_bindings.h>
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
 
@@ -2655,7 +2656,7 @@ void ASQueueDeleteObjectID(int val) {
     the_scenegraph->object_ids_to_delete.push_back(val);
 }
 
-int ASCreateObject(const std::string& path, bool exclude_from_save) {
+static int CreateScriptObject(const std::string& path, bool exclude_from_save, const vec3* initial_position) {
     int id = -1;
     EntityDescriptionList desc_list;
     std::string file_type;
@@ -2667,6 +2668,7 @@ int ASCreateObject(const std::string& path, bool exclude_from_save) {
             obj->exclude_from_undo = exclude_from_save;
             obj->exclude_from_save = exclude_from_save;
             obj->permission_flags = 0;
+            if (initial_position) obj->SetTranslation(*initial_position);
             id = obj->GetID();
 
             // Overgrowth Online: what a host script creates, every client creates
@@ -2675,7 +2677,7 @@ int ASCreateObject(const std::string& path, bool exclude_from_save) {
             Online* online = Online::Instance();
             if (online->SharesCreatedObjects() &&
                 (obj->GetType() == _movement_object || obj->GetType() == _item_object)) {
-                online->Send<OnlineMessages::CreateEntity>(path, obj->GetTranslation(), id);
+                online->Send<OnlineMessages::CreateEntity>(path, obj->GetTranslation(), id, false, initial_position != nullptr);
             }
             // The rest (env objects, hotspots, lights, decals: a spike's stick, a water
             // surface) each machine's script makes for itself, under its own ids
@@ -2685,6 +2687,39 @@ int ASCreateObject(const std::string& path, bool exclude_from_save) {
         }
     }
     return id;
+}
+
+int ASCreateObject(const std::string& path, bool exclude_from_save) {
+    return CreateScriptObject(path, exclude_from_save, nullptr);
+}
+
+static void SetSurvivalStaged(Object* object, bool staged) {
+    object->GetScriptParams()->ASSetInt("Survival Staged", staged);
+    object->SetEnabled(!staged);
+    if (object->GetType() == _item_object) {
+        auto* item = static_cast<ItemObject*>(object);
+        if (staged) item->SetPhysicsTransform(item->GetPhysicsTransform());
+        Online::Instance()->Send<OnlineMessages::SetObjectEnabledMessage>(item->GetID(), !staged);
+    }
+}
+
+static int AS_PrepareSurvivalObject(const std::string& path, const vec3& parking) {
+    Online* net = Online::Instance();
+    if (!net->IsHosting() || !net->IsSurvivalMode()) return -1;
+    const int id = CreateScriptObject(path, true, &parking);
+    if (id >= 0) SetSurvivalStaged(the_scenegraph->GetObjectFromID(id), true);
+    return id;
+}
+
+static bool AS_DeploySurvivalObject(int id, const vec3& position) {
+    Online* net = Online::Instance();
+    if (!net->IsHosting() || !net->IsSurvivalMode() || id < 0 || !the_scenegraph->DoesObjectWithIdExist(id)) return false;
+    Object* object = the_scenegraph->GetObjectFromID(id);
+    auto* params = object->GetScriptParams();
+    if (object->enabled_ || !params->HasParam("Survival Staged") || !params->ASGetInt("Survival Staged")) return false;
+    object->SetTranslation(position);
+    SetSurvivalStaged(object, false);
+    return true;
 }
 
 // Overgrowth Online (host): share an object a level script made while the level
@@ -6035,6 +6070,8 @@ std::string AS_Online_CampaignWaitingText() { return Online::Instance()->Campaig
 void AS_Online_ChallengeEncounterBegin(const std::string& key) { Online::Instance()->ChallengeEncounterBegin(key); }
 void AS_CaptureEnemyDifficulty(bool new_match) { Online::Instance()->CaptureEnemyDifficulty(new_match); }
 void AS_FreezeSurvivalEnemy(int id, bool allow_weapons) { Online::Instance()->FreezeSurvivalEnemy(id, allow_weapons); }
+
+
 void AS_ProgressionCampaignLoop() { Online::Instance()->BeginChallengeCampaignLoop(); }
 static std::vector<int> ProgressionAvatars(const CScriptArray& array) {
     std::vector<int> avatars;
@@ -6322,6 +6359,8 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("bool ProgressionEnabled()", asFUNCTION(FriendlyProgression::Enabled), asCALL_CDECL);
     context->RegisterGlobalFunction("float ProgressionDurabilityMultiplier(int rank)", asFUNCTION(FriendlyProgression::DurabilityMultiplier), asCALL_CDECL);
     context->RegisterGlobalFunction("float ProgressionDamageMultiplier(int rank)", asFUNCTION(FriendlyProgression::DamageMultiplier), asCALL_CDECL);
+    context->RegisterGlobalFunction("float ProgressionFallDamageMultiplier(int rank)", asFUNCTION(FriendlyProgression::FallDamageMultiplier), asCALL_CDECL);
+    context->RegisterGlobalFunction("float ProgressionAttackMultiplier(int attacker_id, bool flesh)", asFUNCTION(FriendlyProgression::AttackMultiplier), asCALL_CDECL);
     context->RegisterGlobalFunction("float ProgressionSpeedMultiplier(int rank)", asFUNCTION(FriendlyProgression::SpeedMultiplier), asCALL_CDECL);
     context->RegisterGlobalFunction("float ProgressionStealthRange(int rank)", asFUNCTION(FriendlyProgression::StealthRangeMultiplier), asCALL_CDECL);
     context->RegisterGlobalFunction("vec2 ProgressionLayoutArenaScore(float, float, float, float)", asFUNCTION(ProgressionUI::LayoutArenaScore), asCALL_CDECL);
@@ -6330,6 +6369,7 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("int ProgressionSurvivalShopSeconds()", asFUNCTION(FriendlyProgression::SurvivalShopSeconds), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionCloseSurvivalUpgrades()", asFUNCTION(FriendlyProgression::CloseSurvivalUpgrades), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ProgressionLoopChosen()", asFUNCTION(FriendlyProgression::LoopChosen), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionCampaignComplete()", asFUNCTION(FriendlyProgression::CampaignComplete), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ProgressionBeginShop(bool final_level = false)", asFUNCTION(FriendlyProgression::BeginShop), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionArenaWin(const array<int> &in winners, bool match)", asFUNCTION(AS_ProgressionArenaWin), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionArenaRoundComplete(const array<int> &in winners, const array<int> &in roster)", asFUNCTION(AS_ProgressionArenaRoundComplete), asCALL_CDECL);
@@ -6364,6 +6404,9 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("string SessionArenaRestore()", asFUNCTION(SessionSaves::ArenaRestore), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_CaptureEnemyDifficulty(bool new_match = false)", asFUNCTION(AS_CaptureEnemyDifficulty), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_FreezeSurvivalEnemy(int avatar, bool allow_weapons = true)", asFUNCTION(AS_FreezeSurvivalEnemy), asCALL_CDECL);
+    context->RegisterGlobalFunction("int Online_PrepareSurvivalObject(const string &in path, const vec3 &in parking)", asFUNCTION(AS_PrepareSurvivalObject), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_DeploySurvivalObject(int id, const vec3 &in position)", asFUNCTION(AS_DeploySurvivalObject), asCALL_CDECL);
+    context->RegisterGlobalFunction("void Online_RecallSurvivalWeapons()", asFUNCTION(SurvivalEquipment::RecallDroppedWeapons), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionCampaignLoop()", asFUNCTION(AS_ProgressionCampaignLoop), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionArenaLoadouts()", asFUNCTION(AS_ProgressionArenaLoadouts), asCALL_CDECL);
     context->RegisterGlobalFunction("float Online_WornArmorRating(int)", asFUNCTION(AS_WornArmorRating), asCALL_CDECL);

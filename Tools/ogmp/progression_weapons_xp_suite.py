@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 from .campaign_scaling_suite import RENDER_KEYS
-from .mode_settings_suite import ARENA, ARENA_MAP
+from .mode_settings_suite import ARENA, ARENA_MAP, _probe
 from .newcampaign_local_suite import CAMPAIGN, FIRST, _code, _ready, _rows, _skip
 from .scenarios import script_errors
 
@@ -88,6 +88,8 @@ def progression_weapons_xp(ctx):
     wait(lambda: all(len(_rows(peer)) == 2 for peer in peers), "two progression players")
     host_player = next(row["id"] for row in _rows(host) if row["peer_id"] == 255)
     guest_player = next(row["id"] for row in _rows(host) if row["peer_id"] != 255)
+    assert _probe(host, f'LobbyProfileEdit({host_player},"create","","Armorer")') == "true"
+    assert _probe(host, f'LobbyProfileEdit({host_player},"set","weapon.dog_knife","cinder_knife")') == "true"
     _code(host, 'LobbyStart();', "menu")
     for peer in peers:
         _ready(peer, FIRST)
@@ -161,13 +163,23 @@ def progression_weapons_xp(ctx):
     wait(lambda: accumulated_rewards(host, host_player) and accumulated_rewards(guest, guest_player),
          "both wallets can earn beyond the forecast while green fill still allows for remaining enemies")
     cards = {card["id"]: card for card in view(host, host_player)["cards"]}
-    assert cards["staff"]["label"] == "Staff" and cards["staff"]["cost"] == 360
-    assert cards["broadsword"]["label"] == "Broadsword" and cards["broadsword"]["cost"] == 1280
+    assert cards["staff"]["label"] == "Staff" and cards["staff"]["cost"] == 500
+    assert cards["broadsword"]["label"] == "Broadsword" and cards["broadsword"]["cost"] == 1480
     assert readout(host)["columns"] and not readout(guest)["columns"]
     assert list(cards).index("dagger") < list(cards).index("rat_blade") < list(cards).index("staff") < list(cards).index("spear")
     equipment_view = view(host,host_player)
-    assert len([key for key in cards if "owned_" + key in equipment_view]) == 36
-    assert cards["spear"]["cost"] == 880 and cards["sword"]["cost"] == 1040
+    categories = {key for key in cards if "owned_" + key in equipment_view}
+    assert len(categories - {"arrow", "kendo", "kendo_2h", "reaper_axe"}) == 33, categories
+    assert {"stone_knife", "handhammer", "hatchet", "khoen_sword", "khoen_bloody"} <= categories
+    assert {"flint_knife", "dog_knife", "spear", "sword", "broadsword", "dog_scabbard"} <= categories
+    assert categories.isdisjoint({"flint_knife_c2", "cinder_knife", "cinder_spear", "cinder_sword",
+                                  "cinder_broadsword", "cinder_scabbard"})
+    assert {"glaive", "cinder_glaive", "metal_macuahuitl", "glass_macuahuitl", "dog_hammer", "pole_hammer"} <= categories
+    assert cards["spear"]["cost"] == 1000 and cards["sword"]["cost"] == 1200
+    daggers = {"dagger", "throwing_knife", "flint_knife", "dog_knife", "main_gauche", "gabenife", "rat_blade", "stone_knife"}
+    assert {key for key in categories if cards[key]["cost"] == 350} == daggers
+    assert all(cards[key]["cost"] >= 450 for key in categories - daggers)
+    assert [cards[key]["cost"] for key in ("dog_scabbard", "tool_awl", "torch", "rat_machete", "dog_hammer")] == [450, 475, 475, 600, 1320]
     for peer, player in ((host, host_player), (guest, guest_player)):
         assert [item["slot"] for item in view(peer, player)["inventory"]] == ["Left hand","Right hand","Left belt","Right belt"]
     host.bridge.call("input", controller=0, hold={"menu_scroll_down": 1}, steps=-1)
@@ -192,20 +204,20 @@ def progression_weapons_xp(ctx):
     assert not view(host,guest_player)["owned_rat_machete"]
     for key in ("staff", "broadsword", "dog_knife", "health", "armor_3"):
         action(host, host_player, "buy", key)
-    action(guest, guest_player, "buy", "damage")
+    action(guest, guest_player, "buy", "flesh_damage")
     wait(lambda: view(host, host_player)["stats"]["health_rank"] == 1 and
-         view(guest, guest_player)["stats"]["damage_rank"] == 1, "each readout shows its own upgrades")
+         view(guest, guest_player)["stats"]["flesh_damage_rank"] == 1, "each readout shows its own upgrades")
     wait(lambda: view(host, host_player)["stats"]["armor"][3] == 1,
          "shop column previews the selected wooden forearm guard")
     assert view(host, host_player)["stats"]["player"] == host_player
     assert view(guest, guest_player)["stats"]["player"] == guest_player
-    assert view(host, host_player)["stats"]["damage_rank"] == 0
+    assert view(host, host_player)["stats"]["flesh_damage_rank"] == 0
     assert view(guest, guest_player)["stats"]["health_rank"] == 0
     assert view(host, host_player)["owned_staff"] and view(host, host_player)["owned_broadsword"]
     ctx.shot(host, "purchased_stats_and_armor")
     ready()
-    wait(lambda: all("dogbroadsword.xml" in files(host_player, peer) for peer in peers),
-         "real stock broadsword is issued on both peers")
+    wait(lambda: all({"dogbroadsword.xml", "cinderbreatheknife.xml"} <= files(host_player, peer) for peer in peers),
+         "selected skin and mundane broadsword appear as physical items on both peers")
     wait(lambda: character(host_player)["combat_stats"]["progression_health"] == 1 and
          readout(host).get("stats_drawn"), "upgraded gameplay stats column stays visible")
     wait(lambda: math.isclose(view(host, host_player)["stats"]["armor_rating"], .0325, abs_tol=.0001),
@@ -214,7 +226,7 @@ def progression_weapons_xp(ctx):
     _code(host, 'ProgressionBeginShop(false);')
     belt = view(host,host_player)["inventory"]
     issued = next(i for i in belt if i.get("label") == "Broadsword")
-    assert any(i.get("label") == "Dog knife" for i in belt)
+    assert any(i.get("label") == "Cinderbreathe knife" and i["price"] == cards["dog_knife"]["cost"] for i in belt)
     before = view(host,host_player)["held"]
     action(host,host_player,"sell",issued["sell_key"])
     sold = view(host,host_player)
@@ -316,8 +328,40 @@ def progression_weapons_xp(ctx):
 
 def progression_inventory_save(ctx):
     """A sold authored weapon stays sold after a cold load of the same map."""
+    # An actual optional mod registers its own category and extends it with
+    # a skin. Every incompatible appearance is excluded from its choices.
+    mod = Path(ctx.out_dir) / "session-rules"
+    fixture = Path(__file__).resolve().parents[2] / "test/mods/session-rules"
+    shutil.copytree(fixture, mod)
+    items = mod / "Data/Items/TestArmory"
+    items.mkdir(parents=True)
+    model = "Data/Objects/Weapons/flint_knife.xml"
+    def make_item(name, model, reach):
+        grip = "Data/Animations/r_dogweapongrip.anm" if name != "incomplete" else "Data/Animations/TestArmory/missing.anm"
+        hands, mass, tip = ("01", "1.0 kg", "0.30") if name == "painted" else ("1", "1 kg", ".3")
+        if name == "painted":
+            reach = f"{reach:.1f}"
+        ranges = (reach, 0) if name == "reversed" else (0, reach)
+        (items / (name + ".xml")).write_text(
+            f'<item><type>weapon</type><appearance obj_path="{model}"/><label>knife</label>'
+            f'<grip ik_attach="rightarm" anim="{grip}" hands="{hands}"/>'
+            f'<points><tip x="0" y="{tip}" z="0"/></points>'
+            f'<range extend="{ranges[0]}"/><range extend="{ranges[1]}"/><physics mass="{mass}"/></item>')
+    for name, appearance, reach in (("plain", model, 1), ("painted", "Data/Objects/Weapons/flint_knife_c2.xml", 1),
+                                    ("long", model, 2), ("wide", "Data/Objects/Weapons/Rapier.xml", 1),
+                                    ("reversed", model, 1), ("incomplete", model, 1)):
+        make_item(name, appearance, reach)
+    def skin(name, tier):
+        return f'<Skin id="{name}" label="{name}" rarity="{tier}" path="Data/Items/TestArmory/{name}.xml"/>'
+    category = "session-rules.test_blade"
+    (mod / "weapon_categories.xml").write_text(
+        f'<WeaponCategories><Category id="{category}" label="Test blade" hand="off" price="stick" rarity="1">'
+        + skin("plain", 0) + f'</Category><Extend id="{category}">'
+        + ''.join(skin(name, 2) for name in ("painted", "long", "wide", "reversed", "incomplete"))
+        + '</Extend></WeaponCategories>')
+
     def instance(name, port):
-        return ctx.instance(name, width=1280, height=720, keys={
+        return ctx.instance(name, width=1280, height=720, mods=[str(mod)], keys={
             **RENDER_KEYS, "mp_port": str(port), "player_invincible": "true", "tutorials": "false",
         })
 
@@ -331,6 +375,9 @@ def progression_inventory_save(ctx):
         return peer.bridge.status()["progression_ui"][0]
 
     source = instance("item_source", 28583)
+    settings = json.loads(_probe(source, "ProfileSettingsView()"))
+    options = next(c["options"] for c in settings["categories"] if c["id"] == "weapon." + category)
+    assert [o["id"] for o in options] == ["plain", "painted"], options
     _code(source, 'LobbyBeginHost();'
           f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
           'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",0);'
@@ -351,6 +398,9 @@ def progression_inventory_save(ctx):
     assert source.bridge.call("progression", actor=_rows(source)[0]["id"],
                               action="sell", key=item["sell_key"])["submitted"]
     assert shop(source)["held"] == refund
+    assert source.bridge.call("progression", actor=_rows(source)[0]["id"], action="buy", key=category)["submitted"]
+    balance = refund - next(card["cost"] for card in account["cards"] if card["id"] == category)
+    assert shop(source)["held"] == balance
     _code(source, 'SessionSave(2);')
     card_path = Path(source.writedir, "Data/SessionSaves/slot2.json")
     wait(source, card_path.is_file, "shop session saved")
@@ -370,8 +420,10 @@ def progression_inventory_save(ctx):
     _code(loaded, 'LobbyStart();', "menu")
     _ready(loaded, FIRST)
     wait(loaded, lambda: shop(loaded)["shop_open"] and ui(loaded)["columns"], "saved shop renders both columns")
-    assert shop(loaded)["held"] == refund
-    assert sum(value is True for key, value in shop(loaded).items() if key.startswith("owned_")) == 36
+    assert shop(loaded)["held"] == balance and shop(loaded)["offhand_category"] == category
+    collection = {key for key, value in shop(loaded).items() if key.startswith("owned_") and value is True}
+    assert len(collection - {"owned_arrow", "owned_kendo", "owned_" + category}) == 28
+    assert "owned_cinder_sword" not in collection and "owned_sword" in collection
     wait(loaded, lambda: not any(i["common_id"] == staff["common_id"] and i["file"] == staff["file"]
                                  for i in loaded.bridge.call("state")["items"]), "sold world staff stays gone")
 
@@ -388,5 +440,5 @@ def progression_inventory_save(ctx):
     after_both = ui(loaded)
     assert after_both["scroll"] > 0 and after_both["equipment_scroll"] == after["equipment_scroll"], after_both
     ctx.shot(loaded, "shop_scrolled_columns")
-    return {"passed": True, "metrics": {"cold_saved_refund": refund, "restored_unlocks": 36,
+    return {"passed": True, "metrics": {"cold_saved_refund": refund, "restored_categories": len(collection),
             "independent_scroll": True}, "notes": []}

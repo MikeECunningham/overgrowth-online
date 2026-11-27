@@ -22,6 +22,8 @@
 //
 //-----------------------------------------------------------------------------
 
+#include "profile_settings.as"
+
 const int kInvalidControllerButton = -1234; // Banking on controllers never having 1234 axes
 const int kInvalidKeyboardButton = -1;
 const int kInvalidMouseButton = -1;
@@ -206,7 +208,11 @@ void BuildUI(string landing_screen){
         AddCategoryButton("Gamepad", buttons_holder);
     }
 
-    buttons_holder.append(IMSpacer(DOVertical, 200.0f));
+    if(!PersonalSettingsOnly()) {
+        AddCategoryButton("Profiles", buttons_holder);
+        AddCategoryButton("Mod settings", buttons_holder);
+    }
+    buttons_holder.append(IMSpacer(DOVertical, 40.0f));
 
     AddButton("Back", buttons_holder, arrow_icon, button_back, true, 350.0f, 10.0f);
 
@@ -258,6 +264,12 @@ void SetActiveCategory(string name){
 
 void SwitchSettingsScreen(string screen_name){
     CaptureNumericTextDrafts();
+    if(screen_name != "Profiles") {
+        if(profile_editor_mode != "") capture_input = false;
+        profile_name_box.Deactivate();
+        profile_editor_mode = "";
+        profile_notice = "";
+    }
     if(PersonalSettingsOnly() && !((screen_name == "Game" || screen_name == "Difficulty") && CanEditCampaignSettings())) screen_name = MenuOwnsKeyboard() ? "Controls" : "Gamepad";
     if(IsPlayerMenuContext() && screen_name == "Controls" && !MenuOwnsKeyboard()) screen_name = "Gamepad";
     if(IsPlayerMenuContext() && screen_name == "Gamepad" && MenuOwnsKeyboard() && !IsControllerConnected()) screen_name = "Controls";
@@ -276,7 +288,9 @@ void SwitchSettingsScreen(string screen_name){
     RestoreCategoryButtons();
     SetActiveCategory(screen_name == "Difficulty" ? "Game" : screen_name);
 
-    if(screen_name == "Screen"){
+    if(screen_name == "Profiles") AddProfilesScreen();
+    else if(screen_name == "Mod settings") AddModSettingsScreen();
+    else if(screen_name == "Screen"){
         AddScreenSettingsScreen();
     }
     else if(screen_name == "Graphics"){
@@ -892,7 +906,9 @@ void DiscardUnsavedChanges() {
 void ProcessSettingsMessage(IMMessage@ message){
     if(active_rebind == -1){
         CloseAllOptionMenus();
-        if( message.name == "ui_element_clicked" ){
+        if(message.name.findFirst("profile_") == 0 && (current_screen == "Profiles" || current_screen == "Mod settings")) {
+            ProcessProfileSettings(message);
+        } else if( message.name == "ui_element_clicked" ){
             ToggleUIElement(message.getString(0));
         }
         else if(message.name == "difficulty_rate") {
@@ -911,7 +927,7 @@ void ProcessSettingsMessage(IMMessage@ message){
             }
             // Only these pages have sections whose presence depends on other
             // options. RefreshAllOptions already updates the remaining widgets.
-            if(current_screen == "Screen" || current_screen == "Ray Tracing" || current_screen == "Game" || current_screen == "Difficulty") SwitchSettingsScreen(current_screen);
+            if(current_screen == "Screen" || current_screen == "Ray Tracing" || current_screen == "Game" || current_screen == "Difficulty" || current_screen == "Profiles" || current_screen == "Mod settings") SwitchSettingsScreen(current_screen);
         }
         else if( message.name == "close_all_open_menus" ){
             CloseAllOptionMenus();
@@ -973,7 +989,9 @@ void ProcessSettingsMessage(IMMessage@ message){
             //Log(info,"Received back message");
             bool editing_text = false;
             for(uint i = 0; i < gui_elements.length(); ++i) editing_text = editing_text || gui_elements[i].HasTextDraft();
-            if(editing_text) {
+            if(current_screen == "Profiles" && profile_editor_mode != "") {
+                ProcessProfileSettings(IMMessage("profile_cancel"));
+            } else if(editing_text) {
                 DiscardUnsavedChanges();
             } else if(OptionMenuOpen()){
                 CloseAllOptionMenus();
@@ -1066,6 +1084,9 @@ void ApplyBind() {
 }
 
 void UpdateSettings(bool auto_exit_rebind = false){
+    if(current_screen == "Profiles" && profile_name_box.active && MenuOwnsKeyboard()) profile_name_box.Update();
+    if((current_screen == "Profiles" || current_screen == "Mod settings") && profile_editor_mode == "" &&
+       !OptionMenuOpen() && profile_settings_revision != ProfileRevision()) SwitchSettingsScreen(current_screen);
     if(settings_personal_only != PersonalSettingsOnly() || settings_match_host != CanEditCampaignSettings()) {
         // A promoted leader gains client settings; the former leader loses
         // them immediately, even when both settings menus were already open.

@@ -240,7 +240,7 @@ float p_ear_size;
 // Campaign scaling stays separate from authored stats. Health remains in its
 // normal 0..1 range; vitality changes damage received without healing an actor
 // when another player joins, or when difficulty is changed during a fight.
-int progression_health = 0, progression_damage = 0, progression_speed = 0;
+int progression_health = 0, progression_fall_resistance = 0, progression_speed = 0;
 int progression_stealth_passive = 0, progression_stealth_active = 0;
 int progression_ai = -1;
 int progression_armor_regions = 0;
@@ -608,6 +608,15 @@ float GetAndUpdateCurrentFov() {
 // falling damage
 const float _shock_damage_threshold = 30.0f;
 const float _shock_damage_multiplier = 0.1f;
+float ragdoll_descent_speed = 0.0f;
+
+float LongFallDamageScale(float downward_speed) {
+    if(progression_fall_resistance <= 0 || fall_death) return 1.0f;
+    // Ordinary knockdowns receive no protection. A ragdoll landing gains the
+    // full reduction at the same descent speed that injures an upright fighter.
+    float severity = min(1.0f, max(0.0f, 2.0f * downward_speed * fall_damage_mult / _shock_damage_threshold - 1.0f));
+    return mix(1.0f, ProgressionFallDamageMultiplier(progression_fall_resistance), severity);
+}
 
 bool _draw_predict_path = true;
 bool throw_anim;
@@ -1289,16 +1298,16 @@ void ResolveItemImpact(string material, vec3 point, int id, int type) {
     if(species != _dog || io.GetLabel() == "spear" || io.GetLabel() == "big_sword") {
         if(type == 2) {
             if(IsAggro() == 0 || io.GetLabel() != "knife") {
-                TakeBloodDamage(2.0);
+                TakeBloodDamage(2.0f * ProgressionAttackMultiplier(item_attacker, true));
             } else {
-                TakeBloodDamage(RangedRandomFloat(0.6, 1.4));
+                TakeBloodDamage(RangedRandomFloat(0.6, 1.4) * ProgressionAttackMultiplier(item_attacker, true));
                 ko_shield = max(0, ko_shield - 2);
             }
         } else {
-            TakeDamage(force_len / 30.0f);
+            TakeDamage(force_len / 30.0f * ProgressionAttackMultiplier(item_attacker, false));
 
             if(type == 1) {
-                TakeBloodDamage(force_len / 50.0f);
+                TakeBloodDamage(force_len / 50.0f * ProgressionAttackMultiplier(item_attacker, true));
             }
         }
 
@@ -1406,7 +1415,8 @@ void Collided(float posx, float posy, float posz, float impulse, float hardness)
     if(impulse_hardness > 5.0f) {
         const float _impact_damage_mult = 0.005f;
         int old_knocked_out = knocked_out;
-        float damage = impulse * _impact_damage_mult * fall_damage_mult;
+        float fall_scale = LongFallDamageScale(ragdoll_descent_speed);
+        float damage = impulse * _impact_damage_mult * fall_damage_mult * fall_scale;
 
         if(fall_death) {
             damage *= 4.0f;
@@ -1419,7 +1429,7 @@ void Collided(float posx, float posy, float posz, float impulse, float hardness)
         PossibleHeadBleed(damage);
 
         if(!this_mo.controlled || game_difficulty >= 0.5) {
-            ko_shield = max(0, ko_shield - int((time - ragdoll_air_start) * 2.0 * fall_damage_mult));
+            ko_shield = max(0, ko_shield - int((time - ragdoll_air_start) * 2.0 * fall_damage_mult * fall_scale));
         }
 
         ragdoll_air_start = time;
@@ -4049,6 +4059,7 @@ void UpdateState(const Timestep &in ts) {
     trying_to_get_weapon = max(0, trying_to_get_weapon - 1);
 
     if(state == _ragdoll_state) {  // This is not part of the else chain because
+        if(progression_fall_resistance > 0) ragdoll_descent_speed = -this_mo.rigged_object().GetAvgVelocity().y;
         UpdateRagDoll(ts);         // the character may wake up and need other
         HandlePickUp();          // state updates
         // HandleImpalement(ts);
@@ -4290,7 +4301,7 @@ void HandleTethering(const Timestep &in ts) {
             // attack damage supplies the opposing side of the choke contest.
             float choke_rate = mix(0.7f, 0.3f, game_difficulty) + (species == _rat ? 0.4f : 0.0f);
             float strength = char.HasVar("p_attack_damage_mult") ? char.GetFloatVar("p_attack_damage_mult") : 1.0f;
-            TakeDamage(ts.step() * choke_rate * strength);
+            TakeDamage(ts.step() * choke_rate * strength * ProgressionAttackMultiplier(tether_id, false));
 
             if(knocked_out != _awake) {
                 this_mo.MaterialEvent("choke_fall", this_mo.position);
@@ -5212,6 +5223,7 @@ void Ragdoll(int type) {
 
     if(state != _ragdoll_state) {
         ragdoll_air_start = time;
+        ragdoll_descent_speed = -this_mo.velocity.y;
         HandleAIEvent(_ragdolled);
         ledge_info.on_ledge = false;
         this_mo.Ragdoll();
@@ -5329,7 +5341,7 @@ int WasGrabbed(const vec3 &in dir, const vec3 &in pos, int attacker_id) {
     SetState(_hit_reaction_state);
     hit_reaction_anim_set = true;
     hit_reaction_thrown = true;
-    queue_impact_damage += 0.25;
+    queue_impact_damage += 0.25f * ProgressionAttackMultiplier(attacker_id, false);
     flip_info.EndFlip();
 
     if(tethered == _TETHERED_REARCHOKED) {
@@ -5689,7 +5701,7 @@ void TakeSharpDamage(float sharp_damage, vec3 pos, int attacker_id, bool allow_h
 
     this_mo.rigged_object().anim_client().AddLayer("Data/Animations/r_painflinch.anm", 8.0f, 0);
     int old_knocked_out = knocked_out;
-    TakeBloodDamage(sharp_damage);
+    TakeBloodDamage(sharp_damage * ProgressionAttackMultiplier(attacker_id, true));
 
     if(attack_getter2.HasCutPlane()) {
         vec3 cut_plane_local = attack_getter2.GetCutPlane();
@@ -5973,7 +5985,8 @@ int ResolveAttackImpact(const vec3 &in dir, const vec3 &in pos, int attacker_id,
     }
 
     // Apply damage to passive block health
-    float block_damage = attack_getter2.GetBlockDamage() * max(1.0, p_damage_multiplier) * max(1.0, attack_damage_mult);
+    const float blunt_mult = attack_damage_mult * ProgressionAttackMultiplier(attacker_id, false);
+    float block_damage = attack_getter2.GetBlockDamage() * max(1.0, p_damage_multiplier) * max(1.0, blunt_mult);
     block_health -= block_damage;
 
     if(char.GetIntVar("species") == _dog && (species != _dog && species != _wolf)) {
@@ -6132,7 +6145,7 @@ int ResolveAttackImpact(const vec3 &in dir, const vec3 &in pos, int attacker_id,
             }
 
             float force = attack_getter2.GetForce() * (1.0f - max(0.0f, temp_health * 0.5f)) * attack_knockback_mult;
-            float damage = attack_getter2.GetDamage() * attack_damage_mult;
+            float damage = attack_getter2.GetDamage() * blunt_mult;
 
             if(enemy_primary_weapon_id != -1) {
                 ItemObject@ weap = ReadItemID(enemy_primary_weapon_id);
@@ -7038,6 +7051,9 @@ void TakeBloodDamage(float how_much) {
 }
 
 void TakeDelayedBloodDamage(float how_much) {
+    // Scale the wound at impact. Later ticks keep the same damage and owner
+    // even if the attacker leaves or the victim is struck by someone else.
+    how_much *= ProgressionAttackMultiplier(attacked_by_id, true);
     how_much *= p_damage_multiplier * equipped_damage_factor;
     blood_damage += how_much;
     if(how_much > 0.0f && ProgressionEnabled()) {
@@ -7193,10 +7209,10 @@ void WeaponRemovedFromBody(int weapon_id, int remover_id) {
 
     if(knocked_out != _dead) {
         if((species == _wolf || species == _dog) && ko_shield > 1) {
-            TakeBloodDamage(0.1);
+            TakeBloodDamage(0.1f * ProgressionAttackMultiplier(remover_id, true));
             ko_shield = max(0, ko_shield - 1);
         } else {
-            TakeBloodDamage(100.0);
+            TakeBloodDamage(100.0f * ProgressionAttackMultiplier(remover_id, true));
             ko_shield = 0;
 
             if(remover_id != -1 && ObjectExists(remover_id) && ReadCharacterID(remover_id).controlled) {
@@ -9257,7 +9273,7 @@ void HandleAirCollisions(const Timestep &in ts) {
             if(shock > temp_shock_damage_threshold || fall_death) {
                 int old_ko_shield = ko_shield;
                 ko_shield = 0;
-                TakeDamage((shock - temp_shock_damage_threshold) * _shock_damage_multiplier * fall_damage_mult);
+                TakeDamage((shock - temp_shock_damage_threshold) * _shock_damage_multiplier * fall_damage_mult * LongFallDamageScale(shock));
                 ko_shield = old_ko_shield;
 
                 if(knocked_out == _unconscious) {
@@ -15732,7 +15748,7 @@ void CampaignRememberAuthoredParameters() {
 void CampaignApplyAuthoredScaling() {
     if(!campaign_authored_valid) CampaignRememberAuthoredParameters();
     p_damage_multiplier = campaign_authored_resistance / (campaign_vitality_mult * ProgressionDurabilityMultiplier(progression_health));
-    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult * ProgressionDamageMultiplier(progression_damage);
+    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult;
     float movement_multiplier = p_speed_mult * ProgressionSpeedMultiplier(progression_speed);
     run_speed = _base_run_speed * movement_multiplier;
     true_max_speed = _base_true_max_speed * movement_multiplier;

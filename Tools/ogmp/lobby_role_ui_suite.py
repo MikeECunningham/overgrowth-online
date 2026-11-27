@@ -134,8 +134,8 @@ def lobby_role_ui(ctx):
             pads = inst.bridge.call('virtual_pad')['pads']
             assert pads[0]['local_index'] == 1, pads
             record['initial'] = state()
-            assert state()['ui_nav_window'] != 'Edit player name' and probe('"" + editing_name') == '-1', \
-                'join A activated the previously focused Rename button'
+            assert probe('ImGui_IsAnyPopupOpen() || new_profile_seat >= 0 || editing_name >= 0') == 'false', \
+                'join A activated the previously focused profile selector'
             # The join press belonged to P2; a keyboard arrow reclaims the UI
             # for P1 before selecting the actual promotion button.
             key('Up')
@@ -162,14 +162,10 @@ def lobby_role_ui(ctx):
             record['new_owner'] = {'state': state(), 'ownership': claimed}
 
             if transfer != 'host_only':
-                if transfer == 'host_and_leader':
-                    # From P1's role actions, Down enters P2's row at Team.
-                    seek('##team', second['id'], device='pad', directions=('down',))
-                    seek('##screen', second['id'], device='pad', directions=('right',))
-                else:
-                    # With team editing restricted to the host, the next
-                    # available selector on P2's row is Screen.
-                    seek('##screen', second['id'], device='pad', directions=('down', 'up'))
+                # The connected human's profile, team and screen are aligned.
+                # A right press skips the disabled Team for a non-host leader.
+                seek('##profile', second['id'], device='pad', directions=('down','up','left','down'))
+                seek('##screen', second['id'], device='pad', directions=('right',))
                 activate('pad')
                 pad(11)  # Screen2 -> Screen1, through the rendered dropdown.
                 activate('pad')
@@ -184,7 +180,11 @@ def lobby_role_ui(ctx):
                     move('left', 'pad')
                     move('left', 'pad')
                 seek('Make host', first['id'], device='pad')
-                seek('##team', first['id'], device='pad', directions=('up', 'right', 'down', 'left'), steps=3)
+                if transfer == 'host_and_leader':
+                    seek('##profile', first['id'], device='pad', directions=('up',))
+                    seek('##team', first['id'], device='pad', directions=('right',))
+                else:
+                    seek('##team', first['id'], device='pad', directions=('up', 'right', 'down', 'left'), steps=3)
                 activate('pad')
                 pad(12)
                 activate('pad')

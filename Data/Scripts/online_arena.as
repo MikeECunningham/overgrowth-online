@@ -50,7 +50,8 @@ enum ArenaPhase {
     kFighting,
     kRoundOver,
     kMatchOver,
-    kShoppingNextMatch = 6  // saved match phases keep their numeric IDs
+    kShoppingNextMatch = 6,  // saved match phases keep their numeric IDs
+    kLegacyRollingNextRound
 }
 
 ArenaPhase phase = kWaiting;
@@ -584,6 +585,8 @@ void HostUpdate() {
         else NewMatch();
     } else if(phase == kShoppingNextMatch) {
         NewMatch();
+    } else if(phase == kLegacyRollingNextRound) {
+        StartRound();
     }
 
     // Late joiners see where things stand

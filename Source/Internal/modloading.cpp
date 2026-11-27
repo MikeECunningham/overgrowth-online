@@ -20,6 +20,8 @@
 //   limitations under the License.
 //
 //-----------------------------------------------------------------------------
+#include <Online/local_profiles.h>
+#include <Online/weapon_categories.h>
 #include "modloading.h"
 
 #include <Internal/filesystem.h>
@@ -773,6 +775,7 @@ bool IsBundledMod(const std::string& path) {
 void ModInstance::Reload() {
     // Active peers and save restoration already agreed on this schema.
     if (active && SessionContractLocked(*this)) return;
+    WeaponCategories::Invalidate();
     LOGD << "Reloading mod data" << std::endl;
     valid = kValidityValid;
 
@@ -1216,6 +1219,10 @@ void ModInstance::Reload() {
                         if (!pElem->GetText() || saysTrue(pElem->GetText()) == -1) { PARSE_ERROR(pElem, kValidityBrokenXml); }
                         else enabled_by_default = saysTrue(pElem->GetText()) == 1;
                     }
+                    if (!LocalProfiles::RegisterMod(sid.id, hRoot.FirstChild("ModSettings").Element(), hRoot.FirstChild("ProfileLayers").Element())) {
+                        LOGE << "Invalid profile or system settings declaration in " << modxmlpath << std::endl;
+                        PARSE_ERROR(hRoot.Element(), kValidityBrokenXml);
+                    }
                     pElem = hRoot.FirstChild("Session").Element();
                     if (pElem && !ParseSession(pElem, id.str(), version.str(), session)) {
                         LOGE << "Invalid session contract or lobby setting declaration in " << modxmlpath << std::endl;
@@ -1433,12 +1440,8 @@ void ModInstance::Reload() {
                 }
             }
 
-            if (is_root) {
-                if (strmtch("Data", str.c_str()) || strmtch("mod.xml", str.c_str()) || strmtch("Localized", str.c_str())) {
-                } else {
-                    LOGW << "Mod " << id << " has files in root besides mod.xml and Data, this is bad form. File is question " << str << " consider moving it to Data." << std::endl;
-                }
-            }
+            if (is_root && str != "Data" && str != "mod.xml" && str != "Localized" && str != "weapon_categories.xml")
+                LOGW << "Mod " << id << " has an unexpected file in its root: " << str << std::endl;
         }
 
         std::vector<std::string>::iterator supported_versions_it;
@@ -2868,6 +2871,8 @@ void ModLoading::SetMods(std::vector<std::string> modpaths) {
 }
 
 void ModLoading::TriggerModActivationCallback(ModInstance* mod) {
+    LocalProfiles::ModsChanged();
+    WeaponCategories::Invalidate();
     ClearFileLookups();  // (Overgrowth Online: mods' files come and go)
     std::vector<ModLoadingCallback*>::iterator callbackit;
 

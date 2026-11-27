@@ -204,7 +204,7 @@ def progression_ui(ctx):
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
         assert rows()[0]["scroll"] == 0
         pad(14)
-        wait(lambda: rows()[1]["focus"] == "damage", "P2 browses independently")
+        wait(lambda: rows()[1]["focus"] == "bone_damage", "P2 browses independently")
         assert rows()[0]["focus"] == "health"
         pad(0)
         wait(lambda: rows()[1]["display_held"] < before, "controller purchase debits only P2")

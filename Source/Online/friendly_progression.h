@@ -8,34 +8,25 @@
 
 class MovementObject;
 namespace FriendlyProgression {
-struct Weapon {
-    const char* key;
-    const char* label;
-    const char* path;
-    const char* artwork;
-    const char* price_family;
-    int selection, rarity;
-    bool offhand;
-    uint64_t Ownership() const { return uint64_t{1} << selection; }
-};
-// Selection IDs are persistent. The array order is the order on the shop shelf.
-constexpr int kWeaponCount = 36;
-constexpr uint64_t kWeaponOwnershipMask = (uint64_t{1} << kWeaponCount) - 1;
-const std::array<Weapon, kWeaponCount>& Weapons();
 struct StatRanks {
-    int health = 0, damage = 0, speed = 0;
+    int health = 0, bone_damage = 0, flesh_damage = 0, speed = 0, fall_resistance = 0;
     int stealth_passive = 0, stealth_active = 0, luck = 0;
 };
 struct Build : StatRanks {
     std::array<int, 9> armor{}; // front, back, head, forearms, shoulders, thighs
-    int big_weapon = 0;        // zero means no main weapon
-    int dagger_variant = 0;    // the original offhand dagger in older saves
-    bool dagger = false;
+    std::string main_weapon, offhand_weapon; // stable category IDs, empty means unequipped
     int ai = 0;                // Casual through Nightmare
     bool recruited = false, trained = false;
     uint32_t owner = UINT32_MAX;
 };
+struct UpgradeDefinition {
+    std::string id, label, artwork, prerequisite;
+    int rarity;
+};
+std::vector<UpgradeDefinition> UpgradeCatalog();
+void CaptureMapUpgrades();
 Build GetBuild(uint32_t player);
+float AttackMultiplier(int attacker, bool flesh);
 bool ApplyRace(uint32_t player, bool bot, MovementObject& avatar);
 int SurvivalShopSeconds();
 bool Enabled();
@@ -47,6 +38,7 @@ void ArenaWin(const std::vector<int>& winners, bool match, const std::vector<int
 void SurvivalClear(int battery, int wave, const std::vector<int>& winners);
 void CloseSurvivalUpgrades();
 void ResetAttempt();
+void CampaignComplete();
 bool BeginShop(bool campaign_final = false);
 bool ShopOpen();
 bool LoopChosen();
@@ -56,6 +48,7 @@ bool Act(uint32_t actor, uint32_t target, const std::string& action, const std::
 
 // Session, network and character hooks.
 void NewSession(bool keep_slot_handicaps = false);
+void SetSavedProfileRun(const std::string& run_id);
 void NewWorld();
 void ForgetPlayer(uint32_t player);
 void Update();

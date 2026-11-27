@@ -9,7 +9,7 @@ enum class Scope { Network, Save, Handoff };  // Handoff includes private save-o
 Json::Value Snapshot(Scope scope);
 bool Validate(const Json::Value& mods, Scope scope, std::string& error);
 void Restore(const Json::Value& mods, Scope scope);
-void RestoreGameplay(const Json::Value& mods);
+void RestoreGameplay(const Json::Value& save);
 bool ReceiveUpdate(const Json::Value& mods);
 void PublishFeature(const std::string& feature);
 void Clear();

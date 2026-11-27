@@ -21,6 +21,7 @@
 //
 //-----------------------------------------------------------------------------
 #include "send_level_message.h"
+#include <Online/survival_equipment.h>
 
 #include <Main/engine.h>
 #include <Game/level.h>
@@ -65,6 +66,10 @@ void SendLevelMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID
             Engine::Instance()->FollowGameSpeed((float)atof(lm->msg.c_str() + 10));  // the host's game speed
         } else if (lm->msg.compare(0, 11, "ohg revive ") == 0) {
             online->CoopReviveRequest(lm->msg);  // a checkpoint: our character back up
+        } else if (peer == 0 && lm->msg.compare(0, 11, "ohg recall ") == 0) {
+            int character, item;
+            if (sscanf(lm->msg.c_str() + 11, "%d %d", &character, &item) == 2 && character >= 0 && item >= 0)
+                SurvivalEquipment::ReceiveRecall(character, item);
         } else if (peer == 0 && lm->msg.compare(0, 9, "ohg heal ") == 0) {
             int character = -1, phase = -1;
             float fraction = 1.0f;

@@ -1032,6 +1032,7 @@ class Online {
     bool StartLobbyGame(const std::string& level = "", const std::string& campaign = "", bool build = false, PlayerID actor = LobbyAuthority::InvalidPlayer);
     void ReceiveLobbyControl(PeerID from, const std::string& payload);
     void BroadcastLobby();
+    bool EditLobbyProfile(PlayerID id, PlayerID actor, const std::string& op, const std::string& key, const std::string& value);
     bool EstablishPeerPlayers(PeerID peer, const std::vector<std::string>& names, const std::vector<int>& screens = {});
     void AssignPeerAvatars(PeerID peer);
     std::vector<std::string> LocalLobbyNames() const;

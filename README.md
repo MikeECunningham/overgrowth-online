@@ -46,6 +46,8 @@ and the remaining Steam friends/relay checks.
 - Three bundled gameplay mods, **Difficulty Scaling**, **Friendly Progression** and **Survival**.
   They start enabled in **Mods**. The host chooses Scaling in **Difficulty** or
   turns on **Progression** in **Mode settings** for a particular game.
+  Its shop offers separate bone and flesh damage upgrades and resistance to
+  long falls. In the shop, Space heals and Enter toggles Ready.
   Each mod can be disabled independently. Slots, split-screen, save cards
   and the armor protection models are engine features.
   See [campaign scaling](Docs/Markdown/Campaign%20Difficulty.md) and
@@ -118,6 +120,11 @@ at three, two and one. Each lobby team faces its own enemies. A turquoise
 diamond above a visible raider means it belongs to another team's wave and is
 neutral to the player on that screen.
 
+During a countdown the host prepares the upcoming formation one fighter or
+weapon at a time. Each peer keeps those objects dormant until the wave starts.
+When the battery-end shop opens, unattended weapons return to the last player
+who carried them if that player has a compatible free hand or belt slot.
+
 On open ground, waves spawn 12–20 units away in battery 1. Both radii grow
 until the ring reaches 40–64 units in battery 20. Confined maps use a closer
 ring when the preferred one has no reachable ground. Raiders approach the
@@ -136,6 +143,11 @@ cleared and enemies defeated by each team. The host can left-click to start a
 fresh run at battery 1 or right-click to return the party to the lobby.
 Retry in the Survival pause menu also starts a fresh run. Continue on a game-over autosave
 reopens that lobby with its settings and slots.
+
+The wave countdown has a dark background for visibility against the sky. The
+host’s difficulty readout stays visible through battery breaks, including while
+players shop. Each lobby map picker starts with **Random map**, which draws
+from the current filtered list and shares the chosen map with the lobby.
 
 With Progression enabled, the host can check **XP handicap** on a human slot
 in the Players panel. A defeat earns committed XP there. **Local leaders may
@@ -158,6 +170,10 @@ to use. The button used to join a controller does not also activate a menu item.
 The host's P1 starts as Turner. Other players start with their team's fur and clothing colors; the numbered team dropdowns include matching color swatches. The lobby uses the game's menu artwork and fonts, with native scrolling and controller navigation underneath.
 
 The host can choose **Add slot** in the lobby or pause menu. A new slot starts with a bot. In the lobby, switch it to a player slot to reserve an opening. The admission dropdown controls whether remote players and local controllers can create slots or must take an opening. Swapping occupants moves control to the destination unit, including its XP, upgrades and equipment.
+
+**Settings → Profiles** manages named players, their outfit for each race and their preferred weapon appearances. **Use for solo Play** assigns the chosen profile when starting a private game. In a lobby, each human chooses from the host's profiles, creates one, or stays a temporary guest. L2/R2 change cosmetic categories and L1/R1 cycle available appearances. Lobby rows use team colors, with a darker shade for bots.
+
+**Settings → Mod settings → Friendly Progression** has independent **Cosmetic progression** and **Non-cosmetic progression** checkboxes. Each profile earns one token every 10 campaign levels cleared, 10 Arena matches won or 10 Survival batteries survived. The three counters carry over independently between sessions for named profiles. Spend a token on **Roll cosmetic** or **Roll upgrade** in **Settings → Profiles** or in the player's lobby entry. Each draw gives something the profile has yet to unlock. Players share the upgrades their profiles bring to a map at its start. Turning cosmetic progression off restores the original outfit and weapon selections.
 
 **Save game** in the pause menu offers six manual slots on the host’s machine. **Load game** is available from the main menu, lobby and pause menu. Each card shows a camera preview, mode, map and save time. **Continue** opens the autosave, updated at level entry, campaign checkpoints and Arena deployments. Loading a lobby game first restores its settings and roster in the lobby. The host can reassign the saved units before pressing **Start**. Manual campaign saves restore authored actors and objective progress. Loading an Arena fight restarts its round with the saved scores and match setup. A save made in a shop reopens that shop.
 

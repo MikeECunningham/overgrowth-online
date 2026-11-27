@@ -3,15 +3,23 @@
     <Id>og-online-progression</Id>
     <Name>Friendly Progression</Name>
     <Author>Overgrowth Online</Author>
-    <Description>Spend XP between campaign levels, Arena matches or Survival batteries. Injured fighters can buy a full recovery. Its price depends on the severity of their injuries. The maximum rises with completed levels, rounds or waves. The host can also enable free upgrades, including recovery, at checkpoints, Arena round ends and Survival battery clears. Each player's Luck affects their chance to get a choice and the value of the four upgrades offered. The host can give individual players committed XP on defeat and let local leaders choose that handicap for their own players. Saves keep handicaps, balances, equipment, Luck and pending choices with their lobby slots.</Description>
+    <Description>Spend XP between campaign levels, Arena matches or Survival batteries. Injured fighters can buy a full recovery. Its price depends on the severity of their injuries. The maximum rises with completed levels, rounds or waves. The host can also enable free upgrades, including recovery, at checkpoints, Arena round ends and Survival battery clears. Each player's Luck affects their chance to get a choice and the value of the four upgrades offered. The host can give individual players committed XP on defeat and let local leaders choose that handicap for their own players. Saves keep handicaps, balances, equipment, Luck and pending choices with their lobby slots. Optional profile progression awards one token for every ten campaign levels cleared, ten Arena matches won or ten Survival batteries survived. Spend tokens on cosmetic or gameplay unlocks from Profiles or a lobby player entry. Gameplay unlocks contributed by the lobby are shared from map start.</Description>
     <Category>Gameplay</Category>
     <Thumbnail>Data/Images/og-online-progression.jpg</Thumbnail>
-    <Version>1.7.0</Version>
+    <Version>1.10.0</Version>
     <SupportedVersion>0.41.36</SupportedVersion>
     <EnabledByDefault>true</EnabledByDefault>
     <SupportsOnline>true</SupportsOnline>
     <NeedsRestart>false</NeedsRestart>
-    <Session feature="progression" network_version="8" save_version="5">
+    <ModSettings>
+        <Setting key="meta_progression" label="Cosmetic progression" type="checkbox" default="0"/>
+        <Setting key="upgrade_progression" label="Non-cosmetic progression" type="checkbox" default="0"/>
+    </ModSettings>
+    <ProfileLayers>
+        <SubProfile id="collection" active_when="meta_progression"/>
+        <SubProfile id="upgrades"/>
+    </ProfileLayers>
+    <Session feature="progression" network_version="12" save_version="8">
         <Rule key="stat_base" value="16"/>
         <Rule key="stat_linear" value="5"/>
         <Rule key="stat_quadratic" value="2"/>
@@ -28,15 +36,15 @@
         <Rule key="checkpoint_xp" value="25"/>
         <Rule key="round_win_xp" value="25"/>
         <Rule key="match_win_xp" value="100"/>
-        <Rule key="weapon_dagger" value="140"/>
-        <Rule key="weapon_sword" value="1040"/>
-        <Rule key="weapon_spear" value="880"/>
-        <Rule key="weapon_stick" value="60"/>
-        <Rule key="weapon_tool" value="100"/>
-        <Rule key="weapon_machete" value="490"/>
-        <Rule key="weapon_hammer" value="1140"/>
-        <Rule key="weapon_staff" value="360"/>
-        <Rule key="weapon_broadsword" value="1280"/>
+        <Rule key="weapon_dagger" value="350"/>
+        <Rule key="weapon_sword" value="1200"/>
+        <Rule key="weapon_spear" value="1000"/>
+        <Rule key="weapon_stick" value="450"/>
+        <Rule key="weapon_tool" value="475"/>
+        <Rule key="weapon_machete" value="600"/>
+        <Rule key="weapon_hammer" value="1320"/>
+        <Rule key="weapon_staff" value="500"/>
+        <Rule key="weapon_broadsword" value="1480"/>
         <Rule key="ai_hardcore" value="1800"/>
         <Rule key="ai_expert" value="3400"/>
         <Rule key="ai_nightmare" value="8600"/>

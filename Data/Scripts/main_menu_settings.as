@@ -53,6 +53,10 @@ void Dispose() {
 }
 
 bool CanGoBack() {
+    if(current_screen == "Profiles" && profile_editor_mode != "") {
+        ProcessProfileSettings(IMMessage("profile_cancel"));
+        return false;
+    }
     return !capture_input;
 }
 

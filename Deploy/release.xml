@@ -38,6 +38,7 @@
 		are included into the build. The type-based serchers and file identifiers are still useful and necessary however.
 		as they are the basis for the conversion step, used for baking data and among other things converting textures into .dds files
 	-->
+        <Item type="generic" recursive="false">weapon_categories.xml</Item>
         <Item type="generic" recursive="true">Objects/</Item>
         <Item type="generic" recursive="true">Prototypes/</Item>
         <Item type="generic" recursive="true">Prefabs/</Item>

@@ -1071,6 +1071,19 @@ bool ItemObject::Disconnect(Object& other, bool from_socket /*= false*/, bool ch
 }
 
 void ItemObject::SetHolderID(int char_id) {
+    Online* online = Online::Instance();
+    if (online->IsHosting() && online->IsSurvivalMode() && item_ref_.valid() && item_ref_->GetItemType() == _weapon) {
+        // Initial map equipment can be attached before lobby seats are bound.
+        // Remember the previous carrier too when an enemy picks it up.
+        PlayerState seat;
+        if ((online->TryGetPlayerState(seat, char_id) && !seat.is_bot) ||
+            (last_held_char_id_ >= 0 && online->TryGetPlayerState(seat, last_held_char_id_) && !seat.is_bot)) {
+            const int slot = static_cast<int>(seat.player_id);
+            ScriptParams* params = GetScriptParams();
+            if (!params->HasParam("Survival Recall Slot") || params->ASGetInt("Survival Recall Slot") != slot)
+                params->ASSetInt("Survival Recall Slot", slot);
+        }
+    }
     last_held_char_id_ = char_id;
     // printf("Item %d now held by %d\n", GetID(), char_id);
 }

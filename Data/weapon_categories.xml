@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WeaponCategories>
+    <Category id="dagger" label="Offhand dagger" price="dagger" rarity="2" hand="off">
+        <Skin id="dagger" label="Offhand dagger" path="Data/Items/rabbit_weapons/rabbit_knife.xml" artwork="Data/UI/spawner/thumbs/Object/rabbit_knife.png" rarity="0" legacy="0" />
+    </Category>
+    <Category id="throwing_knife" label="Rabbit throwing knife" price="dagger" rarity="2" hand="off">
+        <Skin id="throwing_knife" label="Rabbit throwing knife" path="Data/Items/rabbit_weapons/rabbit_throwing_knife.xml" artwork="Data/UI/spawner/thumbs/Object/rabbit_throwing_knife.png" rarity="0" legacy="5" />
+    </Category>
+    <Category id="flint_knife" label="Flint knife" price="dagger" rarity="2" hand="off">
+        <Skin id="flint_knife" label="Flint knife" path="Data/Items/flint_knife.xml" artwork="Data/UI/spawner/thumbs/Object/flint_knife.png" rarity="0" legacy="6" />
+        <Skin id="flint_knife_c2" label="Flint knife (painted)" path="Data/Items/flint_knife_c2.xml" artwork="Data/UI/spawner/thumbs/Object/flint_knife_c2.png" rarity="2" legacy="7" />
+    </Category>
+    <Category id="dog_knife" label="Dog knife" price="dagger" rarity="2" hand="off">
+        <Skin id="dog_knife" label="Dog knife" path="Data/Items/DogWeapons/DogKnife.xml" artwork="Data/UI/spawner/thumbs/Object/DogKnife.png" rarity="0" legacy="8" />
+        <Skin id="cinder_knife" label="Cinderbreathe knife" path="Data/Items/cinderbreathe_weapons/cinderbreatheknife.xml" artwork="Data/UI/spawner/thumbs/Object/DogKnife.png" rarity="3" legacy="10" />
+    </Category>
+    <Category id="main_gauche" label="Main gauche" price="dagger" rarity="2" hand="off">
+        <Skin id="main_gauche" label="Main gauche" path="Data/Items/MainGauche.xml" artwork="Data/UI/spawner/thumbs/Object/wcatknife.png" rarity="0" legacy="9" />
+    </Category>
+    <Category id="gabenife" label="Gabe knife" price="dagger" rarity="2" hand="off">
+        <Skin id="gabenife" label="Gabe knife" path="Data/Items/gabenife.xml" artwork="Data/UI/spawner/thumbs/Object/gabenife.png" rarity="0" legacy="11" />
+    </Category>
+    <Category id="rat_blade" label="Rat throwing blade" price="dagger" rarity="2" hand="off">
+        <Skin id="rat_blade" label="Rat throwing blade" path="Data/Items/rat_weapons/rat_throwing_blade.xml" artwork="Data/UI/spawner/thumbs/Object/rat_throwing_blade.png" rarity="0" legacy="12" />
+    </Category>
+    <Category id="stone_knife" label="Stone knife" price="dagger" rarity="2" hand="off">
+        <Skin id="stone_knife" label="Stone knife" path="Data/Prototypes/Weapons/FlintKnife_Item.xml" rarity="0" artwork="Data/UI/spawner/thumbs/Object/flint_knife.png" />
+    </Category>
+    <Category id="staff" label="Staff" price="staff" rarity="2" hand="main">
+        <Skin id="staff" label="Staff" path="Data/Items/staffbasic.xml" artwork="Data/UI/spawner/thumbs/Old &amp; Nonworking/staffbasic.png" rarity="0" legacy="3" />
+    </Category>
+    <Category id="stick" label="Stick" price="stick" rarity="1" hand="main">
+        <Skin id="stick" label="Stick" path="Data/Items/stick.xml" artwork="Data/UI/spawner/thumbs/Static Objects/stick.png" rarity="0" legacy="13" />
+    </Category>
+    <Category id="kendo" label="Kendo stick" price="staff" rarity="2" hand="main">
+        <Skin id="kendo" label="Kendo stick" path="Data/Items/kendostick_1h.xml" artwork="Data/UI/spawner/thumbs/Old &amp; Nonworking/staffbasic.png" rarity="0" legacy="14" />
+    </Category>
+    <Category id="torch" label="Torch" price="tool" rarity="2" hand="main">
+        <Skin id="torch" label="Torch" path="Data/Items/torch.xml" artwork="Data/UI/spawner/thumbs/Interactive Objects/torch.png" rarity="0" legacy="15" />
+    </Category>
+    <Category id="arrow" label="Arrow" price="stick" rarity="1" hand="main">
+        <Skin id="arrow" label="Arrow" path="Data/Items/StandardArrow.xml" artwork="Data/UI/spawner/thumbs/Static Objects/stick.png" rarity="0" legacy="16" />
+    </Category>
+    <Category id="rat_machete" label="Rat machete" price="machete" rarity="2" hand="main">
+        <Skin id="rat_machete" label="Rat machete" path="Data/Items/rat_weapons/rat_machete.xml" artwork="Data/UI/spawner/thumbs/Object/rat_machete.png" rarity="0" legacy="17" />
+    </Category>
+    <Category id="handhammer" label="Therium hand hammer" price="hammer" rarity="3" hand="main">
+        <Skin id="handhammer" label="Therium hand hammer" path="Data/Objects/therium/Weapons/handhammer.xml" rarity="0" artwork="Data/UI/spawner/thumbs/Object/DogToolHammer.png" />
+    </Category>
+    <Category id="hatchet" label="Hatchet" price="machete" rarity="2" hand="main">
+        <Skin id="hatchet" label="Hatchet" path="Data/Objects/therium/Weapons/hatchet.xml" rarity="0" />
+    </Category>
+    <Category id="spear" label="Spear" price="spear" rarity="3" hand="main">
+        <Skin id="spear" label="Spear" path="Data/Items/DogWeapons/DogSpear.xml" artwork="Data/UI/spawner/thumbs/Object/DogSpear.png" rarity="0" legacy="2" />
+        <Skin id="cinder_spear" label="Cinderbreathe spear" path="Data/Items/cinderbreathe_weapons/cinderbreathespear.xml" artwork="Data/UI/spawner/thumbs/Object/DogSpear.png" rarity="3" legacy="19" />
+    </Category>
+    <Category id="glaive" label="Dog glaive" price="spear" rarity="3" hand="main">
+        <Skin id="glaive" label="Dog glaive" path="Data/Items/DogWeapons/DogGlaive.xml" artwork="Data/UI/spawner/thumbs/Object/DogGlaive.png" rarity="0" legacy="18" />
+    </Category>
+    <Category id="cinder_glaive" label="Cinderbreathe glaive" price="spear" rarity="3" hand="main">
+        <Skin id="cinder_glaive" label="Cinderbreathe glaive" path="Data/Items/cinderbreathe_weapons/cinderbreatheglaive.xml" artwork="Data/UI/spawner/thumbs/Object/DogSpear.png" rarity="0" legacy="20" />
+    </Category>
+    <Category id="kendo_2h" label="Two-handed kendo stick" price="staff" rarity="2" hand="main">
+        <Skin id="kendo_2h" label="Cinderbreathe kendo stick" path="Data/Objects/therium/Weapons/kendostick.xml" rarity="0" artwork="Data/UI/spawner/thumbs/Old &amp; Nonworking/staffbasic.png" />
+        <Skin id="kendo_ancient" label="Ancient kendo stick" path="Data/Objects/therium/Weapons/ancientkendo.xml" rarity="3" artwork="Data/UI/spawner/thumbs/Old &amp; Nonworking/staffbasic.png" />
+    </Category>
+    <Category id="sword" label="Sword" price="sword" rarity="3" hand="main">
+        <Skin id="sword" label="Sword" path="Data/Items/DogWeapons/DogSword.xml" artwork="Data/UI/spawner/thumbs/Object/DogSword.png" rarity="0" legacy="1" />
+        <Skin id="cinder_sword" label="Cinderbreathe sword" path="Data/Items/cinderbreathe_weapons/cinderbreathesword.xml" artwork="Data/UI/spawner/thumbs/Object/DogSword.png" rarity="3" legacy="22" />
+    </Category>
+    <Category id="rapier" label="Cat rapier" price="sword" rarity="3" hand="main">
+        <Skin id="rapier" label="Cat rapier" path="Data/Items/Rapier.xml" artwork="Data/UI/spawner/thumbs/Object/Rapier.png" rarity="0" legacy="21" />
+    </Category>
+    <Category id="khoen_sword" label="Khoen sword" price="sword" rarity="3" hand="main">
+        <Skin id="khoen_sword" label="Khoen sword" path="Data/Objects/therium/Weapons/khoensword.xml" rarity="0" artwork="Data/UI/spawner/thumbs/Object/DogSword.png" />
+    </Category>
+    <Category id="khoen_bloody" label="Khoen bloody sword" price="sword" rarity="4" hand="main">
+        <Skin id="khoen_bloody" label="Khoen bloody sword" path="Data/Objects/therium/Weapons/rabies_bloody.xml" rarity="0" artwork="Data/UI/spawner/thumbs/Object/DogSword.png" />
+    </Category>
+    <Category id="dog_hammer" label="Dog hammer" price="hammer" rarity="3" hand="main">
+        <Skin id="dog_hammer" label="Dog hammer" path="Data/Items/DogWeapons/DogHammer.xml" artwork="Data/UI/spawner/thumbs/Object/DogHammer.png" rarity="0" legacy="23" />
+    </Category>
+    <Category id="pole_hammer" label="Dog polehammer" price="hammer" rarity="3" hand="main">
+        <Skin id="pole_hammer" label="Dog polehammer" path="Data/Items/DogHammer.xml" artwork="Data/UI/spawner/thumbs/Object/DogHammer.png" rarity="0" legacy="24" />
+    </Category>
+    <Category id="rabbit_catcher" label="Rabbit catcher" price="spear" rarity="3" hand="main">
+        <Skin id="rabbit_catcher" label="Rabbit catcher" path="Data/Items/DogWeapons/RabbitCatcher.xml" artwork="Data/UI/spawner/thumbs/Object/RabbitCatcher.png" rarity="0" legacy="25" />
+    </Category>
+    <Category id="glass_macuahuitl" label="Glass macuahuitl" price="sword" rarity="3" hand="main">
+        <Skin id="glass_macuahuitl" label="Glass macuahuitl" path="Data/Items/macuahuitl_glass.xml" artwork="Data/UI/spawner/thumbs/Object/macuahuitl_glass.png" rarity="0" legacy="26" />
+    </Category>
+    <Category id="metal_macuahuitl" label="Metal macuahuitl" price="sword" rarity="3" hand="main">
+        <Skin id="metal_macuahuitl" label="Metal macuahuitl" path="Data/Items/macuahuitl_metal.xml" artwork="Data/UI/spawner/thumbs/Object/macuahuitl_metal.png" rarity="0" legacy="27" />
+    </Category>
+    <Category id="broadsword" label="Broadsword" price="broadsword" rarity="4" hand="main">
+        <Skin id="broadsword" label="Broadsword" path="Data/Items/DogWeapons/DogBroadSword.xml" artwork="Data/UI/spawner/thumbs/Object/DogBroadSword.png" rarity="0" legacy="4" />
+        <Skin id="cinder_broadsword" label="Cinderbreathe broadsword" path="Data/Items/cinderbreathe_weapons/cinderbreathebroadsword.xml" artwork="Data/UI/spawner/thumbs/Object/DogBroadSword.png" rarity="4" legacy="29" />
+    </Category>
+    <Category id="bastard_sword" label="Bastard sword" price="broadsword" rarity="4" hand="main">
+        <Skin id="bastard_sword" label="Bastard sword" path="Data/Items/Bastard.xml" artwork="Data/UI/spawner/thumbs/O2/Bastard.png" rarity="0" legacy="28" />
+    </Category>
+    <Category id="reaper_axe" label="Reaper axe" price="broadsword" rarity="4" hand="main">
+        <Skin id="reaper_axe" label="Reaper axe" path="Data/Objects/therium/Weapons/reaperaxitem.xml" rarity="0" />
+    </Category>
+    <Category id="dog_scabbard" label="Dog sword scabbard" price="stick" rarity="1" hand="main">
+        <Skin id="dog_scabbard" label="Dog sword scabbard" path="Data/Items/DogWeapons/DogSwordScabbard.xml" artwork="Data/UI/spawner/thumbs/Object/dog_sword_scabbard.png" rarity="0" legacy="30" />
+        <Skin id="cinder_scabbard" label="Cinderbreathe scabbard" path="Data/Items/cinderbreathe_weapons/cinderbreatheswordscabbard.xml" artwork="Data/UI/spawner/thumbs/Object/dog_sword_scabbard.png" rarity="3" legacy="32" />
+    </Category>
+    <Category id="cat_scabbard" label="Cat rapier scabbard" price="stick" rarity="1" hand="main">
+        <Skin id="cat_scabbard" label="Cat rapier scabbard" path="Data/Items/cat_weapons/cat_rapier_scabbard.xml" artwork="Data/UI/spawner/thumbs/Object/cat_rapier_scabbard.png" rarity="0" legacy="31" />
+    </Category>
+    <Category id="tool_awl" label="Dog tool awl" price="tool" rarity="1" hand="main">
+        <Skin id="tool_awl" label="Dog tool awl" path="Data/Items/gear/dogtools/dogtoolawl.xml" artwork="Data/UI/spawner/thumbs/Object/DogToolAwl.png" rarity="0" legacy="33" />
+    </Category>
+    <Category id="tool_chisel" label="Dog tool chisel" price="tool" rarity="1" hand="main">
+        <Skin id="tool_chisel" label="Dog tool chisel" path="Data/Items/gear/dogtools/dogtoolchisel.xml" artwork="Data/UI/spawner/thumbs/Object/DogToolChisel.png" rarity="0" legacy="34" />
+    </Category>
+    <Category id="tool_hammer" label="Dog tool hammer" price="tool" rarity="1" hand="main">
+        <Skin id="tool_hammer" label="Dog tool hammer" path="Data/Items/gear/dogtools/dogtoolhammer.xml" artwork="Data/UI/spawner/thumbs/Object/DogToolHammer.png" rarity="0" legacy="35" />
+    </Category>
+</WeaponCategories>
