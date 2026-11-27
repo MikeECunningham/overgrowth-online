@@ -32,6 +32,14 @@
 #include <vector>
 #include <string>
 
+// SDL_main.h maps every `main` token to SDL_main on Windows.  input.h pulls
+// that macro in indirectly, but this file also has an IMGUI::main member.
+// Keep SDL's entry-point redirection local to the actual application entry
+// point instead of letting it rewrite the member name below.
+#ifdef main
+#undef main
+#endif
+
 /*******************************************************************************************/
 /**
  * @brief Constructor
