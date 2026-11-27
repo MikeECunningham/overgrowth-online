@@ -30,13 +30,15 @@ def campaign_shop_saves(ctx):
     def act(inst, action, key=""):
         assert inst.bridge.call("progression",actor=_rows(inst)[0]["id"],action=action,key=key)["submitted"]
 
-    def cold_resume(source, name, port, slot, level):
+    def cold_resume(source, name, port, slot, level, free_buffs=None):
         fresh=instance(name,port)
         for folder in ("SessionSaves","Textures/SessionSaves"):
             shutil.copytree(Path(source.writedir,"Data",folder),Path(fresh.writedir,"Data",folder),dirs_exist_ok=True)
         _code(fresh,f'SetConfigValueBool("test_shop_resume",SessionLoad({slot}));',"menu")
         wait(fresh,lambda:fresh.bridge.status()["online"]["lobby_waiting"],"saved shop opens its lobby")
         wait(fresh,lambda:fresh.bridge.call("progression")["ledger"]["open"],"saved shop ledger arrives in the lobby")
+        if free_buffs is not None:
+            _code(fresh, f'LobbySetModeSetting("progression_free_buffs",{int(free_buffs)});', "menu")
         _code(fresh,'LobbyStart();',"menu")
         _ready(fresh,level)
         wait(fresh,lambda:view(fresh).get("shop_open",False) and not fresh.bridge.status()["dialogue_camera_control"],
@@ -49,10 +51,15 @@ def campaign_shop_saves(ctx):
     _code(source,'LobbyBeginHost();'
           f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
           'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_timer",0);'
-          'LobbySetModeSetting("challenge_time",0);LobbyStart();',"menu")
+          'LobbySetModeSetting("challenge_time",0);LobbySetModeSetting("progression_gain_checkpoint",1);LobbyStart();',"menu")
     _ready(source,FIRST);_skip(source)
+    _code(source,'ProgressionCheckpoint(1, 9000);')
     _code(source,'SendGlobalMessage("levelwin");')
     wait(source,lambda:view(source).get("shop_open",False),"real chapter completion opens shop")
+    shop = view(source)
+    assert shop["held"] >= 16 and not {"luck_rank", "reward_chance"}.intersection(shop["stats"])
+    assert all(c["id"] != "luck" for c in shop["cards"])
+    assert not source.bridge.call("progression",actor=_rows(source)[0]["id"],action="buy",key="luck")["submitted"]
     wait(source,lambda:record(source,0).get("world",{}).get("campaign_transition")=="slaver_camp",
          "shop autosave stores the already resolved next chapter")
     _code(source,'SessionSave(1);')
@@ -93,20 +100,31 @@ def campaign_shop_saves(ctx):
     _ready(resumed,"27_Sky_Ark.xml");_skip(resumed)
     _code(resumed,'SendGlobalMessage("levelwin");')
     wait(resumed,lambda:view(resumed).get("shop_open",False) and view(resumed).get("final",False),"real final shop")
+    act(resumed,"buy","luck")
+    wait(resumed,lambda:view(resumed)["stats"]["luck_rank"] == 1,"buy Luck with free choices enabled")
     act(resumed,"loop","yes")
     _code(resumed,'SessionAutosave();SessionSave(2);')
     wait(resumed,lambda:record(resumed,0).get("session_mods",{}).get("og-online-progression",{}).get("runtime",{}).get("loop",False) and
          record(resumed,0).get("world",{}).get("campaign_transition") == "", "final autosave includes pending loop")
     wait(resumed,lambda:record(resumed,2).get("session_mods",{}).get("og-online-progression",{}).get("runtime",{}).get("loop",False),"final manual card includes loop")
-    final=cold_resume(resumed,"campaign_shop_final_resume",28833,0,"27_Sky_Ark.xml")
+    final=cold_resume(resumed,"campaign_shop_final_resume",28833,0,"27_Sky_Ark.xml",free_buffs=False)
     resumed.stop()
     assert view(final)["final"] and view(final)["loop"]
+    assert "luck_rank" not in view(final)["stats"] and all(c["id"] != "luck" for c in view(final)["cards"])
+    _code(final,'SessionSave(3);')
+    wait(final,lambda:record(final,3).get("session_mods",{}).get("og-online-progression",{}).get("runtime",{}).get("loop"),
+         "persist the purchased rank with free choices disabled")
     act(final,"ready")
     _ready(final,FIRST);_skip(final)
     wait(final,lambda:final.bridge.status()["online"]["challenge"]["loop"]==1,"saved final shop loops once")
     time.sleep(1.5)
     assert FIRST in final.bridge.status()["level"] and not view(final).get("shop_open",False)
     assert final.bridge.status()["online"]["challenge"]["loop"]==1
+    _code(final,'SessionLoad(3);')
+    wait(final,lambda:final.bridge.status()["online"]["lobby_waiting"] and not final.bridge.status()["level_loaded"],"saved lobby")
+    _code(final,'LobbySetModeSetting("progression_free_buffs",1);LobbyStart();',"menu")
+    _ready(final,"27_Sky_Ark.xml")
+    wait(final,lambda:view(final).get("stats",{}).get("luck_rank") == 1,"re-enabled Luck retains its purchased rank")
     for inst in (source,resumed,final): assert not script_errors(inst),script_errors(inst)
     return {"passed":True,"metrics":{"manual_chapter_resume":True,"autosaved_final_resume":True,
             "resolved_destination":"slaver_camp","campaign_loops":1},"notes":[]}

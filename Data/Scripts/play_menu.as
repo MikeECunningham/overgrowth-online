@@ -116,6 +116,11 @@ void SetPlayMenuList() {
         }
     }
 
+    if(ModSessionFeature("survival")) {
+        LevelInfo survival("survival", "Survival", "Images/og-online-survival.jpg", true, false);
+        survival.hide_stars = true;
+        play_menu.insertLast(survival);
+    }
     AddCustomLevelsMenuItem();
 
     array<ModID>@ active_sids = GetActiveModSids();
@@ -183,6 +188,11 @@ void Update() {
 
         if( message.name == "run_file" )
         {
+            if(message.getString(0) == "survival") {
+                if(LobbyBeginHost(true) && LobbySetSelection("survival", "", "Data/Levels/starters/scrubby_hills_fall.xml", false))
+                    this_ui.SendCallback("multiplayer_lobby.as");
+                continue;
+            }
 			string campaign_id = play_menu[message.getInt(0)].campaign_id;
 			if(campaign_id != "") {
                 SetCampaignID(campaign_id);

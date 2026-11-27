@@ -3487,7 +3487,9 @@ void AddTextInput(IMDivider@ parent, TextBox@ textbox, string on_click_message_n
 
 void UpdateMovingSlider(){
     if(active_slider != -1){
-        if(imGUI.guistate.leftMouseState == kMouseStillDown){
+        bool held = imGUI.guistate.leftMouseState == kMouseStillDown;
+        bool released = imGUI.guistate.leftMouseState == kMouseUp;
+        if(held || (checking_slider_movement && released)){
             vec2 current_mouse_pos = imGUI.guistate.mousePosition;
             checking_slider_movement = true;
             if(current_mouse_pos.x != old_mouse_pos.x){
@@ -3498,12 +3500,11 @@ void UpdateMovingSlider(){
                 gui_elements[active_slider].SlideY(int(current_mouse_pos.y - old_mouse_pos.y));
                 old_mouse_pos.y = current_mouse_pos.y;
             }
-        }else{
-            if(checking_slider_movement){
-                active_slider = -1;
-                checking_slider_movement = false;
-                imGUI.receiveMessage(IMMessage("refresh_options"));
-            }
+        }
+        if(!held && checking_slider_movement){
+            active_slider = -1;
+            checking_slider_movement = false;
+            imGUI.receiveMessage(IMMessage("refresh_options"));
         }
     }
 }

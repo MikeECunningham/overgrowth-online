@@ -76,6 +76,7 @@
 
 #include <angelscript.h>
 #include <SDL.h>
+#include <algorithm>
 
 extern AnimationConfig animation_config;
 extern std::string script_dir_path;
@@ -540,6 +541,9 @@ void MovementObject::SetNetworkProxy(bool proxy, bool resume) {
                 "Ragdoll(knocked_out != _awake ? _RGDL_LIMP : _RGDL_FALL); }");
         }
     }
+    if (!proxy && net_restore_pending) {
+        RequestHealthRestore(!net_restore_phase, net_restore_fraction);
+    }
 }
 
 void MovementObject::ApplyNetworkCharacter(const std::string& path) {
@@ -550,6 +554,14 @@ void MovementObject::ApplyNetworkCharacter(const std::string& path) {
         return;  // (it goes into a script below: plain paths only)
     }
     LOGI << "Overgrowth Online: character " << GetID() << " is now " << path << std::endl;
+    // A replacement rig owns a fresh set of attachment readers. Preserve
+    // the physical weapon IDs, belt sides and armor sockets on the new body.
+    std::vector<ItemConnection> carried;
+    if (rigged_object_) for (auto& attached : rigged_object_->attached_items.items) {
+        auto& reader = attached.item;
+        if (reader.GetAttached()) carried.push_back({reader->GetID(), reader.attachment_type,
+                                                     reader.attachment_ref, reader.attachment_mirror});
+    }
     if (HasFunction("void CheckSpecies()") && HasFunction("void CacheSkeletonInfo()") && HasFunction("void ResetLayers()")) {
         // aschar.as SwitchCharacter without dropping weapons (the stream says
         // what it holds) or random colours (the owner's come with its palette)
@@ -560,6 +572,10 @@ void MovementObject::ApplyNetworkCharacter(const std::string& path) {
         }
     } else {
         RecreateRiggedObject(path);
+    }
+    for (const auto& item : carried) {
+        AttachItemToSlotAttachmentRef(item.id, item.attachment_type, item.mirrored,
+                                      item.attachment_ref.valid() ? &item.attachment_ref : nullptr, true);
     }
     net_buffer.Clear();  // (poses of the old body: not for this one)
 }
@@ -582,6 +598,61 @@ bool MovementObject::NetworkVitalsSupported() {
     return net_vitals_support == 1;
 }
 
+// Bleeding and fire can still injure an otherwise full-health character.
+static bool HasOngoingInjury(MovementObject& character) {
+    return (character.ASHasVar("blood_damage") && character.ASGetFloatVar("blood_damage") > 0.0f) ||
+           (character.ASHasVar("cut_throat") && character.ASGetBoolVar("cut_throat")) ||
+           (character.ASHasVar("on_fire") && character.ASGetBoolVar("on_fire")) ||
+           (character.ASHasVar("max_ko_shield") && character.ASGetIntVar("ko_shield") < character.ASGetIntVar("max_ko_shield"));
+}
+
+MovementObject::HealthRestoreState MovementObject::GetHealthRestoreState() {
+    if (!enabled_ || !as_context || !NetworkVitalsSupported() || net_restore_pending ||
+        ASGetIntVar("knocked_out") != 0 || !HasFunction("void RecoverHealth()")) return {};
+    const float health = std::min({1.0f, ASGetFloatVar("permanent_health"), ASGetFloatVar("temp_health"),
+                                   ASGetFloatVar("blood_health"), ASGetFloatVar("block_health")});
+    return {true, 1.0f - std::max(0.0f, health),
+            Online::Instance()->IsLocalAvatar(GetID()) ? HasOngoingInjury(*this) : net_has_wound};
+}
+
+void MovementObject::RequestHealthRestore(bool phase, float fraction) {
+    if (net_restore_phase == phase) {
+        net_restore_pending = false;
+        return;
+    }
+    net_restore_fraction = fraction;
+    if (Online::Instance()->IsLocalAvatar(GetID())) {
+        net_restore_pending = false;
+        // Recover() also deletes the entire level's footprints and blood decals.
+        net_restore_succeeded = GetHealthRestoreState().Injured();
+        if (net_restore_succeeded && fraction < 1.0f) {
+            if (HasFunction("void RecoverPartialHealth(float)")) {
+                ASArglist args;
+                args.Add(fraction);
+                net_restore_succeeded = as_context->CallScriptFunction("void RecoverPartialHealth(float)", &args);
+            } else {
+                // Custom character scripts that expose the standard vitals.
+                for (const char* key : {"permanent_health", "temp_health", "blood_health", "block_health"}) {
+                    const float health = ASGetFloatVar(key);
+                    ASSetFloatVar(key, health + (1.0f - health) * fraction);
+                }
+                if (ASHasVar("blood_damage")) ASSetFloatVar("blood_damage", ASGetFloatVar("blood_damage") * (1.0f - fraction));
+            }
+        } else if (net_restore_succeeded) {
+            net_restore_succeeded = as_context->CallScriptFunction("void RecoverHealth()");
+        }
+        if (net_restore_succeeded && fraction >= 1.0f) {
+            if (ASHasVar("cut_throat")) ASSetBoolVar("cut_throat", false);
+            rigged_object()->CleanBlood();
+        }
+        net_restore_phase = phase;
+    } else {
+        // Until the owner echoes this phase, a delayed pre-purchase snapshot
+        // must not let the shop sell the same heal again.
+        net_restore_pending = true;
+    }
+}
+
 void MovementObject::CaptureNetworkVitals(CharSnapshot::Vitals& v) {
     v.valid = NetworkVitalsSupported();
     if (!v.valid) {
@@ -593,7 +664,10 @@ void MovementObject::CaptureNetworkVitals(CharSnapshot::Vitals& v) {
     v.state = (uint8_t)ASGetIntVar("state");
     v.flags = (ASGetBoolVar("on_ground") ? CharSnapshot::kVitalOnGround : 0) |
               (ASGetBoolVar("startled") ? CharSnapshot::kVitalStartled : 0) |
-              (ASGetBoolVar("active_blocking") ? CharSnapshot::kVitalBlocking : 0);
+              (ASGetBoolVar("active_blocking") ? CharSnapshot::kVitalBlocking : 0) |
+              (HasOngoingInjury(*this) ? CharSnapshot::kVitalHasWound : 0) |
+              (net_restore_phase ? CharSnapshot::kVitalRestorePhase : 0) |
+              (net_restore_succeeded ? CharSnapshot::kVitalRestoreSucceeded : 0);
     v.ko_shield = (uint8_t)std::max(0, std::min(255, ASGetIntVar("ko_shield")));
     v.temp_health = ASGetFloatVar("temp_health");
     v.permanent_health = ASGetFloatVar("permanent_health");
@@ -626,6 +700,14 @@ void MovementObject::ApplyNetworkVitals(const CharSnapshot::Vitals& v) {
     }
 
     Online* online = Online::Instance();
+    net_has_wound = (v.flags & CharSnapshot::kVitalHasWound) != 0;
+    net_restore_succeeded = (v.flags & CharSnapshot::kVitalRestoreSucceeded) != 0;
+    const bool phase = (v.flags & CharSnapshot::kVitalRestorePhase) != 0;
+    if (phase != net_restore_phase) {
+        net_restore_phase = phase;
+        net_restore_pending = false;
+        if (net_restore_succeeded && !net_has_wound && v.permanent_health >= 1.0f && v.blood_health >= 1.0f) rigged_object()->CleanBlood();
+    }
     int old_ko = ASGetIntVar("knocked_out");
     // A hit shows here as a drop in health: when, for scripts that ask (the finisher camera)
     if ((v.temp_health < ASGetFloatVar("temp_health") - 0.001f || v.blood_health < ASGetFloatVar("blood_health") - 0.001f) &&
@@ -1995,6 +2077,7 @@ void DefineMovementObjectTypePublic(ASContext* as_context) {
     as_context->RegisterObjectMethod("MovementObject", "void SetFloatVar(const string &in var_name, float value)", asMETHOD(MovementObject, ASSetFloatVar), asCALL_THISCALL);
     as_context->RegisterObjectMethod("MovementObject", "void SetBoolVar(const string &in var_name, bool value)", asMETHOD(MovementObject, ASSetBoolVar), asCALL_THISCALL);
     as_context->RegisterObjectMethod("MovementObject", "bool OnSameTeam(MovementObject@ other)", asMETHOD(MovementObject, ASOnSameTeam), asCALL_THISCALL);
+    as_context->RegisterObjectMethod("MovementObject", "bool OnTeam(const string &in team)", asMETHOD(MovementObject, OnTeam), asCALL_THISCALL);
     // Keeping ReceiveMessage for compatibility
     as_context->RegisterObjectMethod("MovementObject", "void ReceiveMessage(const string &in)", asMETHOD(MovementObject, ReceiveScriptMessage), asCALL_THISCALL);
     as_context->RegisterObjectMethod("MovementObject", "void ReceiveScriptMessage(const string &in)", asMETHOD(Object, ReceiveScriptMessage), asCALL_THISCALL);

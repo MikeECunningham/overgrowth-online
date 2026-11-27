@@ -721,6 +721,8 @@ class Online {
     std::shared_ptr<ChallengeRuntimeState> mode_challenge_state;
     std::map<std::string, std::map<std::string, int>> mode_settings_;
     std::string ModeSettingsKey() const;
+    static int NewLobbySeed(int previous);
+    void InitializeLobbySeeds();
     bool IsCampaignPlayMode() const;
     bool ModeSettingAvailable(const std::string& modes) const;
     Json::Value LobbyModeSettings() const;
@@ -735,6 +737,8 @@ class Online {
     void ResetModeChallenge();
     void BeforeChallengeRateChange();
     CampaignDifficulty::Sample EnemyDifficulty() const;
+    CampaignDifficulty::Sample EnemyDifficultyFor(ObjectID actor) const;
+    void FreezeSurvivalEnemy(ObjectID actor, bool allow_weapons);
     bool IsDifficultyEnemy(ObjectID id);
     void CaptureEnemyDifficulty(bool new_match = false);
     void ChallengeSceneChanged();
@@ -746,6 +750,9 @@ class Online {
     void ApplyProgressionEquipment(SceneGraph* graph);
     void RefreshProgressionLoadouts(bool arena_round);
     void ProgressionWeaponAwarded(PlayerID recipient, bool offhand);
+    bool CanProgressionRestoreHealth(PlayerID player) const;
+    bool ProgressionRestoreHealth(PlayerID player, float fraction);
+    void ReceiveHealthRestore(CommonObjectID character, bool phase, float fraction);
     void UpdateModeChallenge(SceneGraph* graph);
     bool DifficultyScalingEnabled() const;
     float ModeChallengeGeneralPressure() const;
@@ -757,6 +764,7 @@ class Online {
     ObjectID ChallengeReferenceAvatar() const;
     void ChallengeEncounterBegin(const std::string& key);
     void ChallengeEncounterWin(const std::string& key);
+    void ChallengeEncounterWipe(const std::string& key);
     void ChallengeCompletion(const std::string& key);
     bool CampaignCharacterOnMainTeam(ObjectID avatar);
     std::string CampaignWaitingText();
@@ -945,6 +953,7 @@ class Online {
     bool HasSpaceForLobbySlot() const;
     PlayerID AddLobbyBot(const std::string& name = "", PlayerID actor = LobbyAuthority::InvalidPlayer);
     std::vector<LobbySlot> GetLobbySlots() const;
+    const LobbySlot* GetLobbySlot(PlayerID id) const;
     bool LobbyAutoAdmission() const { return lobby_auto_admission_; }
     bool SetLobbyAutoAdmission(bool automatic, PlayerID actor = LobbyAuthority::InvalidPlayer);
     bool SetLobbySlotPlayer(PlayerID slot, bool player, PlayerID actor = LobbyAuthority::InvalidPlayer);
@@ -1016,6 +1025,7 @@ class Online {
     void ReleaseMenuPause(PlayerID player);
     bool LobbyAllowAllPause() const { return lobby_allow_all_pause_; }
     const std::string& LobbyMode() const { return lobby_mode_; }
+    bool IsSurvivalMode() const { return lobby_mode_ == "survival"; }
     const std::string& LobbyCampaign() const { return lobby_campaign_; }
     const std::string& LobbyMap() const { return lobby_map_; }
     bool LobbyBuild() const { return lobby_build_; }

@@ -319,6 +319,25 @@ def mode_settings_lobby(ctx):
     _code(host, 'LobbySetSelection("","","",false);')
     wait(lambda: "Mode settings" not in forms(host) and "Mode and map" in forms(guest),
          "clearing the selected mode removes rules on both peers")
+
+    _code(host, f'LobbySetSelection("survival","","{SANDBOX_MAP}",false);')
+    wait(lambda: _probe(guest, "LobbyGetMode()") == "survival", "wave settings available to the guest")
+    seed = int(_probe(host, 'LobbyGetModeSetting("survival_seed")'))
+    assert _probe(guest, 'LobbyGetModeSetting("survival_seed")') == str(seed)
+    assert _probe(host, 'LobbyGetModeSetting("survival_starting_race")') == "1"
+    assert _probe(host, f'LobbySetModeSetting("survival_seed",LobbyNewSeed({seed}))') == "true"
+    assert int(_probe(host, 'LobbyGetModeSetting("survival_seed")')) != seed
+    assert _probe(host, 'LobbySetModeSetting("survival_seed",2147483647) && '
+                        'LobbySetModeSetting("survival_starting_race",4) && LobbySetModeSetting("progression_timer",6)') == "true"
+    wait(lambda: _probe(guest, 'LobbyGetModeSetting("survival_seed") == 2147483647 && '
+                        'LobbyGetModeSetting("survival_starting_race") == 4 && LobbyGetModeSetting("progression_timer") == 6') == "true",
+         "maximum seed, Wolf and the zero-second shop timer replicate")
+    assert _probe(guest, 'LobbySetModeSetting("survival_seed",0)') == "false"
+    assert _probe(host, 'LobbySetModeSetting("survival_starting_race",5) || LobbySetModeSetting("survival_seed",-1)') == "false"
+    _code(host, f'LobbySetSelection("{ARENA}","{ARENA}","{ARENA_MAP}",false);')
+    assert _probe(host, 'LobbySetModeSetting("progression_timer",6) || LobbySetModeSetting("survival_seed",4)') == "false"
+    _code(host, f'LobbySetSelection("survival","","{SANDBOX_MAP}",false);')
+    assert _probe(host, 'LobbyGetModeSetting("survival_seed")') == "2147483647"
     compact_host = ctx.instance("mode_picker_host", width=800, height=600,
                                 keys={**RENDER_KEYS, "mp_port": "28006"})
     _code(compact_host, 'LobbyBeginHost();this_ui.SendCallback("multiplayer_lobby.as");')

@@ -595,6 +595,11 @@ void Online::SyncLobbySlotDefinitions() {
     }
 }
 
+const LobbySlot* Online::GetLobbySlot(PlayerID id) const {
+    const auto slot = lobby_slots_.find(id);
+    return slot == lobby_slots_.end() ? nullptr : &slot->second;
+}
+
 std::vector<LobbySlot> Online::GetLobbySlots() const {
     auto slots = lobby_slots_;
     if (online_session) for (const auto& entry : online_session->player_states) {
@@ -1174,6 +1179,7 @@ bool Online::EndLobbyGame(PlayerID actor) {
         Json::Value request; request["action"] = "end_game"; request["actor"] = actor;
         SubmitLobbyRequest(Encode(request)); return true;
     }
+    SessionSaves::OnReturnToLobby();
     PrepareReturnToLobby();
     online_session->client_connection_manager.ParkConnectionsInLobby();
     BroadcastLobby();
@@ -1229,7 +1235,8 @@ void Online::ApplyLobbyAppearances(SceneGraph* graph) {
         const bool preserve_authored = IsLocalOnlySession() && player.player_id == campaign_main_player_id_;
         const bool first_assignment = initialized_appearances.find(player.player_id) == initialized_appearances.end() ||
             initialized_appearances[player.player_id] != player.object_id;
-        if (!player.is_bot && !preserve_authored && first_assignment && avatar->character_path != turner) {
+        if (!FriendlyProgression::ApplyRace(player.player_id, player.is_bot, *avatar) &&
+            !player.is_bot && !preserve_authored && first_assignment && avatar->character_path != turner) {
             if (IsLocalAvatar(player.object_id) && avatar->HasFunction("void SwitchCharacter(string)"))
                 avatar->Execute("SwitchCharacter(\"" + turner + "\");");
             else avatar->ApplyNetworkCharacter(turner);
@@ -1256,12 +1263,14 @@ void Online::ApplyLobbyAppearances(SceneGraph* graph) {
 bool Online::SetLobbySelection(const std::string& mode, const std::string& campaign, const std::string& map, bool build, PlayerID actor) {
     actor = ResolveLobbyActor(actor);
     if (LobbyMigrationBusy() || !IsLobbyHost(actor) || !lobby_waiting_ || mode.size() > 256 || campaign.size() > 256 || map.size() > 4096) return false;
+    if (mode == "survival" && (build || !campaign.empty() || !ModLoading::Instance().HasSessionFeature("survival"))) return false;
     if (IsClient()) {
         Json::Value request; request["action"] = "selection"; request["actor"] = actor;
         request["mode"] = mode; request["campaign"] = campaign; request["map"] = map; request["build"] = build;
         SubmitLobbyRequest(Encode(request)); return true;
     }
     lobby_mode_ = mode; lobby_campaign_ = campaign; lobby_map_ = map; lobby_build_ = build;
+    InitializeLobbySeeds();
     BroadcastLobby(); return true;
 }
 
@@ -1335,7 +1344,7 @@ void Online::ApplyManualTeam(PlayerID id) {
 }
 
 bool Online::UsesLobbyTeams() const {
-    return lobby_force_teams_ || lobby_build_ || lobby_mode_ == "freeplay" ||
+    return lobby_force_teams_ || lobby_build_ || lobby_mode_ == "freeplay" || IsSurvivalMode() ||
         lobby_mode_.find("sandbox") != std::string::npos || lobby_campaign_.find("sandbox") != std::string::npos ||
         (lobby_mode_.empty() && lobby_campaign_.empty() && campaign_id.empty());
 }
@@ -1352,7 +1361,9 @@ void Online::ApplyAssignedTeam(ObjectID avatar) {
     const PlayerState* roster = nullptr;
     if (online_session) for (const auto& player : online_session->player_states)
         if (player.second.object_id == avatar) { roster = &player.second; break; }
-    if (roster && CoopCampaign()) {
+    if (roster && IsSurvivalMode()) {
+        team = "lobby_team_" + std::to_string(roster->team);
+    } else if (roster && CoopCampaign()) {
         SceneGraph* team_scene = Engine::Instance()->GetSceneGraph();
         RefreshCampaignFactions(natural_player_team, natural_team_graph == team_scene && natural_team_level == level_name);
         if (lobby_force_teams_) team = CampaignTeamTags(roster->team);
@@ -1485,7 +1496,10 @@ bool Online::StartLobbyGame(const std::string& level, const std::string& campaig
     lobby_waiting_ = false;
     mode_teams_.clear();
     const bool building = level.empty() ? lobby_build_ : build;
-    if (!SessionSaves::ResumeLobby(lobby_mode_, camp, selected, building)) ResetModeChallenge();
+    if (!SessionSaves::ResumeLobby(lobby_mode_, camp, selected, building)) {
+        ResetModeChallenge();
+        if (IsSurvivalMode()) SessionMods::SetData("og-online-survival", "{}");
+    }
     lobby_start_pending_ = true;
     if (building) BuildOnLoad();
     SetBuildSession(building);
@@ -1656,6 +1670,11 @@ void Online::ReceiveLobbyControl(PeerID from, const std::string& payload) {
     }
     if (action == "slot_swap") {
         if (valid_actor && message["first"].isUInt() && message["second"].isUInt()) SwapLobbySlots(message["first"].asUInt(), message["second"].asUInt(), actor);
+        return;
+    }
+    if (action == "progress_handicap") {
+        if (valid_actor && message["id"].isUInt() && message["enabled"].isBool())
+            FriendlyProgression::SetHandicap(actor, message["id"].asUInt(), message["enabled"].asBool());
         return;
     }
     if (action == "progress_hit" || action == "progress_recover") { FriendlyProgression::ReceiveEvent(from, message); return; }

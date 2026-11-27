@@ -3365,6 +3365,17 @@ void EndAnim() {
     this_mo.rigged_object().anim_client().SetAnimatedItemID(1, -1);
 }
 
+void RecoverPartialHealth(float fraction) {
+    permanent_health = mix(permanent_health, 1.0f, fraction);
+    temp_health = mix(temp_health, 1.0f, fraction);
+    blood_health = mix(blood_health, 1.0f, fraction);
+    block_health = mix(block_health, 1.0f, fraction);
+    blood_damage *= 1.0f - fraction;
+    for (uint i = 0; i < progression_wounds.length(); ++i)
+        progression_wounds[i].remaining *= 1.0f - fraction;
+    blood_amount = mix(blood_amount, _max_blood_amount, fraction);
+}
+
 void RecoverHealth() {
     if(knocked_out != _awake) {
         fall_death = false;  // (a fall death zone's: up again, the next landing would kill. A level reset clears it offline)
@@ -8316,7 +8327,7 @@ float StealthRangeMultiplier(MovementObject@ character) {
     bool crouched = character.HasVar("duck_amount") && character.GetFloatVar("duck_amount") >= 0.5f;
     string stat = crouched ? "progression_stealth_active" : "progression_stealth_passive";
     int rank = character.HasVar(stat) ? character.GetIntVar(stat) : 0;
-    return 1.0f / (1.0f + 0.06f * max(0, rank));
+    return ProgressionStealthRange(rank);
 }
 
 void GetMatchingCharactersInArray(array<int> &in characters, array<int> &out matching_characters, uint16 flags) {
@@ -15720,10 +15731,11 @@ void CampaignRememberAuthoredParameters() {
 
 void CampaignApplyAuthoredScaling() {
     if(!campaign_authored_valid) CampaignRememberAuthoredParameters();
-    p_damage_multiplier = campaign_authored_resistance / (campaign_vitality_mult * (1.0f + 0.08f * progression_health));
-    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult * (1.0f + 0.06f * progression_damage);
-    run_speed = _base_run_speed * p_speed_mult * (1.0f + 0.03f * progression_speed);
-    true_max_speed = _base_true_max_speed * p_speed_mult * (1.0f + 0.03f * progression_speed);
+    p_damage_multiplier = campaign_authored_resistance / (campaign_vitality_mult * ProgressionDurabilityMultiplier(progression_health));
+    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult * ProgressionDamageMultiplier(progression_damage);
+    float movement_multiplier = p_speed_mult * ProgressionSpeedMultiplier(progression_speed);
+    run_speed = _base_run_speed * movement_multiplier;
+    true_max_speed = _base_true_max_speed * movement_multiplier;
     // Restore all authored values first. AI scaling does not stack defense,
     // counters, catching and faster animations across the entire encounter.
     p_aggression = campaign_authored_aggression;

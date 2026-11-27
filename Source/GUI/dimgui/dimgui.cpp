@@ -2089,7 +2089,7 @@ void DrawImGui(Graphics* graphics, SceneGraph* scenegraph, GUI* gui, AssetManage
 
     ImGui::GetIO().FontGlobalScale = imgui_scale;
     ImGui_ImplSdlGL3_NewFrame(graphics->sdl_window_, Input::Instance()->GetGrabMouse());
-    ImGui::GetIO().MouseDrawCursor = cursor_visible;
+    ImGui::GetIO().MouseDrawCursor = cursor_visible && WantMouseImGui();
 
     if (engine->check_save_level_changes_dialog_is_showing) {
         bool dialog_finished = false;
@@ -3900,13 +3900,14 @@ Mark Stockton\nMikko Tarmia\nDavid Lyhed Danielsson");
             }
 
             const auto& chat_messages = online->GetChatMessages();
+            const bool showing_results = scene_graph && scene_graph->level && scene_graph->level->showing_results;
             constexpr size_t line_count = 5;
             constexpr float chat_width = 600;
             constexpr float chat_alpha = 0.1f;
             ImVec2 chat_write_pos = ImVec2(10, window_y - ImGui::GetTextLineHeight() * 2 - 10);
             ImVec2 chat_text_pos = chat_write_pos - ImVec2(0, ImGui::GetTextLineHeight() * line_count * 2);
 
-            if (chat_messages.size() > 0) {
+            if (!chat_messages.empty() && (!showing_results || write_to_chat)) {
                 ImGui::SetNextWindowBgAlpha(chat_alpha);
                 ImGui::SetNextWindowPos(chat_text_pos, ImGuiCond_Always);
                 ImGui::SetNextWindowSize(ImVec2(chat_width, ImGui::GetTextLineHeight() * line_count * 2), ImGuiCond_Always);
@@ -3930,9 +3931,8 @@ Mark Stockton\nMikko Tarmia\nDavid Lyhed Danielsson");
                 }
 
                 ImGui::End();
-
-                online->RemoveOldChatMessages(10.0f);  // todo: should be moved to mp.update once thats a thing
             }
+            if (!chat_messages.empty()) online->RemoveOldChatMessages(10.0f);
             if (write_to_chat) {
                 ImGui::SetNextWindowBgAlpha(chat_alpha);
                 ImGui::SetNextWindowPos(chat_write_pos, ImGuiCond_Always);

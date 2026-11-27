@@ -33,7 +33,8 @@ void menuscope::test<1>() {
         ensure_equals("settings belong to logical player", config["controller_menu_owner"].toNumber<int>(), 4);
         ensure_equals("physical input ID is independent", PlayerMenuUI::Current()->input_id, 6);
         ensure("gamepad menu ignores mouse", !PlayerMenuUI::AllowsMouse());
-        ensure("pointer is outside all clickable content", PlayerMenuUI::MouseTopLeft().x() < 0);
+        vec2 pointer;
+        ensure("pointer is outside all clickable content", !PlayerMenuUI::MouseTopLeft(pointer, false));
         const ScreenMetrics outer_metrics = screenMetrics;
         PlayerMenuUI::Context second;
         second.input_id = 0; second.local_index = 0;
@@ -85,5 +86,26 @@ void menuscope::test<3>() {
         ensure_equals("another screen keeps its own settings owner", config["menu_player_config"].toNumber<int>(), 1);
     }
     ensure("graphics edits survive exiting either menu", config["simple_fog"].toBool());
+}
+template <> template <>
+void menuscope::test<4>() {
+    set_test_name("a held mouse drag crosses a split edge without jumping across either axis");
+    PlayerMenuUI::Context view;
+    view.width = 640; view.height = 360; view.y = 360; view.mouse_enabled = true;
+    vec2 pointer(130, 410);
+    ensure("outside pointer cannot start hover or drag", !PlayerMenuUI::LocalMousePosition(view, 720, pointer, false));
+    pointer = vec2(130, 410);
+    ensure("active drag gets the split boundary", PlayerMenuUI::LocalMousePosition(view, 720, pointer, true));
+    ensure_equals("crossing vertically retains X", pointer.x(), 130.0f);
+    ensure_equals("Y stops just outside the viewport", pointer.y(), 360.0f);
+    pointer = vec2(-20, 305);
+    ensure("left edge tracks a held drag", PlayerMenuUI::LocalMousePosition(view, 720, pointer, true));
+    ensure_equals("X stops just outside the left edge", pointer.x(), -1.0f);
+    ensure_equals("Y follows the mouse", pointer.y(), 305.0f);
+    view.mouse_enabled = false;
+    ensure("another player's menu cannot inherit the drag", !PlayerMenuUI::LocalMousePosition(view, 720, pointer, true));
+    view.mouse_enabled = true;
+    view.height = 0;
+    ensure("an empty viewport cannot capture a drag", !PlayerMenuUI::LocalMousePosition(view, 720, pointer, true));
 }
 }

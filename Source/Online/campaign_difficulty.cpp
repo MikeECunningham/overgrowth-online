@@ -105,6 +105,7 @@ bool DifficultyTarget(Online* online, SceneGraph* graph, MovementObject* actor) 
     if (!actor || actor->controlled) return false;
     ScriptParams* params = actor->GetScriptParams();
     if (params->HasParam("Campaign Scaling Exempt") && params->ASGetInt("Campaign Scaling Exempt") != 0) return false;
+    if (online->IsSurvivalMode()) return params->HasParam("Survival Team");
     return OpposesMain(online, graph, actor);
 }
 bool Hostile(Online* online, SceneGraph* graph, MovementObject* actor) {
@@ -272,6 +273,7 @@ struct CampaignDifficultyState {
         int applied_regions = 0;
         int weapons_given = 0;
         bool weapon_done = false;
+        bool armor_enabled = false, weapons_enabled = false;
     };
     struct Opponent {
         ObjectID avatar = -1;
@@ -801,7 +803,7 @@ ObjectID AddArmorPiece(Online* online, SceneGraph* graph, MovementObject* actor,
 }
 void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState& state, const CampaignDifficulty::Sample& sample) {
     const bool held = online->CoopCutscene() || graph->level->DialogueCameraControl();
-    const bool armor = sample.armor, weapons = sample.weapons;
+    const bool survival = online->IsSurvivalMode();
     for (auto it = state.gear.begin(); it != state.gear.end();) {
         MovementObject* actor = Actor(graph, it->first);
         if (!actor || !Hostile(online, graph, actor)) {
@@ -810,20 +812,24 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
             it = state.gear.erase(it);
         } else ++it;
     }
-    const double intensity = CampaignEquipment::Intensity(sample.pressure, sample.stats ? CampaignDifficulty::ExtraPlayersForParty(sample.humans, sample.bots) : 0);
     for (Object* object : graph->movement_objects_) {
         auto* actor = static_cast<MovementObject*>(object);
         bool inherited = actor->GetScriptParams()->HasParam("Campaign Weapon Issued");
         for (const auto& child : actor->rigged_object()->children) if (child.direct_ptr && child.direct_ptr->GetScriptParams()->HasParam("Campaign Armor Region")) inherited = true;
-        if (!Hostile(online, graph, actor) || state.gear.count(actor->GetID()) || (!inherited &&
-            (held || (!armor && !weapons) || !ReadyForReinforcements(actor) || !Awake(actor) || !actor->ASHasVar("time") ||
-             actor->ASGetFloatVar("time") <= 0 || NearestMainParty(online, graph, actor->position) > 55))) continue;
+        if (!Hostile(online, graph, actor) || state.gear.count(actor->GetID())) continue;
+        const auto unit = survival ? online->EnemyDifficultyFor(actor->GetID()) : sample;
+        if (!inherited && (held || (!unit.armor && !unit.weapons) || !ReadyForReinforcements(actor) || !Awake(actor) ||
+            !actor->ASHasVar("time") || actor->ASGetFloatVar("time") <= 0 ||
+            (!survival && NearestMainParty(online, graph, actor->position) > 55))) continue;
+        const double intensity = CampaignEquipment::Intensity(unit.pressure, unit.stats ? CampaignDifficulty::ExtraPlayersForParty(unit.humans, unit.bots) : 0);
         Reinforcement* extra = nullptr; Encounter* encounter = nullptr;
         for (auto& entry : state.encounters) for (auto& candidate : entry.second.extras) if (candidate.actor == actor->GetID()) { extra = &candidate; encounter = &entry.second; }
         auto& gear = state.gear[actor->GetID()];
+        gear.armor_enabled = unit.armor;
+        gear.weapons_enabled = unit.weapons;
         gear.seed = extra ? extra->seed : uint32_t(online->GetOriginalID(actor->GetID()));
         gear.intensity = intensity;
-        gear.plan = CampaignEquipment::ForUnit(gear.seed, intensity, actor->ASHasVar("campaign_armor_regions"), false, Strength(actor) == CampaignDifficulty::Wolf);
+        gear.plan = CampaignEquipment::ForUnit(gear.seed, intensity, actor->ASHasVar("campaign_armor_regions"), survival && unit.weapons, Strength(actor) == CampaignDifficulty::Wolf);
         const int authored = online->AuthoredArmorRegions(actor->GetID());
         gear.plan.armor_regions &= ~authored;
         if (actor->ASHasVar("g_wearing_metal_armor") && actor->ASGetBoolVar("g_wearing_metal_armor") && (config["armor_localized"].toNumber<int>() == 0 || !authored)) gear.plan.armor_regions = 0;
@@ -832,6 +838,8 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
             gear.plan.weapon = CampaignEquipment::WaveWeapon(base, extra->slot, std::max(encounter->spawned, encounter->reinforcement_target), intensity, Strength(actor) == CampaignDifficulty::Wolf);
         }
         gear.weapon_done = gear.plan.weapon == CampaignEquipment::Unarmed;
+        if ((survival || extra) && actor->GetScriptParams()->HasParam("Campaign Weapon Issued") && actor->GetScriptParams()->ASGetInt("Campaign Weapon Issued"))
+            gear.weapon_done = true;
         if (extra) {
             for (ObjectID id : extra->equipment) {
                 Object* item = graph->GetObjectFromID(id);
@@ -841,11 +849,11 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
                     if (gear.plan.weapon == CampaignEquipment::Unarmed) gear.plan.weapon = label == "spear" ? CampaignEquipment::Spear : label == "knife" ? CampaignEquipment::Dagger : CampaignEquipment::Sword;
                 }
             }
-            if (actor->GetScriptParams()->HasParam("Campaign Weapon Issued") && actor->GetScriptParams()->ASGetInt("Campaign Weapon Issued")) gear.weapon_done = true;
         }
     }
     for (auto& entry : state.gear) if (MovementObject* actor = Actor(graph, entry.first)) {
         auto& gear = entry.second;
+        if (!survival) { gear.armor_enabled = sample.armor; gear.weapons_enabled = sample.weapons; }
         // Reconcile actual attachments before issuing anything. A script may
         // have equipped a guard after the plan was made, or a promoted host
         // may have inherited pieces without this local director's bookkeeping.
@@ -861,7 +869,7 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
             Object* piece = child.direct_ptr;
             if (!piece || !piece->GetScriptParams()->HasParam("Campaign Armor Region")) continue;
             const int slot = piece->GetScriptParams()->ASGetInt("Campaign Armor Region");
-            if (!armor || !(slot & CampaignEquipment::kAllRegions) || (slot & (slot - 1)) || ((reserved | equipped) & slot)) {
+            if (!gear.armor_enabled || !(slot & CampaignEquipment::kAllRegions) || (slot & (slot - 1)) || ((reserved | equipped) & slot)) {
                 redundant.push_back(piece->GetID());
                 continue;
             }
@@ -873,7 +881,7 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
         gear.applied_regions = equipped;
         if (actor->ASHasVar("campaign_armor_regions") && actor->ASGetIntVar("campaign_armor_regions") != equipped)
             PublishArmor(online, actor, equipped);
-        if (!weapons) for (auto it = gear.weapons.begin(); it != gear.weapons.end();) {
+        if (!gear.weapons_enabled) for (auto it = gear.weapons.begin(); it != gear.weapons.end();) {
             Object* object = graph->GetObjectFromID(*it);
             if (object && object->GetType() == _item_object && static_cast<ItemObject*>(object)->HeldByWhom() == actor->GetID()) {
                 graph->map_editor->DeleteID(*it); gear.weapons_given = std::max(0, gear.weapons_given - 1); gear.weapon_done = false;
@@ -882,12 +890,12 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
             } else ++it;  // dropped or taken loot is never deleted or replaced
         }
     }
-    if (held || (!armor && !weapons)) return;
+    if (held || (!survival && !sample.armor && !sample.weapons)) return;
     int budget = 2;  // shared creation budget for gear, not per character
     for (auto& entry : state.gear) {
         auto& gear = entry.second;
         MovementObject* actor = Actor(graph, entry.first);
-        if (!weapons || !budget || gear.weapon_done || gear.plan.weapon == CampaignEquipment::Unarmed || !actor || !Awake(actor) || !actor->enabled_) continue;
+        if (!gear.weapons_enabled || !budget || gear.weapon_done || gear.plan.weapon == CampaignEquipment::Unarmed || !actor || !Awake(actor) || !actor->enabled_) continue;
         if (!gear.weapons_given) {
             for (int i = 0; i < 4; ++i) if (actor->ASGetArrayIntVar("weapon_slots", i) != -1) gear.weapon_done = true;
             if (gear.weapon_done) continue;  // it picked up a weapon: don't replace loot
@@ -900,7 +908,8 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
         --budget; object->SetTranslation(actor->position); object->exclude_from_save = true; object->exclude_from_undo = true;
         online->Send<OnlineMessages::CreateEntity>(path, actor->position, id);
         object->GetScriptParams()->ASSetInt("Campaign Weapon Owner", online->GetOriginalID(actor->GetID()));
-        object->GetScriptParams()->ASSetInt("Campaign Weapon Epoch", actor->GetScriptParams()->ASGetInt("Campaign Scaling Epoch"));
+        if (actor->GetScriptParams()->HasParam("Campaign Scaling Epoch"))
+            object->GetScriptParams()->ASSetInt("Campaign Weapon Epoch", actor->GetScriptParams()->ASGetInt("Campaign Scaling Epoch"));
         // Runtime pickup, not an editor starting-loadout connection: retries
         // must never steal this weapon back from a human who took it.
         actor->Execute("AttachWeapon(" + std::to_string(id) + ");");
@@ -915,11 +924,11 @@ void UpdateEquipment(Online* online, SceneGraph* graph, CampaignDifficultyState&
         actor->GetScriptParams()->ASSetInt("Campaign Weapon Issued", 1);
     }
     auto begin = state.gear.upper_bound(state.gear_cursor);
-    for (size_t n = 0; armor && budget && n < state.gear.size(); ++n) {
+    for (size_t n = 0; budget && n < state.gear.size(); ++n) {
         if (begin == state.gear.end()) begin = state.gear.begin();
         const ObjectID id = begin->first; auto& gear = begin->second; ++begin;
         MovementObject* actor = Actor(graph, id);
-        if (!actor || !actor->enabled_ || !Awake(actor)) continue;
+        if (!gear.armor_enabled || !actor || !actor->enabled_ || !Awake(actor)) continue;
         for (unsigned slot = 0; slot < 9; ++slot) {
             const int region = 1 << slot;
             if (!(gear.plan.armor_regions & region) || (gear.applied_regions & region)) continue;
@@ -1215,6 +1224,51 @@ bool Online::IsDifficultyEnemy(ObjectID id) {
     return DifficultyTarget(this, graph, Actor(graph, id));
 }
 
+// Waves overlap. Keep each wave fighter's roll on the actor so a newer wave,
+// reconnect or change of host cannot silently retune a fight already underway.
+void Online::FreezeSurvivalEnemy(ObjectID id, bool allow_weapons) {
+    if (!IsHosting() || !IsSurvivalMode() || !ModLoading::Instance().HasSessionFeature("scaling")) return;
+    MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), id);
+    if (!actor || !online_session) return;
+    auto* params = actor->GetScriptParams();
+    if (!params->HasParam("Survival Team") || params->HasParam("Wave Difficulty Base")) return;
+    const int team = params->ASGetInt("Survival Team");
+    auto unit = EnemyDifficulty();
+    unit.humans = unit.bots = 0;
+    for (const auto& entry : online_session->player_states) {
+        const auto& seat = entry.second;
+        if ((!seat.is_bot && !seat.connected) || seat.team != team) continue;
+        if (seat.is_bot) ++unit.bots;
+        else ++unit.humans;
+    }
+    params->ASSetInt("Wave Difficulty Humans", std::max(1, unit.humans));
+    params->ASSetInt("Wave Difficulty Bots", unit.bots);
+    params->ASSetFloat("Wave Difficulty Pressure", unit.pressure);
+    params->ASSetInt("Wave Difficulty Party Stats", unit.stats);
+    params->ASSetInt("Wave Difficulty AI Rate", unit.ai ? unit.ai_rate : 0);
+    params->ASSetInt("Wave Difficulty Armor", unit.armor);
+    params->ASSetInt("Wave Difficulty Weapons", unit.weapons && allow_weapons);
+    params->ASSetFloat("Wave Difficulty Base", unit.base);
+}
+
+CampaignDifficulty::Sample Online::EnemyDifficultyFor(ObjectID id) const {
+    if (!IsSurvivalMode()) return EnemyDifficulty();
+    MovementObject* actor = Actor(Engine::Instance()->GetSceneGraph(), id);
+    if (!actor || !actor->GetScriptParams()->HasParam("Wave Difficulty Base")) return EnemyDifficulty();
+    auto* params = actor->GetScriptParams();
+    CampaignDifficulty::Sample unit;
+    unit.humans = params->ASGetInt("Wave Difficulty Humans");
+    unit.bots = params->ASGetInt("Wave Difficulty Bots");
+    unit.pressure = params->ASGetFloat("Wave Difficulty Pressure");
+    unit.stats = params->ASGetInt("Wave Difficulty Party Stats") != 0;
+    unit.ai_rate = params->ASGetInt("Wave Difficulty AI Rate");
+    unit.ai = unit.ai_rate != 0;
+    unit.armor = params->ASGetInt("Wave Difficulty Armor") != 0;
+    unit.weapons = params->ASGetInt("Wave Difficulty Weapons") != 0;
+    unit.base = params->ASGetFloat("Wave Difficulty Base");
+    return unit;
+}
+
 void Online::ReceiveCampaignScale(CommonObjectID character, float vitality, float damage, float armor, float ai, int armor_regions, float base) {
     if (!std::isfinite(vitality) || !std::isfinite(damage) || !std::isfinite(armor) || !std::isfinite(ai) ||
         vitality < 0.75f || vitality > 6 || damage < 0.9625f || damage > 2 || armor < 0.975f || armor > 2 || ai < 0 || ai > 0.06f ||
@@ -1302,11 +1356,12 @@ Json::Value Online::ProgressionEncounterScope(ObjectID viewer) const {
         }
     }
     if (!current) {
-        result["label"] = arena ? "Current match" : "Nearby encounter";
+        const bool survival = IsSurvivalMode();
+        result["label"] = survival ? "Active waves" : arena ? "Current match" : "Nearby encounter";
         for (Object* object : graph->movement_objects_) {
             auto* actor = static_cast<MovementObject*>(object);
             if (actor != reference && actor->enabled_ && !reference->ASOnSameTeam(actor) &&
-                (arena || distance_squared(reference->position, actor->position) < 55.0f * 55.0f))
+                (survival || arena || distance_squared(reference->position, actor->position) < 55.0f * 55.0f))
                 result["actors"].append(actor->GetID());
         }
         return result;
@@ -1415,7 +1470,6 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
     }
     if (now < state.next_update) return;
     state.next_update = now + 350.0;
-    const auto challenge = ChallengeScaling::Evaluate(std::round(sample.pressure * 1000.0f) / 1000.0f);
     std::set<ObjectID> bosses;
     for (Object* object : graph->hotspots_) {
         if (!campaign) break;
@@ -1475,16 +1529,18 @@ void Online::UpdateCampaignDifficulty(SceneGraph* graph) {
         }), encounter.extras.end());
     }
     auto apply = [&](MovementObject* actor, bool hostile, bool boss) {
-        auto factors = hostile && !LobbyBot(this, actor->GetID()) ? CampaignDifficulty::ForParty(humans, bots, boss, Strength(actor), stats, ai_scaling,
+        const auto unit = hostile && IsSurvivalMode() ? EnemyDifficultyFor(actor->GetID()) : sample;
+        auto factors = hostile && !LobbyBot(this, actor->GetID()) ? CampaignDifficulty::ForParty(unit.humans, unit.bots, boss, Strength(actor), unit.stats, unit.ai,
                                                                      GetOriginalID(actor->GetID())) : CampaignDifficulty::Factors();
         if (hostile) {
+            const auto challenge = ChallengeScaling::Evaluate(std::round(unit.pressure * 1000.0f) / 1000.0f);
             factors.vitality = std::min(6.0f, factors.vitality * challenge.vitality);
             factors.damage = std::min(2.0f, factors.damage * challenge.damage);
             factors.armor = 1;
-            if (ai_scaling && !LobbyBot(this, actor->GetID()) && CampaignDifficulty::TweakForUnit(GetOriginalID(actor->GetID())) != CampaignDifficulty::NoTweak)
-                factors.ai = CampaignDifficulty::AIAmount(humans, sample.pressure, sample.ai_rate);
+            if (unit.ai && !LobbyBot(this, actor->GetID()) && CampaignDifficulty::TweakForUnit(GetOriginalID(actor->GetID())) != CampaignDifficulty::NoTweak)
+                factors.ai = CampaignDifficulty::AIAmount(unit.humans, unit.pressure, unit.ai_rate);
         }
-        const float base = hostile && !LobbyBot(this, actor->GetID()) && actor->ASHasVar("campaign_base_difficulty") ? sample.base : -1.f;
+        const float base = hostile && !LobbyBot(this, actor->GetID()) && actor->ASHasVar("campaign_base_difficulty") ? unit.base : -1.f;
         const std::array<float, 5> values = {{factors.vitality, factors.damage, factors.armor, factors.ai, base}};
         auto old = state.applied.find(actor->GetID());
         const char* names[] = {"campaign_vitality_mult", "campaign_damage_mult", "campaign_armor_mult", "campaign_ai_bonus"};
@@ -1779,7 +1835,7 @@ std::string Online::DifficultyHUDSnapshot() {
     ctx.online = this; ctx.graph = graph;
     ctx.campaign = IsActive() && CoopCampaign();
     const bool master = DifficultyScalingEnabled();
-    ctx.stats = ctx.campaign && master && config["campaign_mp_scaling"].toBool();
+    ctx.stats = (ctx.campaign || IsSurvivalMode()) && master && config["campaign_mp_scaling"].toBool();
     ctx.ai_rate = std::max(0, std::min(4, config["campaign_ai_scaling_rate"].toNumber<int>()));
     ctx.ai_enabled = master && config["campaign_ai_scaling"].toBool() && ctx.ai_rate != 0;
     ctx.pressure = result["progression"]["pressure"].asDouble();
@@ -1914,7 +1970,7 @@ std::string Online::DifficultyHUDSnapshot() {
     current_line += " | " + HUDGear(live);
     if (live["ai_varied_actors"].asInt() > 0) current_line += " AI+" + HUDNumber(live["factors"]["ai"]["max"].asDouble() * 100, 1) + "%";
     lines.append(current_line);
-    std::string next_line = arena ? "Next match" : ctx.campaign ? "Next save" : "Next load";
+    std::string next_line = IsSurvivalMode() ? "Next wave" : arena ? "Next match" : ctx.campaign ? "Next save" : "Next load";
     next_line += std::string(next ? " est ~" : " est (rabbit) ~") + HUDNumber(result["next"]["threat"].asDouble(), 1) + "x | " + HUDMods(result["next"]);
     if (next) next_line += " | +" + std::to_string(result["next"]["extras_expected"].asInt()) + " enemies";
     lines.append(next_line);
@@ -1990,9 +2046,10 @@ struct ProgressionEquipmentState {
 
 namespace {
 const char* SelectedWeapon(const FriendlyProgression::Build& build, bool offhand) {
-    if (offhand) return build.dagger ? "Data/Items/rabbit_weapons/rabbit_knife.xml" : nullptr;
+    if (offhand ? !build.dagger : !build.big_weapon) return nullptr;
     for (const auto& weapon : FriendlyProgression::Weapons())
-        if (weapon.selection && build.big_weapon == weapon.selection) return weapon.path;
+        if (weapon.offhand == offhand && weapon.selection == (offhand ? build.dagger_variant : build.big_weapon))
+            return weapon.path;
     return nullptr;
 }
 
@@ -2029,7 +2086,9 @@ void PrepareProgressionWeapons(Online* online, SceneGraph* graph, MovementObject
         auto* item = static_cast<ItemObject*>(object);
         const auto& asset = item->item_ref();
         if (!asset.valid() || asset->GetItemType() != _weapon) continue;
-        const bool dagger = asset->GetLabel() == "knife";
+        bool dagger = asset->GetLabel() == "knife";
+        for (const auto& weapon : FriendlyProgression::Weapons())
+            if (object->obj_file == weapon.path) { dagger = weapon.offhand; break; }
         // A bought large weapon replaces the supplied large weapon. A bought
         // dagger supplements one supplied dagger, except with a chosen large
         // weapon: that pair is the complete selected loadout.
@@ -2102,6 +2161,11 @@ bool IssueProgressionWeapon(Online* online, SceneGraph* graph, MovementObject* a
             ScriptParam issued;
             issued.SetInt(seat.avatar);
             item->GetScriptParams()->InsertScriptParam("Progression Issued Weapon", issued);
+            PlayerState owner;
+            if (online->TryGetPlayerState(owner, actor->GetID())) {
+                issued.SetInt(static_cast<int>(owner.player_id));
+                item->GetScriptParams()->InsertScriptParam("Progression Issued To Slot", issued);
+            }
             item->SetTranslation(actor->position);
             actor->AttachItemToSlot(id, type, mirrored);
             actor->Execute("HandleEditorAttachment(" + std::to_string(id) + "," + std::to_string(int(type)) + "," +
@@ -2210,7 +2274,7 @@ void Online::ApplyProgressionEquipment(SceneGraph* graph) {
             }
         }
         if (CoopCutscene() || (LobbyMode() == "com-wolfire-arena" && !state.arena_armed) ||
-            !actor->ASHasVar("weapon_slots") || actor->ASGetIntVar("species") == 1) continue;
+            !actor->ASHasVar("weapon_slots")) continue;
         // Sample and copy the campaign's starting weapons before applying
         // personal overrides, including for guests who arrive later.
         if (CoopCampaign() && CampaignCharacterOnMainTeam(actor->GetID()) &&

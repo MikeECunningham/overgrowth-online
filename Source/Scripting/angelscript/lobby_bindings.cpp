@@ -3,6 +3,7 @@
 #include <Scripting/angelscript/ascontext.h>
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
 #include <Online/online.h>
+#include <Online/friendly_progression.h>
 #include <Online/session_saves.h>
 #include <Online/session_mods.h>
 #include <Online/online_utility.h>
@@ -64,7 +65,7 @@ CScriptArray* LobbyOptions() {
 }
 CScriptArray* OptionChoices(const LobbyOption& option) {
     auto* engine = asGetActiveContext()->GetEngine();
-    auto* choices = CScriptArray::Create(engine->GetTypeInfoByDecl("array<string>"), asUINT(option.choices.size()));
+    auto* choices = CScriptArray::Create(engine->GetTypeInfoByDecl("array<string>"), asUINT(option.ChoiceCount(Online::Instance()->IsSurvivalMode())));
     for (asUINT i = 0; i < choices->GetSize(); ++i)
         *static_cast<std::string*>(choices->At(i)) = option.choices[i];
     return choices;
@@ -91,8 +92,8 @@ bool OpenToNetwork() { return Online::Instance()->OpenLobbyToNetwork(MenuPlayerI
 bool IsHost() { return Online::Instance()->IsLobbyHost(MenuPlayerID()); }
 unsigned LocalCount() { return std::max(1u, Input::Instance()->GetNumLocalPlayers()); }
 int LocalIndex(int actual) { return Input::Instance()->LocalPlayerIndexForInputID(actual); }
-bool BeginHost() {
-    if (!CanManageLocal() || !Online::Instance()->BeginLobby()) return false;
+bool BeginHost(bool local_only) {
+    if (!CanManageLocal() || !Online::Instance()->BeginLobby(local_only)) return false;
     config.GetRef("controller_menu_owner") = 0;
     return true;
 }
@@ -148,6 +149,8 @@ bool SetForceTeams(bool force) { return Online::Instance()->SetLobbyForceTeams(f
 bool HostControlsTeams() { return Online::Instance()->LobbyHostControlsTeams(); }
 bool SetHostControlsTeams(bool controls) { return Online::Instance()->SetLobbyHostControlsTeams(controls, MenuPlayerID()); }
 bool CanSetTeam(unsigned id) { return Online::Instance()->CanSetLobbyTeam(id, MenuPlayerID()); }
+bool CanSetHandicap(unsigned id) { return FriendlyProgression::CanSetHandicap(MenuPlayerID(), id); }
+bool SetHandicap(unsigned id, bool enabled) { return FriendlyProgression::SetHandicap(MenuPlayerID(), id, enabled); }
 bool CanPromoteHost(unsigned id) { return Online::Instance()->CanPromoteLobbyHost(id, MenuPlayerID()); }
 bool PromoteHost(unsigned id) { return Online::Instance()->PromoteLobbyHost(id, MenuPlayerID()); }
 bool CanPromoteLeader(unsigned id) { return Online::Instance()->CanPromoteLobbyLeader(id, MenuPlayerID()); }
@@ -540,7 +543,7 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("string SessionSaveStatus()", SessionSaves::Status);
     LOBBY_FN("bool LobbyActive()", Active); LOBBY_FN("bool LobbyIsHost()", IsHost);
     LOBBY_FN("bool LobbyIsLocalOnly()", LocalOnly); LOBBY_FN("bool LobbyOpenToNetwork()", OpenToNetwork);
-    LOBBY_FN("bool LobbyCanManageLocal()", CanManageLocal); LOBBY_FN("bool LobbyBeginHost()", BeginHost);
+    LOBBY_FN("bool LobbyCanManageLocal()", CanManageLocal); LOBBY_FN("bool LobbyBeginHost(bool local_only = false)", BeginHost);
     LOBBY_FN("bool LobbyAddLocalPlayer()", AddLocal); LOBBY_FN("bool LobbyCanStart()", CanStart);
     LOBBY_FN("bool LobbyAddBot()", AddBot); LOBBY_FN("bool LobbyCanRenamePlayer(uint)", CanRename);
     LOBBY_FN("bool LobbyAddSlot()", AddBot);
@@ -554,11 +557,15 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("string LobbyGetMode()", Mode); LOBBY_FN("string LobbyGetCampaign()", Campaign); LOBBY_FN("string LobbyGetMap()", Map);
     LOBBY_FN("int LobbyGetModeSetting(const string &in)", ModeSetting);
     LOBBY_FN("bool LobbySetModeSetting(const string &in, int)", SetModeSetting);
+    LOBBY_FN("int LobbyNewSeed(int previous)", Online::NewLobbySeed);
     LOBBY_FN("bool LobbyGetBuildMode()", Build); LOBBY_FN("bool LobbyGetAllowAllPause()", AllowAllPause);
     LOBBY_FN("bool LobbyGetForceTeams()", ForceTeams); LOBBY_FN("bool LobbySetForceTeams(bool)", SetForceTeams);
     LOBBY_FN("string LobbyCampaignTeamAffiliation(int)", CampaignTeamAffiliation);
     LOBBY_FN("bool LobbyGetHostControlsTeams()", HostControlsTeams); LOBBY_FN("bool LobbySetHostControlsTeams(bool)", SetHostControlsTeams);
     LOBBY_FN("bool LobbyCanSetPlayerTeam(uint)", CanSetTeam);
+    LOBBY_FN("bool LobbyGetPlayerHandicap(uint)", FriendlyProgression::HasHandicap);
+    LOBBY_FN("bool LobbyCanSetPlayerHandicap(uint)", CanSetHandicap);
+    LOBBY_FN("bool LobbySetPlayerHandicap(uint, bool)", SetHandicap);
     LOBBY_FN("bool LobbyCanPromoteHost(uint)", CanPromoteHost); LOBBY_FN("bool LobbyPromoteHost(uint)", PromoteHost);
     LOBBY_FN("bool LobbyCanPromoteLeader(uint)", CanPromoteLeader); LOBBY_FN("bool LobbyPromoteLeader(uint)", PromoteLeader);
     LOBBY_FN("uint LobbyCurrentPlayerID()", MenuPlayerID); LOBBY_FN("int LobbyCurrentLocalPlayerIndex()", CurrentLocalPlayerIndex);

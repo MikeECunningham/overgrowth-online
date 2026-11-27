@@ -43,8 +43,8 @@ and the remaining Steam friends/relay checks.
 - Campaign faction teams: opposing lobby players and bots deploy at encounters,
   with NPC faction affiliations and independent hostile wildcard teams. Friendly
   bots count toward scaling and spread their escorts across teammates.
-- Two bundled gameplay mods, **Difficulty Scaling** and **Friendly Progression**.
-  Both start enabled in **Mods**. The host chooses Scaling in **Difficulty** or
+- Three bundled gameplay mods, **Difficulty Scaling**, **Friendly Progression** and **Survival**.
+  They start enabled in **Mods**. The host chooses Scaling in **Difficulty** or
   turns on **Progression** in **Mode settings** for a particular game.
   Each mod can be disabled independently. Slots, split-screen, save cards
   and the armor protection models are engine features.
@@ -107,6 +107,39 @@ See [Multiplayer networking](Docs/Markdown/Multiplayer%20Networking.md) for auth
 ## Multiplayer lobby
 
 Open **Multiplayer** and choose **Host** or **Connect**. Hosting opens the lobby before loading a world. Guests connect by direct IP, or through the existing Steam friends and discovery features in Steamworks builds, and wait in the same lobby until the host starts.
+
+Choose **Survival** in the lobby, or open **Play → Survival** for a local party.
+It uses the Freeplay map list, including Sandbox Levels. Battery 1 has one wave,
+batteries 2–3 have two, batteries 4–7 have three, and batteries 8–15 have four.
+The wave count rises to five, six and seven at batteries 16, 32 and 64.
+Within a battery, the HUD counts down the 20 seconds between launches even
+while enemies from an earlier wave are alive. Battery and wave countdowns chirp
+at three, two and one. Each lobby team faces its own enemies. A turquoise
+diamond above a visible raider means it belongs to another team's wave and is
+neutral to the player on that screen.
+
+On open ground, waves spawn 12–20 units away in battery 1. Both radii grow
+until the ring reaches 40–64 units in battery 20. Confined maps use a closer
+ring when the preferred one has no reachable ground. Raiders approach the
+deployment area and use their senses to find players. The first three
+batteries spawn unarmed rats and rabbits. The wave seed determines how each team’s
+budget buys a mix of fighters and weapons. Two rats cost as much as one rabbit.
+Each wave has a larger budget than the preceding wave in the same battery.
+The director uses each team's largest deployment that battery, so losing a
+teammate cannot reduce the finale's budget. Teams with the same deployment size
+receive matching formations. Eliminating
+a team removes its opponents while other teams are still fighting. Clearing
+a battery plays the Arena victory cue and gives the finishing hit three seconds
+on camera before the shop or free upgrades open. When the last team goes down,
+its opponents stay on screen for three seconds. The scoreboard shows waves
+cleared and enemies defeated by each team. The host can left-click to start a
+fresh run at battery 1 or right-click to return the party to the lobby.
+Retry in the Survival pause menu also starts a fresh run. Continue on a game-over autosave
+reopens that lobby with its settings and slots.
+
+With Progression enabled, the host can check **XP handicap** on a human slot
+in the Players panel. A defeat earns committed XP there. **Local leaders may
+set XP handicaps** lets each computer’s leader choose for its own players.
 
 The lobby has separate panels for the mode and map, the scrolling player list, and hosting options. **Sandbox Levels** offers Wolfire's sandbox maps when the level pack is active. **Freeplay** opens a standalone map for play, including maps from active mods, the sandbox pack, and levels saved by the host. **Build a level** opens the shared editor. The host chooses the mode, map, manual lobby teams, pause permissions and start time. **Force lobby teams** is off by default. Campaigns retain their cooperative teams, Arena chooses randomized team/FFA matchups from its battle setups, and Sandbox, Freeplay and Build use lobby teams. Checking it enforces the lobby's team dropdowns. Mode-assigned teams are synchronized separately, so random Arena matchups do not overwrite the saved lobby choices.
 

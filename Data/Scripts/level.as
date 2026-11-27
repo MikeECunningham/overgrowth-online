@@ -44,6 +44,10 @@ bool allow_retry = true;
 // an arena's score and bots, behind). A campaign level by its id: the
 // campaign still knows what comes next
 void OnlineRetry() {
+    if (LobbyGetMode() == "survival") {
+        Online_RetrySurvivalRun();
+        return;
+    }
     // (a level loaded by its path has no real id: "class LevelInfoAsset")
     string id = GetCurrLevelID();
     string campaign_id = GetCurrCampaignID();

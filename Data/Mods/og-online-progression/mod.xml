@@ -3,18 +3,20 @@
     <Id>og-online-progression</Id>
     <Name>Friendly Progression</Name>
     <Author>Overgrowth Online</Author>
-    <Description>Spend XP between campaign levels or Arena matches. The host can also enable free upgrades at checkpoints and Arena round ends. Each player's Luck affects their chance to get a choice and the value of the four upgrades offered. Saves keep balances, equipment, Luck and pending choices with their lobby slots.</Description>
+    <Description>Spend XP between campaign levels, Arena matches or Survival batteries. Injured fighters can buy a full recovery. Its price depends on the severity of their injuries. The maximum rises with completed levels, rounds or waves. The host can also enable free upgrades, including recovery, at checkpoints, Arena round ends and Survival battery clears. Each player's Luck affects their chance to get a choice and the value of the four upgrades offered. The host can give individual players committed XP on defeat and let local leaders choose that handicap for their own players. Saves keep handicaps, balances, equipment, Luck and pending choices with their lobby slots.</Description>
     <Category>Gameplay</Category>
     <Thumbnail>Data/Images/og-online-progression.jpg</Thumbnail>
-    <Version>1.3.0</Version>
+    <Version>1.7.0</Version>
     <SupportedVersion>0.41.36</SupportedVersion>
     <EnabledByDefault>true</EnabledByDefault>
     <SupportsOnline>true</SupportsOnline>
     <NeedsRestart>false</NeedsRestart>
-    <Session feature="progression" network_version="4" save_version="4">
+    <Session feature="progression" network_version="8" save_version="5">
         <Rule key="stat_base" value="16"/>
         <Rule key="stat_linear" value="5"/>
         <Rule key="stat_quadratic" value="2"/>
+        <Rule key="restore_base" value="8"/>
+        <Rule key="restore_per_round" value="2"/>
         <Rule key="bounty_rabbit" value="16"/>
         <Rule key="bounty_wolf" value="48"/>
         <Rule key="bounty_dog" value="24"/>
@@ -27,8 +29,12 @@
         <Rule key="round_win_xp" value="25"/>
         <Rule key="match_win_xp" value="100"/>
         <Rule key="weapon_dagger" value="140"/>
-        <Rule key="weapon_sword" value="880"/>
-        <Rule key="weapon_spear" value="1040"/>
+        <Rule key="weapon_sword" value="1040"/>
+        <Rule key="weapon_spear" value="880"/>
+        <Rule key="weapon_stick" value="60"/>
+        <Rule key="weapon_tool" value="100"/>
+        <Rule key="weapon_machete" value="490"/>
+        <Rule key="weapon_hammer" value="1140"/>
         <Rule key="weapon_staff" value="360"/>
         <Rule key="weapon_broadsword" value="1280"/>
         <Rule key="ai_hardcore" value="1800"/>
@@ -36,35 +42,39 @@
         <Rule key="ai_nightmare" value="8600"/>
         <Rule key="recruit_base" value="2400"/>
         <Rule key="recruit_growth" value="2.25"/>
-        <LobbySetting key="progression" label="Progression" description="Configure XP, the shop and free upgrades for this mode." default="0" modes="campaign,arena">
+        <LobbySetting key="progression" label="Progression" description="Configure XP, the shop and free upgrades for this mode." default="0" modes="campaign,arena,survival">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_shop" label="XP shop" description="Spend earned XP on upgrades after each completed campaign level or Arena match." default="1" modes="campaign,arena" depends_on="progression">
+        <LobbySetting key="progression_shop" label="XP shop" description="Spend earned XP on upgrades after each completed campaign level, Arena match or Survival battery." default="1" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_free_buffs" label="Free upgrade choice" description="At each new campaign checkpoint or Arena round end, each player has a chance to pick one of four free upgrades. Luck improves that chance and the odds of drawing expensive upgrades." default="0" modes="campaign,arena" depends_on="progression">
+        <LobbySetting key="progression_free_buffs" label="Free upgrade choice" description="At each new campaign checkpoint, Arena round end or Survival battery clear, each player has a chance to pick one of four free upgrades. Luck improves that chance and the odds of drawing expensive upgrades." default="0" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_shared" label="Upgrades" description="Buy upgrades independently or share them across a team." default="0" modes="campaign,arena" depends_on="progression">
+        <LobbySetting key="progression_shared" label="Upgrades" description="Buy upgrades independently or share them across a team." default="0" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Independent</Choice>
             <Choice>Shared by team</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_gain_damage" label="Gain XP for damage dealt" description="Earn XP in proportion to the damage you deal to opponents." default="0" modes="campaign,arena" depends_on="progression">
+        <LobbySetting key="progression_gain_damage" label="Gain XP for damage dealt" description="Earn XP in proportion to the damage you deal to opponents." default="0" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_gain_kill" label="Gain XP for kills" description="Earn an opponent's bounty when your team defeats them." default="1" modes="campaign,arena" depends_on="progression">
+        <LobbySetting key="progression_gain_kill" label="Gain XP for kills" description="Earn an opponent's bounty when your team defeats them." default="1" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_loss_damage" label="Lose pooled XP on damage" description="Taking damage reduces your unbanked XP, down to zero. In Arena, combat XP banks at the end of each round when this is enabled." default="0" modes="campaign,arena" depends_on="progression">
+        <LobbySetting key="progression_loss_damage" label="Lose pooled XP on damage" description="Taking damage reduces your unbanked XP, down to zero. With this enabled, combat XP banks when an Arena round or Survival wave ends." default="0" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_loss_death" label="Lose XP on defeat" description="Defeat spends pooled XP first. Any unpaid cost comes from committed XP. In Arena, combat XP banks at the end of each round when this is enabled." default="0" modes="campaign,arena" depends_on="progression">
+        <LobbySetting key="progression_loss_death" label="Lose XP on defeat" description="Defeat spends pooled XP first. Any unpaid cost comes from committed XP. With this enabled, combat XP banks when an Arena round or Survival wave ends." default="0" modes="campaign,arena,survival" depends_on="progression">
+            <Choice>Off</Choice>
+            <Choice>On</Choice>
+        </LobbySetting>
+        <LobbySetting key="progression_local_handicaps" label="Local leaders may set XP handicaps" description="Let each computer's local leader choose which of its players earn committed XP when defeated. The host can always choose for any human slot." default="0" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
@@ -72,21 +82,22 @@
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_gain_round" label="Gain XP for round wins" description="Earn bonus XP when your team wins an Arena round, including the final round." default="0" modes="arena" depends_on="progression">
+        <LobbySetting key="progression_gain_round" label="Gain XP for round wins" description="Earn bonus XP when your team wins an Arena round or clears a Survival wave, including the final wave." default="0" modes="arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_gain_match" label="Gain XP for match wins" description="Earn bonus XP when your team wins an Arena match." default="0" modes="arena" depends_on="progression">
+        <LobbySetting key="progression_gain_match" label="Gain XP for match wins" description="Earn bonus XP when your team wins an Arena match or clears a Survival battery." default="0" modes="arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_timer" label="Multiplayer upgrade timer" description="Set how long the multiplayer shop waits for players to finish shopping." default="0" modes="campaign,arena" depends_on="progression">
+        <LobbySetting key="progression_timer" label="Multiplayer upgrade timer" description="Set how long the multiplayer shop waits for players to finish shopping." default="0" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Infinite</Choice>
             <Choice>10 seconds</Choice>
             <Choice>15 seconds</Choice>
             <Choice>30 seconds</Choice>
             <Choice>60 seconds</Choice>
             <Choice>120 seconds</Choice>
+            <Choice modes="survival">0 seconds</Choice>
         </LobbySetting>
     </Session>
 </Mod>

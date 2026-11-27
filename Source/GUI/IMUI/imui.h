@@ -456,6 +456,7 @@ class IMUIContext {
     vec2 mouse_pos;
 
     ButtonState lmb_state;
+    bool press_started_here_ = false;
     std::vector<IMUIRenderableType*> renderables;
 
     void Draw();

@@ -9,6 +9,7 @@ import traceback
 import zlib
 from pathlib import Path
 
+from .newcampaign_local_suite import _ready
 from .scenarios import LEVEL, script_errors, wait_loaded
 
 
@@ -107,6 +108,8 @@ def _native_focus(ctx):
         assert g.ui()['nav_id'] == connect_id
         g.pointer(host_rect)
         g.wait(lambda: g.ui()['hovered_id'] == host_id, 'mouse hovers Host while both navigation inputs remain held')
+        status = g.status()
+        assert status['imgui_wants_mouse'] and status['desktop_cursor'] and not status['imgui_draws_cursor']
         g.click(host_rect)
         g.wait(lambda: g.status()['online']['lobby_waiting'], 'one mouse click opens Host')
         assert not script_errors(g.inst), script_errors(g.inst)
@@ -180,10 +183,36 @@ def _native_scroll(ctx):
         top = next(w for w in g.ui()['windows'] if w['name'] == 'Hosting options')
         assert top['scroll_y'] < window['scroll_y'], 'Up did not scroll back toward the first option'
         assert g.ui()['nav_id'] == zlib.crc32(b'Add slot', top['id']), 'first hosting option is unreachable'
+        assert g.probe('GetLocalKeyboardPlayerIndex()') == '-1'
+        assert g.probe('LobbyAddBot() && LobbyStart()') == 'true'
+        _ready(g.inst, 'Magma_Arena.xml')
+        g.pad(4)
+        g.wait(lambda: g.status()['open_menu_players'] == [0], 'controller host opens its pause menu')
+        assert not g.status()['grab_mouse'], 'controller-only pause captured the unassigned mouse'
         assert not script_errors(g.inst), script_errors(g.inst)
         return {'bottom_scroll': window['scroll_y'], 'navigation': visited, 'screenshot': image}
     finally:
         g.close()
+
+
+def _check_edge_drag(g):
+    width, height = map(int, g.probe('GetScreenWidth()+"|"+GetScreenHeight()').split('|'))
+    left = (width - float(g.probe('screenMetrics.screenSize.x'))) / 2
+    # Capture starts in unoccupied menu space. A held drag may leave the SDL
+    # window and re-enter it on either side, even with a controller present.
+    path = [(6, 24), (-8, 28), (12, 32), (width - 4, 34), (width + 8, 38),
+            (width - 12, height - 8), (width - 12, height + 8), (width - 12, height // 3)]
+    for x, y in path:
+        g.pointer([x, y, x, y], 1)
+        p = 'screenMetrics.GUIToScreen(imGUI.guistate.mousePosition)'
+        seen_x, seen_y = map(float, g.probe(p+'.x+"|"+'+p+'.y').split('|'))
+        for sent, seen, limit in ((x, seen_x + left, width), (y, seen_y, height)):
+            edge = max(0, min(sent, limit - 1))
+            assert min(sent, edge) - 1 <= seen <= max(sent, edge) + 1, (x, y, seen_x + left, seen_y)
+        assert not g.status()['grab_mouse'], 'menu captured the pointer during a drag'
+    g.pointer([x, y, x, y])
+    status = g.status()
+    assert status['cursor_visible'] and status['desktop_cursor'] and not status['imgui_draws_cursor']
 
 
 def _legacy_focus(ctx):
@@ -192,6 +221,7 @@ def _legacy_focus(ctx):
         g.inst.bridge.call('menu', script='mainmenu.as')
         g.inst.bridge.call('virtual_pad', action='attach', slot=0)
         g.wait(lambda: g.probe('controller_items.length() > 0') == 'true', 'main menu buttons')
+        _check_edge_drag(g)
         g.code('for(uint i=0;i<controller_items.length();++i){IMElement@ e=controller_items[i];'
                'if(e.controllerItem.getMessage().name == "Settings")'
                'SetConfigValueString("test_gui_probe",i+"|"+e.getScreenPosition().x+"|"+e.getScreenPosition().y+"|"+'
@@ -235,6 +265,8 @@ def _legacy(ctx):
         g.key('Escape')
         g.wait(lambda: g.status()['open_menu_players'] == [0], 'keyboard pause menu')
         g.player = 0
+        g.inst.bridge.call('virtual_pad', action='attach', slot=0)
+        _check_edge_drag(g)
         g.code('imGUI.receiveMessage(IMMessage("Settings"));')
         g.wait(lambda: g.probe('personal_settings') == 'true', 'settings page')
         g.code('SwitchSettingsScreen("Screen");')
@@ -276,10 +308,14 @@ def _legacy(ctx):
         g.wait(lambda: not g.status()['open_menu_players'], 'close P1 menu')
         g.inst.bridge.call('pointer', enabled=False)
 
-        g.inst.bridge.call('virtual_pad', action='attach', slot=0)
-        time.sleep(0.15)
         g.pad(0)
         g.wait(lambda: g.status()['local_players'] == 2, 'actual controller joins')
+        g.key('Escape')
+        g.wait(lambda: g.status()['open_menu_players'] == [0], 'keyboard opens its split-screen pause menu')
+        _check_edge_drag(g)
+        g.code('this_ui.SendCallback("close");')
+        g.wait(lambda: not g.status()['open_menu_players'], 'close split-screen keyboard menu')
+        g.inst.bridge.call('pointer', enabled=False)
         g.pad(4)  # Configured quit/menu button, SDL Back.
         g.wait(lambda: g.status()['open_menu_players'] == [1], 'joined controller opens its menu')
         g.player = 1

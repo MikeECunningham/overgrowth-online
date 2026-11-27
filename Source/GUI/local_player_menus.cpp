@@ -10,7 +10,6 @@
 #include <Main/engine.h>
 #include <Objects/movementobject.h>
 #include <Online/online.h>
-#include <Online/friendly_progression.h>
 #include <Online/online_utility.h>
 #include <Logging/logdata.h>
 #include <UserInput/input.h>
@@ -323,17 +322,5 @@ bool LocalPlayerMenus::Execute(unsigned local_index, const std::string& code) {
 
 void LocalPlayerMenus::ResolveCursor() {
     if (!engine_.IsLevelLoaded()) return;
-    SceneGraph* scene = engine_.GetSceneGraph();
-    if (scene != nullptr && scene->map_editor != nullptr && scene->map_editor->state_ != MapEditor::kInGame) {
-        Input::Instance()->SetGrabMouse(false);
-        return;
-    }
-    const int keyboard = Input::Instance()->LocalKeyboardPlayerIndex();
-    const bool keyboard_menu = keyboard >= 0 && menus_.count(static_cast<unsigned>(keyboard)) != 0;
-    const bool level_ui = scene != nullptr && scene->level != nullptr && scene->level->HasScriptFocus();
-    if (keyboard_menu || level_ui || FriendlyProgression::ShopOpen()) {
-        Input::Instance()->SetGrabMouse(false);
-    } else if (engine_.IsLevelLoaded()) {
-        Input::Instance()->SetGrabMouse(true);
-    }
+    Input::Instance()->SetGrabMouse(engine_.GameplayOwnsMouse());
 }

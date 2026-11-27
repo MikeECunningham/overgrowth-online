@@ -4,10 +4,10 @@ bool overhaul = false;
 bool dynamic_aggression = false;
 float next_scan = 0.0f;
 
-float TacticsBoost() {
+float TacticsBoost(int avatar = -1) {
     float pressure;
     int rate, humans;
-    if (!Online_GetEnemyDifficultySample(pressure, rate, humans)) return 0.0f;
+    if (!Online_GetEnemyDifficultySample(pressure, rate, humans, avatar)) return 0.0f;
     float load = max(0.0f, pressure) + 0.10f * float(max(0, humans - 1));
     return (load / (1.0f + load)) * (0.25f * float(rate));
 }
@@ -24,7 +24,7 @@ void Init(string level_name) {
 // Smarter Deaths rolls its own random duration between two bounds at KO.
 // Its separate WakeupTime pin takes precedence and stays map-authored.
 bool AdaptLevelHookFloat(int id, const string &in key, float &out value) {
-    float boost = TacticsBoost();
+    float boost = TacticsBoost(id);
     if (boost <= 0.0f || !Online_IsDifficultyEnemy(id)) return false;
     ScriptParams@ source = ReadObjectFromID(id).GetScriptParams();
     if (source.HasParam("MinKoTime") && source.HasParam("MaxKoTime")) {
@@ -77,11 +77,12 @@ class Fighter {
 }
 dictionary fighters;
 
-void ScanFighters(float boost) {
+void ScanFighters(float group_boost, bool survival) {
     dictionary present;
     for (int i = 0; i < GetNumCharacters(); ++i) {
         MovementObject@ actor = ReadCharacter(i);
         int id = actor.GetID();
+        float boost = survival ? TacticsBoost(id) : group_boost;
         string key = "" + id;
         Fighter@ state;
         fighters.get(key, @state);
@@ -114,5 +115,6 @@ void Update(int is_paused) {
     if (is_paused != 0 || (!overhaul && !dynamic_aggression) || the_time < next_scan) return;
     next_scan = the_time + 0.2f;
     float boost = TacticsBoost();
-    if (boost > 0.0f || !fighters.isEmpty()) ScanFighters(boost);
+    bool survival = LobbyGetMode() == "survival";
+    if (survival || boost > 0.0f || !fighters.isEmpty()) ScanFighters(boost, survival);
 }

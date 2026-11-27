@@ -41,6 +41,8 @@ int arena_round = 0;
 bool initial_save = false;
 bool client_scene = false;
 bool ledger_applied = false;
+bool survival_finished = false;
+bool survival_retry = false;
 std::set<int> requested;
 std::string status;
 using Clock = std::chrono::steady_clock;
@@ -298,6 +300,15 @@ bool Commit(int slot, Json::Value record, const std::vector<unsigned char>& rgb)
     if (previous) deletefile((Base() + "Data/" + Image(slot, old)).c_str());
     return true;
 }
+void ResetSurvivalRun(Online* net) {
+    for (const auto& seat : net->GetPlayerStates()) {
+        if (seat.is_bot && FriendlyProgression::GetBuild(seat.player_id).recruited)
+            net->RemoveLobbyPlayer(seat.player_id, net->LobbyHostPlayerID());
+    }
+    FriendlyProgression::NewSession(true);
+    net->ResetModeChallenge();
+    SessionMods::SetData("og-online-survival", "{}");
+}
 }  // namespace
 
 bool Exists(int slot) {
@@ -337,14 +348,45 @@ bool CampaignTransition(std::string& destination) {
 void Autosave() {
     if (stage == Stage::Idle && !client_scene && !Online::Instance()->IsClient()) requested.insert(0);
 }
+void FinishSurvivalRun() {
+    auto* net = Online::Instance();
+    if (survival_finished || !net->IsHosting() || !net->IsSurvivalMode() || net->LobbyWaiting()) return;
+    survival_finished = true;
+    FriendlyProgression::CloseSurvivalUpgrades();
+    Autosave();
+}
+bool EndSurvivalRun() {
+    auto* net = Online::Instance();
+    if (!survival_finished || !net->IsHosting() || !net->IsSurvivalMode() || Loading()) return false;
+    return net->EndLobbyGame(net->LobbyHostPlayerID());
+}
+bool RetrySurvivalRun() {
+    auto* net = Online::Instance();
+    if (!net->IsHosting() || !net->IsSurvivalMode() || net->LobbyWaiting() || Loading() || !WorldReady()) return false;
+    if (!survival_retry) {
+        survival_retry = true;
+        Engine::Instance()->ScriptableUICallback(CurrentMap());
+    }
+    return true;
+}
+void OnReturnToLobby() {
+    if (survival_finished) ResetSurvivalRun(Online::Instance());
+}
 void SceneLoaded() {
     client_scene = Online::Instance()->IsClient();
     initial_save = !client_scene;
     scene_ready = Clock::now();
 }
 void SceneClosed() {
+    // The old director can publish or award XP up to its last simulation tick.
+    // Reset here, before the new map deploys its roster or reads the director.
+    if (survival_retry) {
+        survival_retry = false;
+        ResetSurvivalRun(Online::Instance());
+    }
     requested.clear();
     initial_save = false;
+    survival_finished = false;
     arena_round = 0;
     arena_points.clear();
     arena_state = Json::Value();
@@ -361,7 +403,8 @@ bool ResumeLobby(const std::string& mode, const std::string& campaign, const std
     if (mode != pending["mode"].asString() || campaign != pending["campaign"].asString() || MapPath(map) != pending["map"].asString() || build != pending["rules"]["build"].asBool()) {
         LeaveLobby();
         SessionMods::Clear();
-        FriendlyProgression::NewSession();
+        // Changing the saved map starts a fresh run with this lobby's players and handicaps.
+        FriendlyProgression::NewSession(true);
         return false;
     }
     // Keep roster edits made in the restored lobby, including removal of a unit.
@@ -468,7 +511,15 @@ void Update() {
         net->RestoreGameRules(pending["rules"]);
         net->SetLobbySelection(pending["mode"].asString(), pending["campaign"].asString(), pending["map"].asString(), pending["rules"]["build"].asBool(), net->LobbyHostPlayerID());
         SessionMods::Restore(pending["session_mods"], SessionMods::Scope::Save);
-        stage = Stage::WaitingForStart;
+        const Json::Value& card = pending;
+        // Before game-over cards had a marker, phase 3 saved a defeated battery.
+        if (net->IsSurvivalMode() && (card["finished"] == true ||
+            card["session_mods"]["og-online-survival"]["data"]["phase"] == 3)) {
+            ResetSurvivalRun(net);
+            LeaveLobby();
+        } else {
+            stage = Stage::WaitingForStart;
+        }
         net->BroadcastLobby();
     }
     if (!WorldReady() || engine->waiting_for_input_ || net->IsClient()) return;
@@ -546,6 +597,7 @@ void CaptureFrame() {
         }
     Json::Value record;
     record["version"] = 2;
+    if (survival_finished) record["finished"] = true;
     record["date"] = Now();
     record["map"] = CurrentMap();
     auto* campaign = engine->GetCurrentCampaign();
@@ -555,7 +607,8 @@ void CaptureFrame() {
     record["lobby"] = net->IsHosting() && (!net->IsLocalOnlySession() || !net->LobbyMap().empty() || net->GetLobbySlots().size() > 1);
     record["local_only"] = net->IsLocalOnlySession();
     record["map_name"] = graph->level_name_.empty() ? SplitPathFileName(CurrentMap()).second : graph->level_name_;
-    record["mode_name"] = net->LobbyMode() == "freeplay" ? "Freeplay" : net->LobbyBuild() ? "Build" : "Sandbox";
+    record["mode_name"] = net->IsSurvivalMode() ? "Survival" : net->LobbyMode() == "freeplay" ? "Freeplay" :
+                          net->LobbyBuild() ? "Build" : "Sandbox";
     if (!camp.empty()) {
         auto lookup = camp;
         auto metadata = ModLoading::Instance().GetCampaign(lookup);

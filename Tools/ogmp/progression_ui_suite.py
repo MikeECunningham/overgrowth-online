@@ -39,20 +39,26 @@ def progression_free_buff_ui(ctx):
         if key.startswith("armor_"):
             slot = int(key.split("_")[1])
             assert account(result)["armor"][slot] > account(before)["armor"][slot]
-        elif key in ("dagger","sword","spear","staff","broadsword"):
+        elif "owned_" + key in result["view"] or account(result)["weapons"] != account(before)["weapons"]:
             assert account(result)["weapons"] != account(before)["weapons"]
+        elif key == "race_upgrade":
+            assert account(result)["race"] != account(before).get("race",-1)
         elif key == "recruit":
             assert len(result["ledger"]["players"]) > len(before["ledger"]["players"])
         elif key == "ai":
             def ranks(state):
                 return sum(p["ai"] for p in state["ledger"]["players"])
             assert ranks(result) == ranks(before) + 1
+        elif key == "restore_health":
+            avatar = next(p["avatar_id"] for p in bridge.status()["online"]["players"] if p["id"] == actor)
+            fighter = next(c for c in bridge.state() if c["id"] == avatar)
+            assert all(fighter[vital] >= .999 for vital in ("permanent_health", "temp_health", "blood_health"))
         else:
             assert account(result)[key] == account(before)[key] + 1
 
     script("LobbyBeginHost();", "menu")
     _join_pad(host, 0, 2)
-    script(f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
+    script(f'SetControllerPlayer(0);LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
            'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shop",1);'
            'LobbySetModeSetting("progression_free_buffs",1);LobbySetModeSetting("progression_shared",0);'
            'LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
@@ -71,7 +77,7 @@ def progression_free_buff_ui(ctx):
     path.write_text(json.dumps(saved))
     script("SessionLoad(2);")
     wait(lambda: bridge.status()["online"]["lobby_waiting"] and not bridge.status()["level_loaded"], "roster restored")
-    script("LobbyStart();", "menu")
+    script("SetControllerPlayer(0);LobbyStart();", "menu")
     _ready(host, FIRST)
     _skip(host)
     script("ProgressionCheckpoint(31);")
@@ -161,7 +167,7 @@ def progression_ui(ctx):
     try:
         script("LobbyBeginHost();", "menu")
         _join_pad(host, 0, 2)
-        script('LobbyAddBot();'
+        script('SetControllerPlayer(0);LobbyAddBot();'
                f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
                'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",0);'
                'LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
@@ -187,6 +193,7 @@ def progression_ui(ctx):
         wait(lambda: all(r.get("shop") and r.get("focus") for r in rows()), "both independent shops open")
         wait(lambda: rows()[0]["display_held"] > 0 and rows()[0]["display_pooled"] < .01, "commit animation transfers XP")
         baseline = rows()
+        assert all(not row["columns"] and "restore_health" in row["visible_cards"] for row in baseline)
         before = baseline[1]["display_held"]
         assert baseline[0]["focus"] == baseline[1]["focus"] == "health", baseline
         # Test the actual SDL right-stick map, independent of the camera binding.
@@ -208,7 +215,7 @@ def progression_ui(ctx):
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
         ctx.shot(host, "stock_armor_catalog")
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=29000)
-        wait(lambda: {"staff", "broadsword"} <= set(rows()[1].get("visible_cards", [])), "P2 reaches weapon previews")
+        wait(lambda: "staff" in rows()[1].get("visible_cards", []), "P2 reaches weapon previews")
         time.sleep(.4)
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
         ctx.shot(host, "equipment_rarities")

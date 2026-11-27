@@ -53,7 +53,7 @@
 #include <Graphics/textures.h>
 #include <Graphics/vboringcontainer.h>
 #include <UserInput/input.h>
-#include <Testing/test_bridge.h>
+#include <UserInput/window_pointer.h>
 #include <Internal/filesystem.h>
 #include <Internal/config.h>
 
@@ -448,11 +448,10 @@ void ImGui_ImplSdlGL3_NewFrame(SDL_Window* window, bool ignore_mouse) {
     } else {
         // Setup inputs
         // (we already got mouse wheel, keyboard keys & characters from SDL_PollEvent())
-        int mx, my;
-        uint32_t mouseMask = SDL_GetMouseState(&mx, &my);
-        const bool test_pointer = TestBridgePointerState(mx, my, mouseMask);
-        if (test_pointer || (SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_FOCUS))
-            io.MousePos = ImVec2((float)mx, (float)my);  // Mouse position, in pixels (set to -1,-1 if no mouse / on another screen, etc.)
+        const WindowPointer pointer = ReadWindowPointer();
+        const uint32_t mouseMask = pointer.buttons;
+        if (pointer.available)
+            io.MousePos = ImVec2(float(pointer.x), float(pointer.y));
         else
             io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
 

@@ -6,43 +6,46 @@
 #include <string>
 #include <vector>
 
+class MovementObject;
 namespace FriendlyProgression {
 struct Weapon {
     const char* key;
     const char* label;
     const char* path;
     const char* artwork;
-    unsigned ownership;
+    const char* price_family;
     int selection, rarity;
+    bool offhand;
+    uint64_t Ownership() const { return uint64_t{1} << selection; }
 };
-constexpr unsigned kWeaponOwnershipMask = 31;
-constexpr int kMaxMainWeapon = 4;
-inline const std::array<Weapon, 5>& Weapons() {
-    static const std::array<Weapon, 5> weapons = {{
-        {"dagger", "Offhand dagger", "Data/Items/rabbit_weapons/rabbit_knife.xml", "Object/rabbit_knife", 1, 0, 2},
-        {"sword", "Sword", "Data/Items/DogWeapons/DogSword.xml", "Object/DogSword", 2, 1, 3},
-        {"spear", "Spear", "Data/Items/DogWeapons/DogSpear.xml", "Object/DogSpear", 4, 2, 3},
-        {"staff", "Staff", "Data/Items/staffbasic.xml", "Interactive Objects/staffbasic", 8, 3, 2},
-        {"broadsword", "Broadsword", "Data/Items/DogWeapons/DogBroadSword.xml", "Object/DogBroadSword", 16, 4, 4},
-    }};
-    return weapons;
-}
+// Selection IDs are persistent. The array order is the order on the shop shelf.
+constexpr int kWeaponCount = 36;
+constexpr uint64_t kWeaponOwnershipMask = (uint64_t{1} << kWeaponCount) - 1;
+const std::array<Weapon, kWeaponCount>& Weapons();
 struct StatRanks {
     int health = 0, damage = 0, speed = 0;
     int stealth_passive = 0, stealth_active = 0, luck = 0;
 };
 struct Build : StatRanks {
     std::array<int, 9> armor{}; // front, back, head, forearms, shoulders, thighs
-    int big_weapon = 0;        // none, sword, spear, staff, broadsword
+    int big_weapon = 0;        // zero means no main weapon
+    int dagger_variant = 0;    // the original offhand dagger in older saves
     bool dagger = false;
     int ai = 0;                // Casual through Nightmare
     bool recruited = false, trained = false;
     uint32_t owner = UINT32_MAX;
 };
 Build GetBuild(uint32_t player);
+bool ApplyRace(uint32_t player, bool bot, MovementObject& avatar);
+int SurvivalShopSeconds();
 bool Enabled();
+bool HasHandicap(uint32_t player);
+bool CanSetHandicap(uint32_t actor, uint32_t player);
+bool SetHandicap(uint32_t actor, uint32_t player, bool enabled);
 void Checkpoint(int checkpoint = 0, int source = -1);
 void ArenaWin(const std::vector<int>& winners, bool match, const std::vector<int>* participants = nullptr);
+void SurvivalClear(int battery, int wave, const std::vector<int>& winners);
+void CloseSurvivalUpgrades();
 void ResetAttempt();
 bool BeginShop(bool campaign_final = false);
 bool ShopOpen();
@@ -52,7 +55,7 @@ bool Act(uint32_t actor, uint32_t target, const std::string& action, const std::
          unsigned expected_reward_generation = 0);
 
 // Session, network and character hooks.
-void NewSession();
+void NewSession(bool keep_slot_handicaps = false);
 void NewWorld();
 void ForgetPlayer(uint32_t player);
 void Update();

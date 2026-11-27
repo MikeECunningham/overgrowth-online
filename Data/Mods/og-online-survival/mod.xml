@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Mod>
+    <Id>og-online-survival</Id>
+    <Name>Survival</Name>
+    <Author>Overgrowth Online</Author>
+    <Description>Survive timed waves on sandbox and freeplay maps. Each team faces its own enemies. Clear a battery of waves to earn a break. A wave seed selects fighters and weapons within each wave’s growing budget. When the last team falls, the host can retry from the scoreboard or return the party to the lobby. The host runs the waves and shares their progress with joining players and host-local saves. Difficulty Scaling and Friendly Progression can use wave and battery results.</Description>
+    <Category>Gameplay</Category>
+    <Thumbnail>Data/Images/og-online-survival.jpg</Thumbnail>
+    <Version>1.3.0</Version>
+    <SupportedVersion>0.41.36</SupportedVersion>
+    <EnabledByDefault>true</EnabledByDefault>
+    <SupportsOnline>true</SupportsOnline>
+    <NeedsRestart>false</NeedsRestart>
+    <Session feature="survival" network_version="4" save_version="1">
+        <LobbySetting key="survival_starting_race" label="Starting race" description="Choose the species players start with in a new Survival run." default="1" modes="survival">
+            <Choice>Mouse</Choice>
+            <Choice>Rabbit</Choice>
+            <Choice>Cat</Choice>
+            <Choice>Dog</Choice>
+            <Choice>Wolf</Choice>
+        </LobbySetting>
+        <LobbySetting key="survival_seed" label="Wave seed" description="Use the same seed to replay wave compositions." type="seed" modes="survival"/>
+    </Session>
+</Mod>

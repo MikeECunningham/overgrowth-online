@@ -28,7 +28,8 @@ def stealth_stats(ctx):
 
     _code(host, 'LobbyBeginHost();'
           f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
-          'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",1);', "menu")
+          'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",1);'
+          'LobbySetModeSetting("progression_free_buffs",1);', "menu")
     guest.bridge.call("connect", ip="127.0.0.1:28561")
     wait(lambda: all(len(_rows(p)) == 2 for p in peers), "two human seats")
     _code(host, "LobbyStart();", "menu")
@@ -49,8 +50,8 @@ def stealth_stats(ctx):
     observer, near, far = spawn("stealth_observer",0), spawn("stealth_target",15), spawn("stealth_target",22.5,6)
     wait(lambda: all(stats(host,id).get("campaign_base_difficulty") == .5 for id in (observer,near,far)),
          "fixtures initialized")
-    # Earn through the authoritative campaign reward/bank path, then buy both
-    # upgrades from the shared shop. Every teammate gets the replicated ranks.
+    # Earn through the campaign reward/bank path and buy shared upgrades.
+    # Every teammate gets the replicated ranks.
     _code(host, f'for(int n=0;n<6;++n){{ProgressionReportHit({near},{hero},0,true);'
           'ProgressionCheckpoint();ProgressionResetAttempt();}ProgressionBeginShop(false);')
     wait(lambda: data(guest,owner)["view"].get("shop_open"), "shared shop replicated")
@@ -60,11 +61,16 @@ def stealth_stats(ctx):
     assert {"health","damage","speed","stealth_passive","stealth_active","luck"} <= cards.keys(), data(buyer,leader)
     assert all(cards[key]["rarity"] == 0 for key in ("health","damage","speed","stealth_passive","stealth_active","luck"))
     assert cards["luck"]["cost"] == cards["health"]["cost"]
-    for key in ("stealth_passive","stealth_active","luck"):
+    assert "+16% of base durability" in cards["health"]["description"]
+    assert "7% of base range" in cards["stealth_active"]["description"]
+    assert "+4 percentage points" in cards["luck"]["description"]
+    untrained_speed = float(probe("", "run_speed/_base_run_speed", hero))
+    for key in ("stealth_passive","stealth_active","luck","speed"):
         assert data(buyer,leader,action="buy",key=key)["submitted"]
     def installed():
         return all(stats(p,r["avatar_id"]).get("progression_stealth_passive") == 1 and
-                   stats(p,r["avatar_id"]).get("progression_stealth_active") == 1
+                   stats(p,r["avatar_id"]).get("progression_stealth_active") == 1 and
+                   stats(p,r["avatar_id"]).get("progression_speed") == 1
                    for p in peers for r in seats)
     wait(installed, "shared stealth ranks installed on both peers")
     wait(lambda: all(data(p,r["id"])["view"]["stats"]["luck_rank"] == 1 for p in peers for r in seats),
@@ -72,7 +78,15 @@ def stealth_stats(ctx):
     for p in peers:
         ledger = data(p,owner)["ledger"]
         assert any(t["stealth_passive"] == t["stealth_active"] == t["luck"] == 1 for t in ledger["teams"])
-        assert math.isclose(data(p,owner)["view"]["stats"]["reward_chance"], .216)
+        side_stats = data(p,owner)["view"]["stats"]
+        assert math.isclose(side_stats["reward_chance"], .24)
+        assert math.isclose(side_stats["passive_range"], .93, abs_tol=1e-6)
+        assert math.isclose(side_stats["active_range"], .93, abs_tol=1e-6)
+        assert math.isclose(side_stats["movement"], untrained_speed * 1.06, abs_tol=1e-5)
+    assert math.isclose(float(probe("", "run_speed/_base_run_speed", hero)), untrained_speed * 1.06, abs_tol=1e-5)
+    next_cards = {c["id"]: c for c in data(buyer,leader)["view"]["cards"]}
+    assert "6.64% of base range" in next_cards["stealth_active"]["description"]
+    assert next_cards["stealth_active"]["cost"] > cards["stealth_active"]["cost"]
     for p in peers:
         local = next(r["id"] for r in _rows(p) if (r["peer_id"] == 255) == (p is host))
         assert data(p,local,action="ready",key="")["submitted"]
@@ -125,9 +139,9 @@ def stealth_stats(ctx):
                             'HandleTethering(step);tethered=_TETHERED_FREE;', 'temp_health', observer))
     base, faster, opposed = choke(0,0),choke(0,10),choke(10,10)
     assert math.isclose(base,.125,abs_tol=1e-5),base
-    assert math.isclose(faster/base,1.6,abs_tol=1e-4),(base,faster)
-    assert math.isclose(opposed/faster,1/1.8,abs_tol=1e-4),(faster,opposed)
+    assert math.isclose(faster/base,1.9868421,abs_tol=1e-4),(base,faster)
+    assert math.isclose(opposed/faster,1/2.3157895,abs_tol=1e-4),(faster,opposed)
     assert all(not script_errors(p) for p in peers), [script_errors(p) for p in peers]
-    return {"passed":True,"metrics":{"shared_stealth_rank":1,"shared_luck_rank":1,"reward_chance":.216,
+    return {"passed":True,"metrics":{"shared_stealth_rank":1,"shared_luck_rank":1,"reward_chance":.24,
                                       "sight_perception":1.5,"hearing_perception":1.225,
                                       "choke_damage":{"base":base,"damage_10":faster,"health_10_damage_10":opposed}},"notes":[]}

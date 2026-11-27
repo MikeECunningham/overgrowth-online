@@ -177,6 +177,19 @@ class MovementObject : public Object {
     void CaptureNetworkPose(CharSnapshot::Frame& out, bool with_morphs);
     void CaptureNetworkVitals(CharSnapshot::Vitals& v);
     void ApplyNetworkVitals(const CharSnapshot::Vitals& v);
+    struct HealthRestoreState {
+        bool available = false;
+        float damage = 0.0f;
+        bool ongoing_injury = false;
+        bool Injured() const { return damage > 0.0f || ongoing_injury; }
+    };
+    HealthRestoreState GetHealthRestoreState();
+    void RequestHealthRestore(bool phase, float fraction);
+    bool net_restore_phase = false;
+    bool net_restore_succeeded = false;
+    bool net_restore_pending = false;
+    float net_restore_fraction = 1.0f;
+    bool net_has_wound = false;
     // Overgrowth Online: become the character the owner switched to (no random colours)
     void ApplyNetworkCharacter(const std::string& path);
     double net_local_since_ms = 0.0;   // Overgrowth Online: when it last became ours to run (OnlineClockMs)
@@ -249,6 +262,7 @@ class MovementObject : public Object {
     void ASSetBoolVar(const std::string& name, bool value);
     void Dispose() override;
     bool ASOnSameTeam(MovementObject* other);
+    bool OnTeam(const std::string& other_team);
     void AttachItemToSlot(int which, AttachmentType type, bool mirrored);
     void AttachItemToSlotEditor(int which, AttachmentType type, bool mirrored, const AttachmentRef& attachment_ref, bool from_socket = false);
     void RemovePhysicsShapes();
@@ -372,7 +386,6 @@ class MovementObject : public Object {
     void InvalidatedItem(ItemObjectScriptReader* invalidated);
     static void InvalidatedItemCallback(ItemObjectScriptReader* invalidated, void* this_ptr);
     void ASDetachAllItems();
-    bool OnTeam(const std::string& other_team);
     // Overgrowth Online (perf C4): the "Teams" parameter split, kept with the text it came from
     // (OnSameTeam copied and split both characters' lists on every call)
     const std::vector<std::string>& Teams();

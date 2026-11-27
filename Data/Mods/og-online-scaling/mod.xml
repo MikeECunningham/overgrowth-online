@@ -30,7 +30,7 @@
             <Choice>Brisk</Choice>
             <Choice>Nightmare</Choice>
         </LobbySetting>
-        <LobbySetting key="challenge_round" label="Level or match completion" description="Increase enemy difficulty when a level or match is completed." default="2" live="true" placement="difficulty" modes="campaign,arena">
+        <LobbySetting key="challenge_round" label="Level or match completion" description="Increase enemy difficulty after a campaign level, Arena match or Survival battery." default="2" live="true" placement="difficulty" modes="campaign,arena,survival">
             <Choice>Off</Choice>
             <Choice>Gentle</Choice>
             <Choice>Standard</Choice>

@@ -119,7 +119,7 @@ def progression_purchases(ctx):
     for region, price in enumerate((155, 155, 195, 195, 175, 175), 3):
         assert buy(p2, f"armor_{region}") == price
     assert buy(p1, "dagger") == 140
-    assert buy(p1, "sword") == 880 and buy(p1, "spear") == 1040
+    assert buy(p1, "sword") == 1040 and buy(p1, "spear") == 880
     assert view()["owned_sword"] and view()["owned_spear"] and view()["owned_dagger"]
     for key, choice in (("none", 0), ("spear", 2), ("sword", 1)):
         act(p1, "equip", key)

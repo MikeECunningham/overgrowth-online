@@ -60,7 +60,8 @@ std::string CharacterScriptGetter::GetAnimPath(const std::string &action) {
 }
 
 const std::string &CharacterScriptGetter::GetTag(const std::string &key) {
-    return character_ref->GetTag(key);
+    static const std::string empty;
+    return character_ref.valid() ? character_ref->GetTag(key) : empty;
 }
 
 char CharacterScriptGetter::GetAnimFlags(const std::string &action) {

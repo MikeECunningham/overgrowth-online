@@ -202,6 +202,7 @@ class Input {
     bool use_controller_input_;
 
     bool in_focus_;
+    bool grab_requested_ = false;
     bool grab_mouse_;
     bool invert_x_mouse_look_;
     bool invert_y_mouse_look_;
@@ -220,3 +221,4 @@ class Input {
 };
 
 void UIShowCursor(bool show);
+bool UICursorVisible();

@@ -127,5 +127,24 @@ template<> template<> void xp_test::test<5>() {
     ensure_equals("the bank cannot go into debt", wallet.held, 0.);
     ensure_equals("losses never produce a checkpoint commit", wallet.commit_serial, 0u);
 }
+template<> template<> void xp_test::test<6>() {
+    using namespace FriendlyProgression;
+    for (const RankGains curve : {kDurabilityGain, kDamageGain, kSpeedGain, kStealthGain, kLuckGain}) {
+        ensure_equals("untrained stat", curve.Total(0), 0.);
+        ensure("first rank gives the largest advertised gain", std::abs(curve.Next(0) - curve.first) < 1e-12);
+        for (int owned = 0; owned < kMaxRank * 2; ++owned) {
+            const double gain = curve.Total(owned + 1) - curve.Total(owned);
+            ensure("card gain equals the actual increase", std::abs(gain - curve.Next(owned)) < 1e-12);
+            if (owned + 1 < kMinimumGainRank)
+                ensure("the next gain decreases", curve.Next(owned) > curve.Next(owned + 1));
+            else
+                ensure_equals("all later ranks give the minimum", curve.Next(owned), curve.minimum);
+        }
+        ensure("minimum gain stays positive", curve.minimum > 0);
+    }
+    ensure("rank 20 grants a 70% chance of free upgrades", std::abs(FreeRewardChance(20) - .70) < 1e-12);
+    ensure("max personal stealth still allows detection", std::abs(StealthRangeMultiplier(kMaxRank) - .20) < 1e-6);
+    ensure("stacked personal and team ranks still allow detection", StealthRangeMultiplier(2 * kMaxRank) > 0.f);
+}
 
 }

@@ -311,18 +311,12 @@ void UIShowCursor(bool show) {
 }
 
 bool UICursorVisible() {
-    int v = SDL_ShowCursor(SDL_QUERY);
-    if (v == SDL_ENABLE) {
-        return true;
-    } else if (v == SDL_ENABLE) {
-        return false;
-    } else {
-        LOGE << "Mouse show error" << std::endl;
-        return false;
-    }
+    return SDL_ShowCursor(SDL_QUERY) == SDL_ENABLE;
 }
 
 void Input::SetGrabMouse(bool grab) {
+    grab_requested_ = grab;
+    grab = grab && in_focus_;
     if (grab_mouse_ == grab) {
         // Loading/cutscenes may hide the software cursor while the pointer is
         // already free. A pause menu still needs to restore its visibility.
@@ -331,7 +325,7 @@ void Input::SetGrabMouse(bool grab) {
         }
         return;
     }
-    if (grab && in_focus_) {
+    if (grab) {
         grab_mouse_ = true;
         Graphics::Instance()->SetWindowGrab(true);
         if (cursor != nullptr) cursor->SetVisible(false);
@@ -418,13 +412,11 @@ void Input::HandleEvent(const SDL_Event& event) {
             switch (event.window.event) {
                 case SDL_WINDOWEVENT_FOCUS_LOST:
                     in_focus_ = false;
+                    SetGrabMouse(grab_requested_);
                     break;
                 case SDL_WINDOWEVENT_FOCUS_GAINED:
-                    if (grab_mouse_) {
-                        Graphics::Instance()->SetWindowGrab(true);
-                        cursor->SetVisible(false);
-                    }
                     in_focus_ = true;
+                    SetGrabMouse(grab_requested_);
                     break;
             }
             break;
@@ -447,7 +439,9 @@ void Input::HandleEvent(const SDL_Event& event) {
                     mouse_.pos_[0] = event.motion.x;
                     mouse_.pos_[1] = event.motion.y;
                 }
-                if (grab_mouse_ && in_focus_ && (event.motion.x < 100 || event.motion.y < 100 || event.motion.x > width - 100 || event.motion.y > height - 100)) {
+                if (grab_mouse_ && in_focus_ && SDL_GetMouseFocus() == Graphics::Instance()->sdl_window_ &&
+                    event.motion.x >= 0 && event.motion.x < width && event.motion.y >= 0 && event.motion.y < height &&
+                    (event.motion.x < 100 || event.motion.y < 100 || event.motion.x > width - 100 || event.motion.y > height - 100)) {
                     PROFILER_ZONE(g_profiler_ctx, "WarpMouse");
                     SDL_WarpMouseInWindow(Graphics::Instance()->sdl_window_, width / 2, height / 2);
                 }
@@ -882,7 +876,9 @@ Mouse& Input::getMouse() {
 }
 
 void Input::UseRawInput(bool val) {
+    if (use_raw_input == val) return;
     use_raw_input = val;
+    if (grab_mouse_) SDL_SetRelativeMouseMode(val ? SDL_TRUE : SDL_FALSE);
 }
 
 void Input::StartTextInput() {
@@ -1302,7 +1298,7 @@ void Input::SetFromConfig(const Config& config) {
             CompleteGamepadBindings(category.first, bindings_);
         }
     }
-    use_raw_input = config["use_raw_input"].toNumber<bool>();
+    UseRawInput(config["use_raw_input"].toNumber<bool>());
     // Process hotkey bindings
     StrMap& binds = bindings_["bind"];
     for (StrMap::const_iterator iter = binds.begin(); iter != binds.end(); ++iter) {

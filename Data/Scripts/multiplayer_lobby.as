@@ -190,7 +190,7 @@ void DrawLobbyHint() {
     if(lobby_visible_hint == "") return;
     ImGui_PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
     ImGui_BeginTooltip();
-    ImGui_PushTextWrapPos(min(480.0f, float(GetScreenWidth()) - 48.0f));
+    ImGui_PushTextWrapPos(min(480.0f, ImGui_GetDisplaySize().x - 48.0f));
     ImGui_TextWrapped(lobby_visible_hint);
     ImGui_PopTextWrapPos();
     ImGui_EndTooltip();
@@ -198,7 +198,7 @@ void DrawLobbyHint() {
 }
 
 string LobbyInitialForm() {
-    return GetScreenWidth() >= 1100 || small_panel == 1 ? "Players" :
+    return ImGui_GetDisplaySize().x >= 1100.0f || small_panel == 1 ? "Players" :
            small_panel == 0 ? "Mode and map" : small_panel == 2 ? "Mode settings" : "Hosting options";
 }
 
@@ -242,7 +242,7 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
             string mode_hint = mode.build ? "Create or edit a shared level." :
                 "Choose " + mode.title + ", then pick a map. Host only.";
             LobbyHint(mode_hint);
-            picked = MPButton(LobbyCardTitle(mode.title), vec2(card_width + 8.0f, 48.0f * scale)) || picked;
+            picked = MPButton(mode.title, vec2(card_width + 8.0f, 48.0f * scale)) || picked;
             LobbyHint(mode_hint);
             if(picked && LobbyChooseMode(int(i))) {
                 show_mode_cards = false;
@@ -323,16 +323,19 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     LobbyHint("Press any button on an unassigned controller to join. Keyboard users press Enter.");
     ImGui_Spacing();
     int locals = LocalPlayers();
+    bool show_handicaps = LobbyGetMode() != "" && !LobbyGetBuildMode() && LobbyGetModeSetting("progression") != 0;
     if(fixed_footer) ImGui_BeginChild("player_list", vec2(0), true);
     MPWindowScale(1.0f);
     ImGui_PushStyleVar(ImGuiStyleVar_ItemSpacing, vec2(10.0f, 5.0f));
     if(focus_lobby_form && LobbyInitialForm() == "Players") {
         ImGui_SetWindowFocus();
     }
-    ImGui_Columns(3, false);
     float width = ImGui_GetContentRegionAvailWidth();
-    ImGui_SetColumnWidth(0, max(130.0f, size.x * 0.45f));
-    ImGui_SetColumnWidth(1, max(70.0f, size.x * 0.22f));
+    ImGui_Columns(3, false);
+    float team_width = min(width * 0.26f, 120.0f * scale);
+    float screen_width = min(width * 0.25f, 110.0f * scale);
+    ImGui_SetColumnWidth(0, width - team_width - screen_width);
+    ImGui_SetColumnWidth(1, team_width);
     ImGui_TextColored(kLobbyDim, "Slot / Player");
     ImGui_NextColumn();
     ImGui_TextColored(kLobbyDim, "Team");
@@ -353,23 +356,23 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     for(uint i = 0; i < lobby_players.length(); ++i) {
         LobbyPlayer player = lobby_players[i];
         ImGui_PushID(int(player.id));
-        ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), player.slot_index + " / " + LobbyShortName(player.name));
+        ImGui_PushTextWrapPos(0.0f);
+        ImGui_TextColored(player.local ? kLobbyTitle : vec4(0.9f, 0.9f, 0.9f, 1.0f), player.slot_index + " / " + player.name);
+        ImGui_PopTextWrapPos();
         LobbyHint(player.bot ? "AI player with a name and team. No controller or screen required." :
             player.local ? "Local player. This computer's leader manages their name and screen." :
                            "Remote player. Their local leader manages their name and screens.");
-        int info_lines = 2;
         string association = player.placeholder ? "Available player slot" : player.bot ? "Bot" : (player.local ? "Couch P" : "Remote P") + (player.local_index + 1);
         if(player.host || player.leader) {
             association += "\n" + (player.host && player.leader ? "Host / Leader" : player.host ? "Host" : "Local leader");
-            ++info_lines;
         }
         if(!player.bot && !player.placeholder && !player.connected) {
             association += "\nDisconnected";
-            ++info_lines;
         }
         ImGui_TextColored(kLobbyDim, association);
         LobbyHint("Host: match decisions. Local leader: this computer's screens, names, and players.");
         array<string> slot_types = {"Bot", "Player"};
+        float selector_y = ImGui_GetCursorScreenPos().y;
         int slot_type = player.bot ? 0 : 1;
         ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy() || (!player.bot && !player.placeholder));
         ImGui_PushItemWidth(-1.0f);
@@ -381,7 +384,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         array<uint> assign_ids;
         for(uint who = 0; who < lobby_players.length(); ++who) {
             if(!lobby_players[who].bot && !lobby_players[who].placeholder && lobby_players[who].id != player.id) {
-                assign_names.insertLast(LobbyShortName(lobby_players[who].name) + " / slot " + lobby_players[who].slot_index);
+                assign_names.insertLast(lobby_players[who].name + " / slot " + lobby_players[who].slot_index);
                 assign_ids.insertLast(lobby_players[who].id);
             }
         }
@@ -392,6 +395,13 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         ImGui_PopItemWidth();
         ImGui_EndDisabled();
         LobbyHint("Move this human into the slot's upgraded unit. Occupants swap; unit upgrades stay with their slots.");
+        if(show_handicaps && !player.bot) {
+            bool handicap = LobbyGetPlayerHandicap(player.id);
+            ImGui_BeginDisabled(!LobbyCanSetPlayerHandicap(player.id));
+            if(MPCheckbox("XP handicap", handicap)) LobbySetPlayerHandicap(player.id, handicap);
+            ImGui_EndDisabled();
+            LobbyHint("Defeat awards committed XP to " + LobbyShortName(player.name) + " (slot " + player.slot_index + "). Shared upgrades credit their team's wallet.");
+        }
         if(player.local || player.bot || player.placeholder) {
             ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanRenamePlayer(player.id));
             float action_width = ImGui_GetContentRegionAvailWidth();
@@ -434,7 +444,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         }
         ImGui_NextColumn();
         // Align the Team and Screen selectors so Left/Right stays on this row.
-        ImGui_Dummy(vec2(0.0f, float(info_lines) * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
+        ImGui_Dummy(vec2(0.0f, max(0.0f, selector_y - ImGui_GetCursorScreenPos().y - 5.0f)));
         int team = min(int(teams.length()) - 1, max(0, player.team - 1));
         ImGui_BeginDisabled(LobbyMigrationBusy() || !LobbyCanSetPlayerTeam(player.id));
         ImGui_PushItemWidth(-1.0f);
@@ -445,7 +455,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
         ImGui_PopItemWidth();
         ImGui_EndDisabled();
         ImGui_NextColumn();
-        ImGui_Dummy(vec2(0.0f, float(info_lines) * ImGui_GetTextLineHeightWithSpacing() - 5.0f));
+        ImGui_Dummy(vec2(0.0f, max(0.0f, selector_y - ImGui_GetCursorScreenPos().y - 5.0f)));
         if(player.bot || player.placeholder) {
             ImGui_TextColored(kLobbyDim, "None");
             LobbyHint("Bots do not need screens.");
@@ -508,7 +518,14 @@ void DrawModLobbyOptions() {
         array<string>@ choices = option.Choices();
         int value = LobbyGetModeSetting(option.key);
         ImGui_PushID(option.key);
-        if(choices.length() == 2 && choices[0] == "Off" && choices[1] == "On") {
+        if(choices.length() == 0) {
+            ImGui_TextColored(kLobbyDim, option.label);
+            ImGui_PushItemWidth(-1.0f);
+            if(ImGui_InputInt("##seed", value, 0, 0)) LobbySetModeSetting(option.key, max(0, value));
+            ImGui_PopItemWidth();
+            LobbyHint(option.description);
+            if(MPButton("Randomize seed", vec2(-1, 32 * mp_window_scale))) LobbySetModeSetting(option.key, LobbyNewSeed(value));
+        } else if(choices.length() == 2 && choices[0] == "Off" && choices[1] == "On") {
             bool enabled = value != 0;
             if(MPCheckbox(option.label, enabled)) LobbySetModeSetting(option.key, enabled ? 1 : 0);
         } else {
@@ -622,9 +639,11 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale, 
     if(show_mode_settings) {
         bool force_teams = LobbyGetForceTeams();
         if(MPCheckbox("Force lobby teams", force_teams)) LobbySetForceTeams(force_teams);
-        LobbyHint("Use lobby teams in Campaign and Arena. Sandbox and Freeplay always use lobby teams.");
+        LobbyHint("Use lobby teams in Campaign and Arena. Sandbox, Freeplay and Survival always use lobby teams.");
         string team_hint = "This mode uses lobby teams.";
-        if(LobbyModeIsCampaign())
+        if(LobbyGetMode() == "survival")
+            team_hint = "Each team faces its own enemy waves.";
+        else if(LobbyModeIsCampaign())
             team_hint = force_teams ? "Campaign teams ally with NPC factions; extras are hostile." : "The campaign keeps players allied.";
         else if(LobbyModeIsArena())
             team_hint = force_teams ? "Lobby teams override the mode's teams." : "Arena chooses team/FFA lineups each match.";
@@ -647,9 +666,7 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale, 
             LobbyHint("Show this lobby in the Steam browser. Off: friends only. IP connections still work.");
         }
         ImGui_Separator();
-        ImGui_TextWrapped("Characters: Turner, with team colors.");
-        LobbyHint("Players use team colors; the host keeps Turner's brown fur.");
-        ImGui_TextColored(kLobbyDim, "The lobby host keeps Turner's brown fur.");
+        ImGui_TextWrapped("Players use team colors. The host uses brown fur.");
         if(!LobbyIsLocalOnly() && Online_HasFriendInviteOverlay() && MPButton("Invite friends", vec2(-1.0f, 36.0f * scale))) {
             Online_ActivateInviteDialog();
         }
@@ -657,8 +674,7 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale, 
     } else {
         ImGui_TextWrapped("The host chooses visibility and session permissions.");
         ImGui_Spacing();
-        ImGui_TextWrapped("Characters: Turner, with team colors. The lobby host keeps Turner's brown fur.");
-        LobbyHint("Players use team colors; the host keeps Turner's brown fur.");
+        ImGui_TextWrapped("Players use team colors. The host uses brown fur.");
     }
     ImGui_EndDisabled();
     ImGui_PopTextWrapPos();
@@ -669,8 +685,9 @@ void DrawNameForm(float scale) {
     if(editing_name < 0) {
         return;
     }
-    float width = min(440.0f * scale, float(GetScreenWidth()) - 48.0f);
-    ImGui_SetNextWindowPos(vec2((float(GetScreenWidth()) - width) * 0.5f, float(GetScreenHeight()) * 0.30f), ImGuiSetCond_Always);
+    vec2 display = ImGui_GetDisplaySize();
+    float width = min(440.0f * scale, display.x - 48.0f);
+    ImGui_SetNextWindowPos(vec2((display.x - width) * 0.5f, display.y * 0.30f), ImGuiSetCond_Always);
     ImGui_SetNextWindowSize(vec2(width, 0.0f), ImGuiSetCond_Always);
     bool bot_name = false;
     for(uint i = 0; i < lobby_players.length(); ++i) if(lobby_players[i].id == uint(editing_name)) bot_name = lobby_players[i].bot;
@@ -734,12 +751,12 @@ void DrawGUI() {
     }
     lobby_visible_hint = "";
     MPStyleBegin();
-    float sw = float(GetScreenWidth());
-    float sh = float(GetScreenHeight());
+    vec2 display = ImGui_GetDisplaySize();
+    float sw = display.x, sh = display.y;
     float scale = sh >= 1000.0f ? 1.15f : 1.0f;
     float margin = sw >= 1000.0f ? 24.0f : 16.0f;
     float gap = 16.0f;
-    float width = min(1720.0f, sw - margin * 2.0f);
+    float width = sw - margin * 2.0f;
     float x = (sw - width) * 0.5f;
     float top = max(24.0f, sh * 0.06f);
     float header_h = 120.0f * scale;
@@ -759,7 +776,7 @@ void DrawGUI() {
     ImGui_BeginDisabled(lobby_difficulty_open);
     LobbyForm("Lobby", vec2(x, top), vec2(width, header_h), scale, false);
     ImGui_Columns(2, false);
-    ImGui_SetColumnWidth(0, max(250.0f, width - 340.0f * scale));
+    ImGui_SetColumnWidth(0, width - min(340.0f * scale, width * 0.44f));
     ImGui_PushMenuFont(true);
     ImGui_TextColored(kLobbyTitle, Online_IsHosting() ? "Host lobby" : "Joined lobby");
     ImGui_PopFont();
@@ -782,15 +799,21 @@ void DrawGUI() {
     LobbyEndForm();
 
     if(sw >= 1100.0f) {
-        float left_w = width * 0.31f;
-        float right_w = width * 0.23f;
+        bool show_mode_settings = LobbyModeDetailsVisible();
+        bool four_columns = show_mode_settings && width >= 1580.0f * scale;
+        float left_w = width * (four_columns ? 0.22f : 0.28f);
+        float right_w = width * (four_columns ? 0.44f : 0.32f);
         float players_w = width - left_w - right_w - gap * 2.0f;
         DrawModeForm(vec2(x, body_y), vec2(left_w, body_h), scale);
         DrawPlayersForm(vec2(x + left_w + gap, body_y), vec2(players_w, body_h), scale);
         float right_x = x + left_w + gap + players_w + gap;
         float hosting_y = body_y;
-        bool show_mode_settings = LobbyModeDetailsVisible();
-        if(show_mode_settings) {
+        if(four_columns) {
+            float settings_w = (right_w - gap) * 0.53f;
+            DrawModeSettingsForm(vec2(right_x, body_y), vec2(settings_w, body_h), scale);
+            right_x += settings_w + gap;
+            right_w -= settings_w + gap;
+        } else if(show_mode_settings) {
             float settings_h = (body_h - gap) * 0.56f;
             DrawModeSettingsForm(vec2(right_x, body_y), vec2(right_w, settings_h), scale);
             hosting_y += settings_h + gap;
@@ -799,18 +822,26 @@ void DrawGUI() {
     } else {
         // Keep every form comfortably wide on smaller windows; the tab row
         // switches complete forms instead of squeezing their controls together.
-        bool compact_tabs = sw < 800.0f;
-        float tab_h = compact_tabs ? 68.0f : 66.0f;
-        float tab_button_h = compact_tabs ? 36.0f : 28.0f;
-        LobbyForm("##lobby_sections", vec2(x, body_y), vec2(width, tab_h), scale, false);
+        bool two_columns = sw >= 900.0f;
+        float tab_area = two_columns ? (width - gap) * 0.51f : width;
+        if(two_columns) {
+            if(small_panel == 1) small_panel = 0;
+            DrawPlayersForm(vec2(x + tab_area + gap, body_y), vec2(width - tab_area - gap, body_h), scale);
+        }
+        float tab_h = 68.0f;
+        float tab_button_h = 36.0f;
+        LobbyForm("##lobby_sections", vec2(x, body_y), vec2(tab_area, tab_h), scale, false);
         bool show_mode_settings = LobbyModeDetailsVisible();
-        int tab_count = show_mode_settings ? 4 : 3;
+        int tab_count = (show_mode_settings ? 4 : 3) - (two_columns ? 1 : 0);
         float tab_w = (ImGui_GetContentRegionAvailWidth() - (tab_count - 1) * 10.0f) / tab_count;
+        bool compact_tabs = tab_w < 220.0f * scale;
         if(MPButton(compact_tabs ? "Modes" : "Mode and map", vec2(tab_w, tab_button_h))) { small_panel = 0; focus_lobby_form = true; }
         LobbyHint("Choose the game mode and map. Host only.");
-        ImGui_SameLine();
-        if(MPButton("Players", vec2(tab_w, tab_button_h))) { small_panel = 1; focus_lobby_form = true; }
-        LobbyHint("Manage players, names, teams, and this computer's screens.");
+        if(!two_columns) {
+            ImGui_SameLine();
+            if(MPButton("Players", vec2(tab_w, tab_button_h))) { small_panel = 1; focus_lobby_form = true; }
+            LobbyHint("Manage players, names, teams, and this computer's screens.");
+        }
         if(show_mode_settings) {
             ImGui_SameLine();
             if(MPButton(compact_tabs ? "Rules" : "Mode settings", vec2(tab_w, tab_button_h))) { small_panel = 2; focus_lobby_form = true; }
@@ -821,7 +852,7 @@ void DrawGUI() {
         LobbyHint("Manage session permissions, invitations, and slots.");
         LobbyEndForm();
         vec2 panel_position(x, body_y + tab_h + gap);
-        vec2 panel_size(width, body_h - tab_h - gap);
+        vec2 panel_size(tab_area, body_h - tab_h - gap);
         if(small_panel == 0) { DrawModeForm(panel_position, panel_size, scale); }
         else if(small_panel == 1) { DrawPlayersForm(panel_position, panel_size, scale); }
         else if(small_panel == 2) { DrawModeSettingsForm(panel_position, panel_size, scale); }

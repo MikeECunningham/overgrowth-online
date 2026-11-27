@@ -21,7 +21,10 @@
 //
 //-----------------------------------------------------------------------------
 #include "mouse.h"
+#include "window_pointer.h"
 
+#include <Graphics/graphics.h>
+#include <Testing/test_bridge.h>
 #include <Threading/sdl_wrapper.h>
 #include <Logging/logdata.h>
 
@@ -29,6 +32,41 @@
 
 #include <memory>
 #include <iostream>
+
+WindowPointer ReadWindowPointer() {
+    WindowPointer pointer;
+    SDL_Window* window = Graphics::Instance()->sdl_window_;
+    if (!window) return pointer;
+    pointer.buttons = SDL_GetMouseState(&pointer.x, &pointer.y);
+    if (TestBridgePointerState(pointer.x, pointer.y, pointer.buttons)) {
+        pointer.available = true;
+        return pointer;
+    }
+    const bool captured = SDL_GetWindowFlags(window) & SDL_WINDOW_MOUSE_CAPTURE;
+    pointer.available = SDL_GetMouseFocus() == window || captured;
+    // SDL's last motion event can still be at the edge while the drag is on
+    // another screen. These backends provide desktop coordinates during capture.
+    const char* driver = SDL_GetCurrentVideoDriver();
+    if (captured && driver && (!SDL_strcmp(driver, "x11") || !SDL_strcmp(driver, "windows") || !SDL_strcmp(driver, "cocoa"))) {
+        int wx, wy;
+        SDL_GetWindowPosition(window, &wx, &wy);
+        pointer.buttons = SDL_GetGlobalMouseState(&pointer.x, &pointer.y);
+        pointer.x -= wx;
+        pointer.y -= wy;
+    }
+    return pointer;
+}
+
+bool WindowPointer::MenuPosition(vec2& position) const {
+    if (!available) return false;
+    Graphics* graphics = Graphics::Instance();
+    int width, height;
+    SDL_GetWindowSize(graphics->sdl_window_, &width, &height);
+    if (width <= 0 || height <= 0) return false;
+    position = vec2(float(x) * graphics->window_dims[0] / width,
+                    float(y) * graphics->window_dims[1] / height);
+    return true;
+}
 
 Mouse::Mouse()
     : button_input_buffer_sequence_counter(0), button_input_buffer_count(0) {

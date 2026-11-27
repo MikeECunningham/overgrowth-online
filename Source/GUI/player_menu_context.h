@@ -17,7 +17,8 @@ int Width();
 int Height();
 bool AllowsMouse();
 bool AllowsKeyboard();
-vec2 MouseTopLeft();
+bool LocalMousePosition(const Context& viewport, int window_height, vec2& position, bool dragging);
+bool MouseTopLeft(vec2& position, bool dragging);
 
 class Scope {
     struct Saved;

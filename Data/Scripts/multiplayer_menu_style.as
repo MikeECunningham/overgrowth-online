@@ -154,14 +154,12 @@ bool MPButton(const string &in label, const vec2 &in size = vec2(0), bool promin
 
 bool MPCheckbox(const string &in label, bool &inout checked) {
     ImGui_PushMenuFont(true);
-    float fit = min(1.0f, (ImGui_GetContentRegionAvailWidth() - 38.0f) /
-                    max(1.0f, ImGui_CalcTextSize(label).x));
-    ImGui_SetWindowFontScale(mp_window_scale * kMPTextScale * max(0.5f, fit));
+    string text = MPWrapLabel(label, max(30.0f, ImGui_GetContentRegionAvailWidth() - ImGui_GetFrameHeight() - 10.0f));
     ImGui_PushStyleColor(ImGuiCol_FrameBg, vec4(0));
     ImGui_PushStyleColor(ImGuiCol_FrameBgHovered, vec4(0));
     ImGui_PushStyleColor(ImGuiCol_FrameBgActive, vec4(0));
     ImGui_PushStyleColor(ImGuiCol_CheckMark, vec4(0));
-    bool changed = ImGui_Checkbox(label, checked);
+    bool changed = ImGui_Checkbox(text == label ? label : text + "###" + label, checked);
     ImGui_PopStyleColor(4);
     vec2 a = ImGui_GetItemRectMin();
     float side = ImGui_GetTextLineHeight() + 10.0f;
@@ -169,7 +167,6 @@ bool MPCheckbox(const string &in label, bool &inout checked) {
     if(checked) {
         ImDrawList_AddImage(mp_checkmark, a, a + vec2(side), vec2(0), vec2(1), ImGui_GetColorU32(vec4(1)));
     }
-    ImGui_SetWindowFontScale(mp_window_scale * kMPTextScale);
     ImGui_PopFont();
     if(changed) { PlaySoundGroup("Data/Sounds/hit/hit_hard.xml"); }
     return changed;
@@ -184,10 +181,14 @@ bool MPBeginCombo(const string &in label, const string &in preview, float left_p
     bool hovered = mp_pointer_active && ImGui_IsWindowHovered() && ImGui_IsMouseHoveringRect(a, b, true);
     ImDrawList_AddImage(mp_dropdown, a, b, vec2(0), vec2(1), ImGui_GetColorU32(vec4(1)));
     if(hovered) ImDrawList_AddImage(mp_diamond_light, a, b, vec2(0), vec2(1), ImGui_GetColorU32(vec4(1, 1, 1, 0.12f)));
+    float side = min(22.0f * mp_window_scale, (b.y - a.y) * 0.65f);
+    float text_space = max(1.0f, b.x - a.x - left_padding - side - 18.0f);
+    float fit = min(1.0f, text_space / max(1.0f, ImGui_CalcTextSize(preview).x));
+    ImGui_SetWindowFontScale(mp_window_scale * kMPTextScale * fit);
     vec2 text_size = ImGui_CalcTextSize(preview);
     ImDrawList_AddText(a + vec2(left_padding, (b.y - a.y - text_size.y) * 0.5f),
         ImGui_GetColorU32(hovered ? vec4(1) : vec4(0.8f, 0.8f, 0.8f, 1)), preview);
-    float side = min(22.0f * mp_window_scale, (b.y - a.y) * 0.65f);
+    MPWindowScale(mp_window_scale);
     vec2 arrow_at(b.x - side - 12.0f, a.y + (b.y - a.y - side) * 0.5f);
     ImDrawList_AddImageQuad(mp_arrow, arrow_at, arrow_at + vec2(side, 0), arrow_at + vec2(side), arrow_at + vec2(0, side),
         vec2(1, 0), vec2(1, 1), vec2(0, 1), vec2(0, 0), ImGui_GetColorU32(vec4(0.8f, 0.8f, 0.8f, 1)));
@@ -217,15 +218,16 @@ bool MPComboOption(const string &in label, bool selected, float left_padding = 1
     ImGui_PushStyleColor(ImGuiCol_Header, vec4(0));
     ImGui_PushStyleColor(ImGuiCol_HeaderHovered, vec4(0));
     ImGui_PushStyleColor(ImGuiCol_HeaderActive, vec4(0));
-    bool pressed = ImGui_Selectable(label, selected, 0, vec2(0, 36.0f * mp_window_scale));
+    string text = MPWrapLabel(label, max(30.0f, ImGui_GetContentRegionAvailWidth() - left_padding - 8.0f));
+    vec2 size = ImGui_CalcTextSize(text);
+    bool pressed = ImGui_Selectable(label, selected, 0, vec2(0, max(36.0f * mp_window_scale, size.y + 8.0f)));
     ImGui_PopStyleColor(4);
     vec2 a = ImGui_GetItemRectMin(), b = ImGui_GetItemRectMax();
     bool hovered = ImGui_IsItemHovered();
     if(hovered) mp_frame_hover = ImGui_GetID(label);
     if(hovered || selected) ImDrawList_AddImage(mp_dropdown, a, b, vec2(0), vec2(1), ImGui_GetColorU32(vec4(1)));
-    vec2 size = ImGui_CalcTextSize(label.split("##")[0]);
     ImDrawList_AddText(a + vec2(left_padding, (b.y - a.y - size.y) * 0.5f),
-        ImGui_GetColorU32(hovered || selected ? vec4(1) : vec4(0.8f, 0.8f, 0.8f, 1)), label.split("##")[0]);
+        ImGui_GetColorU32(hovered || selected ? vec4(1) : vec4(0.8f, 0.8f, 0.8f, 1)), text);
     if(pressed) PlaySoundGroup("Data/Sounds/hit/hit_hard.xml");
     return pressed;
 }

@@ -63,6 +63,7 @@ struct TextElement {
 class Level : public ASNetworkCallback {
    private:
     SceneGraph* scenegraph;
+    bool checking_script_focus_ = false;
 
    public:
     const static char* DEFAULT_ENEMY_SCRIPT;   // = "enemycontrol.as";
@@ -99,6 +100,7 @@ class Level : public ASNetworkCallback {
     };
 
     std::vector<HookedASContext> as_contexts_;
+    bool showing_results = false;
 
     typedef std::set<void*> CollisionPtrSet;
     typedef std::map<void*, CollisionPtrSet> CollisionPtrMap;

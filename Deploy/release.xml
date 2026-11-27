@@ -75,6 +75,7 @@
 	-->
         <Item type="generic" recursive="true">Mods/og-online-scaling</Item>
         <Item type="generic" recursive="true">Mods/og-online-progression</Item>
+        <Item type="generic" recursive="true">Mods/og-online-survival</Item>
         <Item type="generic" recursive="true">Mods/wolfire_arena</Item>
         <Item type="generic" recursive="true">Mods/wolfire_overgrowth_core</Item>
         <Item type="generic" recursive="true">Mods/wolfire_sandbox_levels</Item>

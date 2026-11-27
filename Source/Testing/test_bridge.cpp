@@ -352,6 +352,8 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         if (ImGui::GetCurrentContext()) {
             const ImGuiContext& gui = *ImGui::GetCurrentContext();
             out["ui_nav_id"] = gui.NavId;
+            out["imgui_draws_cursor"] = gui.IO.MouseDrawCursor;
+            out["imgui_wants_mouse"] = gui.IO.WantCaptureMouse;
             out["ui_nav_window_id"] = gui.NavWindow ? gui.NavWindow->ID : 0;
             out["ui_nav_window"] = gui.NavWindow ? gui.NavWindow->Name : "";
         }
@@ -360,6 +362,7 @@ void TestBridge::Dispatch(const std::string& cmd, const Json::Value& req, Json::
         out["waiting_for_input"] = engine->waiting_for_input_;
         out["grab_mouse"] = Input::Instance()->GetGrabMouse();  // (the editor's cursor checks)
         out["cursor_visible"] = engine->CursorVisible();
+        out["desktop_cursor"] = UICursorVisible();
         out["paused"] = engine->paused;
         out["level"] = loaded ? sg->level_path_.GetOriginalPath() : "";
         out["my_avatar"] = loaded ? MyAvatar(engine) : -1;

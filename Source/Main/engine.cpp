@@ -774,8 +774,6 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
                     case SDL_WINDOWEVENT:
                         switch (event.window.event) {
                             case SDL_WINDOWEVENT_FOCUS_LOST:
-                                graphics->SetWindowGrab(false);
-                                cursor.SetVisible(true);
                                 input->HandleEvent(event);
                                 break;
                             case SDL_WINDOWEVENT_FOCUS_GAINED:
@@ -2081,7 +2079,7 @@ void Engine::Update() {
                         if (!GetCurrentCampaign() && Online::Instance()->CanAdoptLocalSession() && !SessionSaves::Loading())
                             SessionMods::Clear();
                         Input::Instance()->SetGrabMouse(false);
-                        UIShowCursor(0);
+                        UIShowCursor(true);
                         scriptable_menu_ = new ScriptableUI((void*)this, &Engine::StaticScriptableUICallback);
                         ASData as_data;
                         as_data.scenegraph = scenegraph_;
@@ -4559,7 +4557,13 @@ void Engine::Draw() {
         gui.AddDebugText("slow", buf, 0.0f);
     }
 
-    DrawImGui(graphics, scenegraph_, &gui, GetAssetManager(), Engine::Instance(), cursor.visible);
+    // Free menus share the desktop pointer. Its hotspot and visibility remain
+    // under the window system's control during captured drags across an edge.
+    const bool menu_pointer = !g_draw_vr && !Input::Instance()->GetGrabMouse() &&
+        (scriptable_menu_ || HasPlayerMenus() || FriendlyProgression::ShopOpen() || check_save_level_changes_dialog_is_showing);
+    const bool desktop_pointer = (cursor.visible && menu_pointer) || graphics->media_mode();
+    if (UICursorVisible() != desktop_pointer) UIShowCursor(desktop_pointer);
+    DrawImGui(graphics, scenegraph_, &gui, GetAssetManager(), Engine::Instance(), cursor.visible && !menu_pointer);
     FrameTimers::DrawOverlay();
 
     if (check_save_level_changes_dialog_is_showing || !scenegraph_) {
@@ -4575,7 +4579,7 @@ void Engine::Draw() {
         }
         RenderImGui();
         ImGui_ImplSdlGL3_RenderDrawLists(ImGui::GetDrawData());
-        if (!WantMouseImGui()) {
+        if (!menu_pointer && !WantMouseImGui()) {
             cursor.Draw();
         }
 
@@ -5034,7 +5038,7 @@ void Engine::Draw() {
                 RenderImGui();
                 ImGui_ImplSdlGL3_RenderDrawLists(ImGui::GetDrawData());
             }
-            if (!WantMouseImGui()) {
+            if (!menu_pointer && !WantMouseImGui()) {
                 PROFILER_GPU_ZONE(g_profiler_ctx, "Draw cursor");
                 cursor.Draw();
             }
@@ -6490,6 +6494,20 @@ bool Engine::PlayerHasMenu(int input_id) const {
 
 bool Engine::HasPlayerMenus() const {
     return player_menus_ && player_menus_->AnyOpen();
+}
+
+bool Engine::GameplayOwnsMouse() const {
+    if (!level_loaded_ || waiting_for_input_ || check_save_level_changes_dialog_is_showing ||
+        current_engine_state_.type == kEngineScriptableUIState ||
+        (Online::Instance()->IsActive() && Online::Instance()->LobbyWaiting()) ||
+        !scenegraph_ || !scenegraph_->map_editor || scenegraph_->map_editor->state_ != MapEditor::kInGame ||
+        FriendlyProgression::ShopOpen()) return false;
+
+    Input* input = Input::Instance();
+    const int keyboard = input->LocalKeyboardPlayerIndex();
+    if (keyboard < 0 && HasPlayerMenus()) return false;
+    if (keyboard >= 0 && player_menus_ && player_menus_->IsOpen(input->GetLocalPlayerInputID(keyboard))) return false;
+    return scenegraph_->level && !scenegraph_->level->HasScriptFocus();
 }
 
 void Engine::ReturnToLobby() {

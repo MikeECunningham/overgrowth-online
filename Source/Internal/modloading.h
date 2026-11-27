@@ -71,6 +71,9 @@ class ModInstance {
     struct LobbySetting {
         std::string key, label, description, modes, depends_on, placement;
         std::vector<std::string> choices;
+        size_t all_mode_choices = 0;
+        size_t ChoiceCount(bool survival) const { return survival ? choices.size() : all_mode_choices; }
+        bool IsSeed() const { return choices.empty(); }
         int default_value = 0;
         bool live = false;
     };

@@ -66,6 +66,9 @@ std::string Key(Online* online, const std::string& key) {
     return (lap ? "loop" + std::to_string(lap) + "|" : "") + online->level_name + "|" + key;
 }
 bool SampleWipes(Online* online, ChallengeRuntimeState& state) {
+    // Survival can have several independent teams and overlapping waves.
+    // Its wave director reports the loss after the last team falls.
+    if (online->IsSurvivalMode()) return false;
     SceneGraph* graph = Engine::Instance()->GetSceneGraph();
     MovementObject* reference = ChallengeActor(graph, online->ChallengeReferenceAvatar());
     if (!reference) return false;
@@ -121,7 +124,7 @@ void Online::CaptureEnemyDifficulty(bool new_match) {
     sample.base = std::max(0.f, std::min(1.f, config["game_difficulty"].toNumber<float>()));
     if (DifficultyScalingEnabled()) {
         sample.pressure = new_match ? ModeChallengeGeneralPressure() : ModeChallengePressure();
-        sample.stats = CoopCampaign() && config["campaign_mp_scaling"].toBool();
+        sample.stats = (CoopCampaign() || IsSurvivalMode()) && config["campaign_mp_scaling"].toBool();
         sample.ai = config["campaign_ai_scaling"].toBool();
         sample.ai_rate = std::max(0, std::min(4, config["campaign_ai_scaling_rate"].toNumber<int>()));
         sample.ai = sample.ai && sample.ai_rate != 0;
@@ -190,7 +193,7 @@ void Online::DescribeChallengeHUD(Json::Value& result) const {
     result["completion_award"] = preview.completion_award; result["wipe_award"] = preview.wipe_award;
     result["rates"]["time"] = settings.time_rate; result["rates"]["completion"] = settings.round_rate;
     result["rates"]["performance"] = settings.performance_rate;
-    result["completion_supported"] = session && (IsCampaignPlayMode() || lobby_mode_ == "com-wolfire-arena");
+    result["completion_supported"] = session && (IsCampaignPlayMode() || lobby_mode_ == "com-wolfire-arena" || IsSurvivalMode());
     result["preview_basis"] = preview.pending ? "After the current win; no extra time, party defeat or level/match award" : "Same pressure; no unfinished encounter award";
     Engine* engine = Engine::Instance();
     SceneGraph* graph = engine->GetSceneGraph();
@@ -217,6 +220,16 @@ void Online::ChallengeEncounterBegin(const std::string& key) {
         mode_challenge_state->restored_foes.clear();
     }
     mode_challenge_state->encounter = incoming;
+    if (IsSurvivalMode()) mode_challenge_state->wipe_tracker.latched = false;
+}
+void Online::ChallengeEncounterWipe(const std::string& key) {
+    if (!Playable(this) || !IsSurvivalMode() || key.empty() || key.size() > 512) return;
+    if (!mode_challenge_state) ResetModeChallenge();
+    auto& state = *mode_challenge_state;
+    if (state.wipe_tracker.latched) return;
+    state.wipe_tracker.latched = true;
+    state.encounter = Key(this, key);
+    if (state.progress.Wipe("wipe:" + std::to_string(++state.wipe_serial), state.encounter, Settings(this))) BroadcastLobby();
 }
 void Online::ChallengeEncounterWin(const std::string& key) {
     if (!Playable(this) || key.empty() || key.size() > 512) return;
@@ -227,7 +240,7 @@ void Online::ChallengeEncounterWin(const std::string& key) {
 }
 void Online::ChallengeCompletion(const std::string& key) {
     if (!Playable(this) || key.empty() || key.size() > 512) return;
-    if (!IsCampaignPlayMode() && lobby_mode_ != "com-wolfire-arena") return;
+    if (!IsCampaignPlayMode() && lobby_mode_ != "com-wolfire-arena" && !IsSurvivalMode()) return;
     if (!mode_challenge_state) ResetModeChallenge();
     SampleWipes(this, *mode_challenge_state);
     if (mode_challenge_state->progress.Completion(Key(this, key), Settings(this))) BroadcastLobby();
@@ -259,7 +272,7 @@ void Online::UpdateModeChallenge(SceneGraph* graph) {
     }
     state.progress.Advance(elapsed, settings);
     // Modes without authored round/goal events use the current combat group.
-    bool authored = false;
+    bool authored = IsSurvivalMode();
     if (IsCampaignPlayMode()) for (Object* object : graph->hotspots_)
         if (static_cast<Hotspot*>(object)->GetScriptFile().find("overgrowth_level") != std::string::npos) { authored = true; break; }
     const auto encounter = state.progress.Data().encounters.find(state.encounter);

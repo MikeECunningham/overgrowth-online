@@ -3,6 +3,7 @@
 #include <Graphics/graphics.h>
 #include <Internal/config.h>
 #include <UserInput/input.h>
+#include <UserInput/window_pointer.h>
 #include <algorithm>
 
 namespace PlayerMenuUI {
@@ -13,14 +14,30 @@ int Width() { return current ? current->width : Graphics::Instance()->window_dim
 int Height() { return current ? current->height : Graphics::Instance()->window_dims[1]; }
 bool AllowsMouse() { return !current || current->mouse_enabled; }
 bool AllowsKeyboard() { return !current || current->local_index == Input::Instance()->LocalKeyboardPlayerIndex(); }
-vec2 MouseTopLeft() {
-    const Mouse& mouse = Input::Instance()->getMouse();
-    if (!current) return vec2(static_cast<float>(mouse.pos_[0]), static_cast<float>(mouse.pos_[1]));
-    if (!AllowsMouse()) return vec2(-100000.0f);
-    const int top = Graphics::Instance()->window_dims[1] - current->y - current->height;
-    const int x = mouse.pos_[0] - current->x, y = mouse.pos_[1] - top;
-    if (x < 0 || y < 0 || x >= current->width || y >= current->height) return vec2(-100000.0f);
-    return vec2(static_cast<float>(x), static_cast<float>(y));
+bool LocalMousePosition(const Context& viewport, int window_height, vec2& position, bool dragging) {
+    if (!viewport.mouse_enabled || viewport.width <= 0 || viewport.height <= 0) return false;
+    position.x() -= viewport.x;
+    position.y() -= window_height - viewport.y - viewport.height;
+    if (dragging) {
+        // Keep the crossed axis just outside its edge for hit testing. A slider
+        // still tracks motion along the other axis as the pointer travels past it.
+        position.x() = std::max(-1.0f, std::min(position.x(), float(viewport.width)));
+        position.y() = std::max(-1.0f, std::min(position.y(), float(viewport.height)));
+        return true;
+    }
+    return position.x() >= 0 && position.x() < viewport.width && position.y() >= 0 && position.y() < viewport.height;
+}
+
+bool MouseTopLeft(vec2& position, bool dragging) {
+    if (!AllowsMouse()) return false;
+    Input* input = Input::Instance();
+    if (input->GetGrabMouse()) {
+        const Mouse& mouse = input->getMouse();
+        position = vec2(float(mouse.pos_[0]), float(mouse.pos_[1]));
+    } else if (!ReadWindowPointer().MenuPosition(position)) {
+        return false;
+    }
+    return !current || LocalMousePosition(*current, Graphics::Instance()->window_dims[1], position, dragging);
 }
 
 struct Scope::Saved {
@@ -36,6 +53,7 @@ struct Scope::Saved {
 };
 
 Scope::Scope(const Context& context) : saved_(new Saved()), context_(context) {
+    if (context_.width <= 0 || context_.height <= 0) context_.mouse_enabled = false;
     context_.width = std::max(1, context_.width);
     context_.height = std::max(1, context_.height);
     current = &context_;

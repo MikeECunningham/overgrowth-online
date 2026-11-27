@@ -1338,6 +1338,14 @@ def _lobby_freeplay(ctx):
 SCENARIOS["lobby_freeplay"] = _lobby_freeplay
 
 
+def _survival_lobby(ctx):
+    from .survival_lobby_suite import survival_lobby
+    return survival_lobby(ctx)
+
+
+SCENARIOS["survival_lobby"] = _survival_lobby
+
+
 def _lobby_tooltips(ctx):
     from .mode_settings_suite import lobby_tooltips
     return lobby_tooltips(ctx)
@@ -1419,6 +1427,12 @@ def _friendly_progression(ctx):
 
 
 SCENARIOS["friendly_progression"] = _friendly_progression
+
+def _progression_handicaps(ctx):
+    from .friendly_progression_suite import progression_handicaps
+    return progression_handicaps(ctx)
+
+SCENARIOS["progression_handicaps"] = _progression_handicaps
 
 
 def _progression_rewards(ctx):
@@ -1515,6 +1529,14 @@ def _progression_weapons_xp(ctx):
 SCENARIOS["progression_weapons_xp"] = _progression_weapons_xp
 
 
+def _progression_inventory_save(ctx):
+    from .progression_weapons_xp_suite import progression_inventory_save
+    return progression_inventory_save(ctx)
+
+
+SCENARIOS["progression_inventory_save"] = _progression_inventory_save
+
+
 def _ice_cliffs_retries(ctx):
     from .ice_cliffs_suite import ice_cliffs_retries
     return ice_cliffs_retries(ctx)
@@ -1607,3 +1629,27 @@ def _overhaul_solo_kill_camera(ctx):
 
 SCENARIOS["solo_kill_camera"] = _solo_kill_camera
 SCENARIOS["overhaul_solo_kill_camera"] = _overhaul_solo_kill_camera
+
+
+def _survival_waves(ctx):
+    from .survival_suite import survival_waves
+    return survival_waves(ctx)
+
+
+SCENARIOS["survival_waves"] = _survival_waves
+
+
+def _survival_rewards(ctx):
+    from .survival_rewards_suite import survival_rewards
+    return survival_rewards(ctx)
+
+
+SCENARIOS["survival_rewards"] = _survival_rewards
+
+
+def _survival_shop(ctx):
+    from .survival_shop_suite import survival_shop
+    return survival_shop(ctx)
+
+
+SCENARIOS["survival_shop"] = _survival_shop

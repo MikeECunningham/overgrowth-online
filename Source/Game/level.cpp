@@ -74,6 +74,7 @@ const char* kAdaptHookFloat = "bool AdaptLevelHookFloat(int, const string &in, f
 }
 
 void Level::Dispose() {
+    showing_results = false;
     Message("dispose_level");
 
     for (auto& hook : as_contexts_) {
@@ -137,7 +138,11 @@ void Level::Initialize(SceneGraph* scenegraph, GUI* gui) {
 
     // Overgrowth Online: online the arenas are player against player, no AI
     std::string level_script = level_specific_script_;
-    if (Online::Instance()->IsActive() && (level_script == "multi_arena.as" || level_script == "arena_level.as")) {
+    // The first initialization precedes map loading and physics creation.
+    // Start the map-independent director with the loaded scene.
+    if (scenegraph->bullet_world_ && Online::Instance()->IsActive() && Online::Instance()->IsSurvivalMode()) {
+        level_script = "survival.as";
+    } else if (Online::Instance()->IsActive() && (level_script == "multi_arena.as" || level_script == "arena_level.as")) {
         LOGI << "Overgrowth Online: " << level_script << " -> online_arena.as" << std::endl;
         level_script = "online_arena.as";
     }
@@ -218,6 +223,7 @@ void Level::Initialize(SceneGraph* scenegraph, GUI* gui) {
         AttachPhysics(ctx);
         AttachEngine(ctx);
         AttachScenegraph(ctx, scenegraph);
+        AttachNavMesh(ctx);
         AttachMessages(ctx);
         AttachStringConvert(ctx);
         AttachTextCanvasTextureToASContext(ctx);
@@ -887,6 +893,7 @@ bool ReadLevelHookFloatParameter(const ScriptParams& params, const std::string& 
 
 void Level::DefineLevelTypePublic(ASContext* as_context) {
     as_context->RegisterObjectType("Level", 0, asOBJ_REF | asOBJ_NOCOUNT);
+    as_context->RegisterObjectProperty("Level", "bool showing_results", asOFFSET(Level, showing_results));
     as_context->RegisterObjectMethod("Level", "bool AdaptHookFloatParameter(const string &in path, const string &in key)", asFUNCTION(ASAdaptHookParameter), asCALL_CDECL_OBJFIRST,
         "Supply a runtime float to another level hook's HasParam/GetFloat reads through bool AdaptLevelHookFloat(int object_id, const string &in key, float &out value).");
     as_context->RegisterObjectMethod("Level", "bool GetHookFloat(const string &in path, const string &in name, float &out value)", asFUNCTION(ASGetHookFloat), asCALL_CDECL_OBJFIRST,
@@ -977,6 +984,10 @@ bool Level::HasFocus() {
 }
 
 bool Level::HasScriptFocus() {
+    // A focus hook may request mouse capture itself. Keep capture with the UI
+    // until the outer query returns the hook's answer.
+    if (checking_script_focus_) return true;
+    checking_script_focus_ = true;
     ASArglist args;
     bool has_focus = false;
     ASArg return_arg;
@@ -984,11 +995,10 @@ bool Level::HasScriptFocus() {
     return_arg.type = _as_bool;
     for (auto& as_context : as_contexts_) {
         as_context.ctx->CallScriptFunction(as_context.as_funcs.has_focus, &args, &return_arg);
-        if (has_focus) {
-            return true;
-        }
+        if (has_focus) break;
     }
-    return false;
+    checking_script_focus_ = false;
+    return has_focus;
 }
 
 bool Level::DialogueCameraControl() {

@@ -1,6 +1,7 @@
 """Stock staff/broadsword, player stats, reward-scaled bars and Arena shop timing."""
 import json
 import math
+import shutil
 import time
 from pathlib import Path
 
@@ -162,13 +163,34 @@ def progression_weapons_xp(ctx):
     cards = {card["id"]: card for card in view(host, host_player)["cards"]}
     assert cards["staff"]["label"] == "Staff" and cards["staff"]["cost"] == 360
     assert cards["broadsword"]["label"] == "Broadsword" and cards["broadsword"]["cost"] == 1280
+    assert readout(host)["columns"] and not readout(guest)["columns"]
+    assert list(cards).index("dagger") < list(cards).index("rat_blade") < list(cards).index("staff") < list(cards).index("spear")
+    equipment_view = view(host,host_player)
+    assert len([key for key in cards if "owned_" + key in equipment_view]) == 36
+    assert cards["spear"]["cost"] == 880 and cards["sword"]["cost"] == 1040
+    for peer, player in ((host, host_player), (guest, guest_player)):
+        assert [item["slot"] for item in view(peer, player)["inventory"]] == ["Left hand","Right hand","Left belt","Right belt"]
     host.bridge.call("input", controller=0, hold={"menu_scroll_down": 1}, steps=-1)
-    wait(lambda: {"staff", "broadsword"} <= set(readout(host).get("visible_cards", [])),
+    wait(lambda: "staff" in readout(host).get("visible_cards", []),
          "new stock weapon cards are visible in the actual shop")
     time.sleep(.8)
     host.bridge.call("input", controller=0, release=["menu_scroll_down"])
     ctx.shot(host, "expanded_weapon_shop_and_stats")
-    for key in ("staff", "broadsword", "health", "armor_3"):
+    # Sell an ordinary map weapon from a remote player's belt; both machines
+    # resolve the same physical item and the host can charge it only once.
+    _code(host, f'int id=CreateObject("Data/Items/rat_weapons/rat_machete.xml",false);'
+          f'ReadObjectFromID({avatar(guest_player)}).AttachItem(ReadObjectFromID(id),_at_sheathe,false);')
+    def machete(peer):
+        return next((r for r in view(peer,guest_player)["inventory"] if r.get("label")=="Rat machete"), None)
+    wait(lambda: machete(host) and machete(guest), "both peers list a supplied belt weapon")
+    item = machete(guest)
+    assert item["slot"] == "Left belt" and item["price"] == cards["rat_machete"]["cost"]
+    before = view(guest,guest_player)["held"]
+    action(guest,guest_player,"sell",item["sell_key"])
+    wait(lambda: not machete(guest) and view(guest,guest_player)["held"] == before + item["price"], "remote full-price sale")
+    action(guest,guest_player,"sell",item["sell_key"])
+    assert not view(host,guest_player)["owned_rat_machete"]
+    for key in ("staff", "broadsword", "dog_knife", "health", "armor_3"):
         action(host, host_player, "buy", key)
     action(guest, guest_player, "buy", "damage")
     wait(lambda: view(host, host_player)["stats"]["health_rank"] == 1 and
@@ -190,6 +212,16 @@ def progression_weapons_xp(ctx):
          "gameplay armor readout follows the actual worn wood plate")
     ctx.shot(host, "gameplay_stats_and_reward_bars")
     _code(host, 'ProgressionBeginShop(false);')
+    belt = view(host,host_player)["inventory"]
+    issued = next(i for i in belt if i.get("label") == "Broadsword")
+    assert any(i.get("label") == "Dog knife" for i in belt)
+    before = view(host,host_player)["held"]
+    action(host,host_player,"sell",issued["sell_key"])
+    sold = view(host,host_player)
+    assert sold["held"] == before + issued["price"] and not sold["owned_broadsword"] and sold["big_weapon"] == 0
+    assert not data(host,host_player,action="sell",key=issued["sell_key"])["submitted"]
+    assert not any(i.get("label") == "Broadsword" for i in sold["inventory"])
+    action(host,host_player,"buy","broadsword")
     action(host, host_player, "equip", "staff")
     ready()
     _code(host, 'level.SendMessage("reset");')
@@ -280,3 +312,81 @@ def progression_weapons_xp(ctx):
                     "arena_match_only_shop_round_and_disabled": True},
         "notes": [],
     }
+
+
+def progression_inventory_save(ctx):
+    """A sold authored weapon stays sold after a cold load of the same map."""
+    def instance(name, port):
+        return ctx.instance(name, width=1280, height=720, keys={
+            **RENDER_KEYS, "mp_port": str(port), "player_invincible": "true", "tutorials": "false",
+        })
+
+    def shop(peer):
+        return peer.bridge.call("progression", actor=_rows(peer)[0]["id"])["view"]
+
+    def wait(peer, predicate, label):
+        return peer.bridge.wait(predicate, 30, step=.15, what=label)
+
+    def ui(peer):
+        return peer.bridge.status()["progression_ui"][0]
+
+    source = instance("item_source", 28583)
+    _code(source, 'LobbyBeginHost();'
+          f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
+          'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",0);'
+          'LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
+    _ready(source, FIRST)
+    _skip(source)
+    staff = next(item for item in source.bridge.call("state")["items"]
+                 if item["file"].lower().endswith("/staffbasic.xml"))
+    hero = _rows(source)[0]["avatar_id"]
+    if staff["held_by"] != -1:
+        _code(source, f'this_mo.DetachItem({staff["id"]});NotifyItemDetach({staff["id"]});', staff["held_by"])
+    _code(source, f'ReadObjectFromID({hero}).AttachItem(ReadObjectFromID({staff["id"]}),_at_grip,false);'
+          'ProgressionBeginShop(false);')
+    wait(source, lambda: any(i.get("label") == "Staff" for i in shop(source)["inventory"]), "authored staff in hand")
+    account = shop(source)
+    item = next(i for i in account["inventory"] if i.get("label") == "Staff")
+    refund = account["held"] + item["price"]
+    assert source.bridge.call("progression", actor=_rows(source)[0]["id"],
+                              action="sell", key=item["sell_key"])["submitted"]
+    assert shop(source)["held"] == refund
+    _code(source, 'SessionSave(2);')
+    card_path = Path(source.writedir, "Data/SessionSaves/slot2.json")
+    wait(source, card_path.is_file, "shop session saved")
+    saved = json.loads(card_path.read_text())
+    ledger = saved["session_mods"]["og-online-progression"]["runtime"]
+    assert ledger["sold_map_weapons"] == [{"item": staff["common_id"], "weapon": "staff"}]
+    # A complete collection also exercises the upper ownership bits and gives
+    # the second scroll area enough rows to test dragging it independently.
+    ledger["players"][0]["weapons"] = (1 << 36) - 1
+    card_path.write_text(json.dumps(saved))
+    source.stop()
+    loaded = instance("item_resume", 28584)
+    for folder in ("SessionSaves", "Textures/SessionSaves"):
+        shutil.copytree(Path(source.writedir, "Data", folder), Path(loaded.writedir, "Data", folder), dirs_exist_ok=True)
+    _code(loaded, 'SessionLoad(2);', "menu")
+    wait(loaded, lambda: loaded.bridge.status()["online"]["lobby_waiting"], "save opens lobby")
+    _code(loaded, 'LobbyStart();', "menu")
+    _ready(loaded, FIRST)
+    wait(loaded, lambda: shop(loaded)["shop_open"] and ui(loaded)["columns"], "saved shop renders both columns")
+    assert shop(loaded)["held"] == refund
+    assert sum(value is True for key, value in shop(loaded).items() if key.startswith("owned_")) == 36
+    wait(loaded, lambda: not any(i["common_id"] == staff["common_id"] and i["file"] == staff["file"]
+                                 for i in loaded.bridge.call("state")["items"]), "sold world staff stays gone")
+
+    def drag_rail(x):
+        for y, buttons in ((185, 0), (185, 1), (420, 1), (420, 0)):
+            loaded.bridge.call("pointer", x=x, y=y, buttons=buttons)
+            time.sleep(.15)
+
+    assert ui(loaded)["equipment_scroll"] == ui(loaded)["scroll"] == 0
+    drag_rail(1039)
+    after = ui(loaded)
+    assert after["equipment_scroll"] > 0 and after["scroll"] == 0, after
+    drag_rail(649)
+    after_both = ui(loaded)
+    assert after_both["scroll"] > 0 and after_both["equipment_scroll"] == after["equipment_scroll"], after_both
+    ctx.shot(loaded, "shop_scrolled_columns")
+    return {"passed": True, "metrics": {"cold_saved_refund": refund, "restored_unlocks": 36,
+            "independent_scroll": True}, "notes": []}

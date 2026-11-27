@@ -2,6 +2,7 @@
 #include <Online/online.h>
 #include <Internal/modloading.h>
 #include <JSON/json.h>
+#include <random>
 
 namespace {
 const ModInstance::LobbySetting* FindModeSetting(const std::string& key) {
@@ -12,9 +13,26 @@ const ModInstance::LobbySetting* FindModeSetting(const std::string& key) {
     }
     return nullptr;
 }
-bool ValidChoice(const ModInstance::LobbySetting* setting, int value) {
-    return setting && value >= 0 && static_cast<size_t>(value) < setting->choices.size();
+bool ValidChoice(const ModInstance::LobbySetting* setting, int value, const std::string& mode) {
+    return setting && value >= 0 && (setting->IsSeed() || static_cast<size_t>(value) < setting->ChoiceCount(mode == "survival"));
 }
+}
+
+int Online::NewLobbySeed(int previous) {
+    static std::mt19937 generator(std::random_device{}());
+    const int seed = std::uniform_int_distribution<int>()(generator);
+    return seed == previous ? seed ^ 1 : seed;
+}
+
+void Online::InitializeLobbySeeds() {
+    for (const auto* mod : ModLoading::Instance().GetMods()) {
+        if (!mod->IsActive()) continue;
+        for (const auto& option : mod->session.lobby_settings) {
+            if (!option.IsSeed() || !ModeSettingAvailable(option.modes)) continue;
+            auto& settings = mode_settings_[ModeSettingsKey()];
+            if (!settings.count(option.key)) settings.emplace(option.key, NewLobbySeed(-1));
+        }
+    }
 }
 
 bool Online::IsCampaignPlayMode() const {
@@ -26,7 +44,8 @@ std::string Online::ModeSettingsKey() const { return lobby_build_ ? "build" : lo
 bool Online::ModeSettingAvailable(const std::string& modes) const {
     if (lobby_build_ || lobby_mode_.empty()) return false;
     if (modes.empty()) return true;
-    const char* type = lobby_mode_ == "com-wolfire-arena" ? "arena" : IsCampaignPlayMode() ? "campaign" : "sandbox";
+    const char* type = IsSurvivalMode() ? "survival" : lobby_mode_ == "com-wolfire-arena" ? "arena" :
+                       IsCampaignPlayMode() ? "campaign" : "sandbox";
     // Compare whole comma-separated tokens, also for custom campaign IDs.
     return ("," + modes + ",").find("," + std::string(type) + ",") != std::string::npos;
 }
@@ -34,7 +53,7 @@ Json::Value Online::LobbyModeSettings() const {
     Json::Value modes(Json::objectValue);
     for (const auto& mode : mode_settings_)
         for (const auto& entry : mode.second)
-            if (ValidChoice(FindModeSetting(entry.first), entry.second)) modes[mode.first][entry.first] = entry.second;
+            if (ValidChoice(FindModeSetting(entry.first), entry.second, mode.first)) modes[mode.first][entry.first] = entry.second;
     return modes;
 }
 bool Online::ReceiveLobbyModeSettings(const Json::Value& modes, bool validate_only) {
@@ -46,7 +65,7 @@ bool Online::ReceiveLobbyModeSettings(const Json::Value& modes, bool validate_on
         for (const auto& key : prefs.getMemberNames()) {
             const auto* option = FindModeSetting(key);
             const auto& value = prefs[key];
-            if (!value.isInt() || !ValidChoice(option, value.asInt())) return false;
+            if (!value.isInt() || !ValidChoice(option, value.asInt(), mode)) return false;
             incoming[mode][key] = value.asInt();
         }
     }
@@ -59,13 +78,13 @@ int Online::ModeSetting(const std::string& key) const {
     const auto mode = mode_settings_.find(ModeSettingsKey());
     if (mode == mode_settings_.end()) return option->default_value;
     const auto setting = mode->second.find(key);
-    if (setting == mode->second.end() || !ValidChoice(option, setting->second)) return option->default_value;
+    if (setting == mode->second.end() || !ValidChoice(option, setting->second, mode->first)) return option->default_value;
     return setting->second;
 }
 bool Online::SetModeSetting(const std::string& key, int value, PlayerID actor) {
     actor = ResolveLobbyActor(actor);
     const auto* option = FindModeSetting(key);
-    if (!IsActive() || LobbyMigrationBusy() || !IsLobbyHost(actor) || !ValidChoice(option, value) ||
+    if (!IsActive() || LobbyMigrationBusy() || !IsLobbyHost(actor) || !ValidChoice(option, value, ModeSettingsKey()) ||
         !ModeSettingAvailable(option->modes) || (!LobbyWaiting() && !option->live)) return false;
     if (IsClient()) {
         Json::Value request; request["action"] = "mode_setting"; request["actor"] = actor;

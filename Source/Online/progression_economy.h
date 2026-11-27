@@ -7,6 +7,28 @@
 namespace FriendlyProgression {
 inline double Bound(double x, double low, double high) { return std::max(low, std::min(high, x)); }
 constexpr int kMaxRank = 50;
+constexpr int kMinimumGainRank = 20;
+struct RankGains {
+    double first, minimum;
+
+    double Next(int owned) const {
+        const int remaining = std::max(0, kMinimumGainRank - 1 - std::max(0, owned));
+        return minimum + (first - minimum) * remaining / (kMinimumGainRank - 1);
+    }
+    double Total(int rank) const {
+        rank = std::max(0, rank);
+        const int taper_ranks = std::min(rank, kMinimumGainRank);
+        const double average_gain = (first + Next(taper_ranks - 1)) * 0.5;
+        return taper_ranks * average_gain + (rank - taper_ranks) * minimum;
+    }
+};
+constexpr RankGains kDurabilityGain{.16, .04}, kDamageGain{.12, .03}, kSpeedGain{.06, .015};
+constexpr RankGains kStealthGain{.07, .0025}, kLuckGain{.04, .01};
+
+inline float DurabilityMultiplier(int rank) { return static_cast<float>(1.0 + kDurabilityGain.Total(rank)); }
+inline float DamageMultiplier(int rank) { return static_cast<float>(1.0 + kDamageGain.Total(rank)); }
+inline float SpeedMultiplier(int rank) { return static_cast<float>(1.0 + kSpeedGain.Total(rank)); }
+inline float StealthRangeMultiplier(int rank) { return static_cast<float>(std::max(0.0, 1.0 - kStealthGain.Total(rank))); }
 inline int StatPrice(int rank, double base, double linear, double quadratic) {
     return static_cast<int>(std::round(base + linear * rank + quadratic * rank * rank));
 }
@@ -19,13 +41,14 @@ inline int RecruitPrice(int bought, double base, double growth) {
     return static_cast<int>(std::min(50000000.0, std::round(base * std::pow(growth, std::min(bought, 15)))));
 }
 inline double FreeRewardChance(int luck) {
-    return .20 + .80 * Bound(luck, 0, kMaxRank) / kMaxRank;
+    return .20 + kLuckGain.Total(std::min(luck, kMaxRank));
 }
 // An upgrade priced at the budget has half the weight of a very cheap upgrade.
 // At 20 Luck that includes a first recruit at the mod's current price.
 inline double FreeRewardBudget(int luck, double first_recruit_price) {
     constexpr double starting_budget = 100.0;
-    return starting_budget + std::max(0.0, first_recruit_price - starting_budget) * Bound(luck, 0, kMaxRank) / 20;
+    const double progress = kLuckGain.Total(std::min(luck, kMaxRank)) / kLuckGain.Total(20);
+    return starting_budget + std::max(0.0, first_recruit_price - starting_budget) * progress;
 }
 inline double FreeRewardWeight(int price, double budget) {
     return 1.0 / (1.0 + std::pow(price / budget, 6));

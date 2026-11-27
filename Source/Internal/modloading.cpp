@@ -663,6 +663,7 @@ bool OwnsSettingKey(const std::string& id, const std::string& key) {
         return key == "challenge_time" || key == "challenge_round" || key == "challenge_performance" || key == "challenge_performance_rate";
     if (id == "og-online-progression")
         return key == "progression" || (key.compare(0, 12, "progression_") == 0 && key.find('.') == std::string::npos);
+    if (id == "og-online-survival") return key == "survival_seed" || key == "survival_starting_race";
     return false;
 }
 
@@ -678,7 +679,8 @@ bool ParseSession(const TiXmlElement* element, const std::string& id, const std:
     // Native feature providers carry built-in runtime state. Reserve those
     // names so two mods cannot serialize the same gameplay object twice.
     if ((session.feature == "scaling" && id != "og-online-scaling") ||
-        (session.feature == "progression" && id != "og-online-progression")) return false;
+        (session.feature == "progression" && id != "og-online-progression") ||
+        (session.feature == "survival" && id != "og-online-survival")) return false;
     for (const auto* row = element->FirstChildElement("OnlineAdapter"); row; row = row->NextSiblingElement("OnlineAdapter")) {
         ModInstance::OnlineAdapter adapter;
         adapter.mod_id = SessionAttribute(row, "mod");
@@ -716,19 +718,27 @@ bool ParseSession(const TiXmlElement* element, const std::string& id, const std:
             std::istringstream modes(setting.modes);
             std::string mode;
             while (std::getline(modes, mode, ','))
-                if (mode != "campaign" && mode != "arena" && mode != "sandbox") return false;
+                if (mode != "campaign" && mode != "arena" && mode != "sandbox" && mode != "survival") return false;
         }
         const std::string live = SessionAttribute(row, "live");
         if (!live.empty() && live != "true" && live != "false") return false;
         setting.live = live == "true";
+        const std::string type = SessionAttribute(row, "type");
+        if (!type.empty() && type != "seed") return false;
         if (row->Attribute("default") && row->QueryIntAttribute("default", &setting.default_value) != TIXML_SUCCESS) return false;
         for (const auto* choice = row->FirstChildElement("Choice"); choice; choice = choice->NextSiblingElement("Choice")) {
             const char* text = choice->GetText();
             if (!text || !text[0] || strlen(text) > 96 || setting.choices.size() >= 32) return false;
+            // Mode-specific choices follow the common prefix so indices in older saves stay stable.
+            const auto modes = SessionAttribute(choice, "modes");
+            if (modes.empty()) {
+                if (setting.all_mode_choices != setting.choices.size()) return false;
+                ++setting.all_mode_choices;
+            } else if (modes != "survival") return false;
             setting.choices.emplace_back(text);
         }
-        if (setting.choices.size() < 2 || setting.default_value < 0 ||
-            static_cast<size_t>(setting.default_value) >= setting.choices.size()) return false;
+        if (setting.default_value < 0 || (type == "seed" ? !setting.IsSeed() :
+            setting.all_mode_choices < 2 || static_cast<size_t>(setting.default_value) >= setting.all_mode_choices)) return false;
         session.lobby_settings.push_back(std::move(setting));
     }
     for (const auto& setting : session.lobby_settings)

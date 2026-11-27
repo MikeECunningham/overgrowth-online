@@ -1,4 +1,4 @@
-"""The live Arena scoreboard and each local player's gameplay stats stay separate."""
+"""Each local player's stats sit at mid-left, clear of the Arena scoreboard and announcements."""
 
 from .campaign_scaling_suite import RENDER_KEYS
 from .mode_settings_suite import ARENA, ARENA_MAP
@@ -14,19 +14,19 @@ def arena_stats_layout(ctx, small=False):
     bridge = host.bridge
 
     def menu(code):
-        _code(host, code, "menu")
+        _code(host, "SetControllerPlayer(0);" + code, "menu")
 
-    def begin():
+    def begin(free_choices):
         seats = _rows(host)
         menu(f'LobbySetSelection("{ARENA}","{ARENA}","{ARENA_MAP}",false);LobbySetForceTeams(true);'
              + "".join(f'LobbySetPlayerTeam({seat["id"]},{1+i%2});' for i, seat in enumerate(seats))
-             + 'LobbySetModeSetting("progression",1);LobbyStart();')
+             + f'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_free_buffs",{int(free_choices)});LobbyStart();')
         _ready(host, ARENA_MAP)
 
     def separate(a, b):
         return a[0] >= b[2] or a[2] <= b[0] or a[1] >= b[3] or a[3] <= b[1]
 
-    def check(screens):
+    def check(screens, free_choices):
         def read():
             rows = sorted(bridge.status()["progression_ui"], key=lambda r: r["screen"])
             if len(rows) == screens and all(r.get("arena_score_rect") and r.get("arena_announcement_rect") and r.get("stats_rect") for r in rows):
@@ -45,14 +45,17 @@ def arena_stats_layout(ctx, small=False):
             rect = row["stats_rect"]
             top = i * viewport_height
             assert 0 <= rect[0] < rect[2] <= width and top <= rect[1] < rect[3] <= top+viewport_height, rect
-            assert rect[0] < 20 and rect[1] > top + viewport_height*.3, (rect, top)
+            top_gap = rect[1] - top
+            bottom_gap = top + viewport_height - rect[3]
+            assert 0 < rect[0] < 20 and abs(top_gap - bottom_gap) <= 1, (rect, top_gap, bottom_gap)
+            assert ("luck_rank" in row["stats"]) == free_choices
             assert separate(rect, score) and separate(rect, banner), (rect, score, banner)
             stats.append(rect)
         return {"score": score, "stats": stats, "announcement": banner}
 
     menu("LobbyBeginHost();LobbyAddBot();")
-    begin()
-    single = check(1)
+    begin(free_choices=False)
+    single = check(1, free_choices=False)
     ctx.shot(host, "single_player")
     _code(host, "LobbyEndGame();")
     bridge.wait(lambda: bridge.status()["online"]["lobby_waiting"] and not bridge.status()["level_loaded"],
@@ -60,8 +63,13 @@ def arena_stats_layout(ctx, small=False):
     _join_pad(host, 0, 2)
     menu("for(int i=0;i<5;++i)LobbyAddBot();")
     assert len(_rows(host)) == 8
-    begin()
-    stacked = check(2)
+    begin(free_choices=True)
+    stacked = check(2, free_choices=True)
     ctx.shot(host, "two_screens_eight_fighters")
+    # Compare at the same scale. Enabling Luck should add a row to the panel.
+    def height_to_width(rect):
+        return (rect[3] - rect[1]) / (rect[2] - rect[0])
+
+    assert all(height_to_width(rect) > height_to_width(single["stats"][0]) for rect in stacked["stats"])
     assert not script_errors(host), script_errors(host)
     return {"passed": True, "metrics": {"single": single, "stacked": stacked}, "notes": []}

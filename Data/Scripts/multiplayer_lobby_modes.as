@@ -143,6 +143,14 @@ void LobbyReadModes() {
             }
         }
     }
+    if(ModSessionFeature("survival")) {
+        LobbyModeChoice@ survival = LobbyModeChoice();
+        survival.id = "survival";
+        survival.title = "Survival";
+        survival.thumbnail = "Data/Images/og-online-survival.jpg";
+        survival.maps = freeplay.maps;
+        lobby_modes.insertLast(survival);
+    }
     lobby_modes.insertLast(freeplay);
     lobby_modes.insertLast(build);
 }
@@ -188,24 +196,4 @@ bool LobbyChooseMap(int mode_index, int map_index) {
         return false;
     }
     return LobbySetSelection(mode.id, mode.campaign, mode.maps[map_index].path, mode.build);
-}
-
-string LobbyCardTitle(const string &in title) {
-    array<string>@ words = title.split(" ");
-    string result;
-    int line_width = 0;
-    for(uint i = 0; i < words.length(); ++i) {
-        if(line_width > 0) {
-            if(line_width + int(words[i].length()) + 1 > 17) {
-                result += "\n";
-                line_width = 0;
-            } else {
-                result += " ";
-                ++line_width;
-            }
-        }
-        result += words[i];
-        line_width += words[i].length();
-    }
-    return result;
 }

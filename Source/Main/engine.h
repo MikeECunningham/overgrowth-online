@@ -194,6 +194,7 @@ class Engine : public ModLoadingCallback {
     bool ExecutePlayerMenuCode(int local_index, const std::string& code);
     bool PlayerHasMenu(int input_id) const;
     bool HasPlayerMenus() const;
+    bool GameplayOwnsMouse() const;
     static void NewLevel();
 
     void SetForcedSplitScreenMode(ForcedSplitScreenMode mode) { forced_split_screen_mode = mode; }

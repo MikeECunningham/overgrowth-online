@@ -104,7 +104,8 @@ void Publish(const ModInstance& mod) {
 Json::Value Snapshot(Scope scope) {
     Json::Value mods(Json::objectValue);
     for (const auto* mod : ModLoading::Instance().GetMods())
-        if (mod->IsActive() && !Version(*mod, scope).empty())
+        if (mod->IsActive() && !Version(*mod, scope).empty() &&
+            (scope != Scope::Save || mod->session.feature != "survival" || Online::Instance()->IsSurvivalMode()))
             mods[mod->id.str()] = Section(*mod, scope);
     return mods;
 }
@@ -236,8 +237,8 @@ void MigrateSave(Json::Value& save) {
     if (!mods.isObject() || !mods.isMember(id) || !mods[id].isObject()) return;
     // Both schemas already use independent XP options. Restore upgrades
     // missing Luck at rank zero and retains pending hands from schema 3.
-    if (mods[id]["version"] == "2" || mods[id]["version"] == "3") {
-        mods[id]["version"] = "4";
+    if (mods[id]["version"] == "2" || mods[id]["version"] == "3" || mods[id]["version"] == "4") {
+        mods[id]["version"] = "5";
         return;
     }
     if (mods[id]["version"] != "1") return;
@@ -257,7 +258,7 @@ void MigrateSave(Json::Value& save) {
         }
         prefs.removeMember("progression_combat");
     }
-    mods[id]["version"] = "4";
+    mods[id]["version"] = "5";
 }
 
 void KeepLobbyEdits(Json::Value& mods) {

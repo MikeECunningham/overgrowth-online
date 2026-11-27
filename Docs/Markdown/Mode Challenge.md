@@ -21,7 +21,7 @@ loading, ready screens, upgrade shops, shared pauses, editor sessions and cinema
 | Rule | Standard behavior |
 | --- | --- |
 | Active time | +5% enemy durability per five active minutes |
-| Level / match completion | +8% per completed campaign level or Arena match |
+| Level / match completion | +8% per completed campaign level, Arena match or Survival battery |
 | Performance: On win | +4% per encounter victory |
 | Performance: On loss | +5% per complete human-party wipe |
 | Performance: Forced-50 | +8% per victory; each wipe eases that encounter's retries by 2.5%, up to 25% |
@@ -45,8 +45,9 @@ separate. Player progression can independently grant purchased upgrades.
 
 The original story player anchors the reference side. In other modes its
 current effective team determines the relevant opponents. Campaign objectives
-and Arena results provide authored encounters; modes without those events use
-combat groups. Only future events use changed settings: enabling a driver does
+and Arena results provide authored encounters. Survival counts a wave victory
+once every surviving team has cleared that wave, and reports a wipe when the
+last team falls. Modes without those events use combat groups. Only future events use changed settings: enabling a driver does
 not reprice old wins or losses, and retries cannot farm a credited victory.
 Starting a fresh game from the lobby or adopting a fresh solo run resets the
 ledger. Host snapshots carry the current run and retry relief to other clients.
@@ -59,7 +60,9 @@ assignment and remains hidden in unscaled contexts, regardless of the checkbox.
 Cinematics, loading and the host's personal menu hide it too.
 
 The host samples enemy base difficulty, pressure, party size and scaling options on level load, checkpoint
-save, retry and the start of each Arena match. During a fight, time and results
+save, retry and the start of each Arena match. Survival samples new waves and uses
+the size of the team each enemy faces. Enemies from earlier waves keep their stats.
+During a fight, time and results
 accumulate toward the next sample. Later spawns use the same sample and
 existing enemies keep their injuries when the sample changes. **Applied** is
 the pressure used on this attempt. **Pending** shows accumulated pressure for
@@ -80,9 +83,9 @@ and equipment replication are incompatible with older clients.
 
 ## Player progression
 
-The bundled **Friendly Progression** mod supplies the XP rules, shop and loadouts. It starts enabled in **Mods**. The campaign and Arena lobby each remember their own **Progression** toggle.
+The bundled **Friendly Progression** mod supplies the XP rules, shop and loadouts. It starts enabled in **Mods**. Each supported mode remembers its own **Progression** toggle.
 
-Enable **Progression** under **Mode settings** for Campaign or Arena. It works
+Enable **Progression** under **Mode settings** for Campaign, Arena or Survival. It works
 with either Traditional or Scaling difficulty. XP rewards use enemy species,
 spawn equipment and the selected difficulty. Scaling also considers the enemy's
 durability, outgoing damage and current run pressure.
@@ -96,13 +99,17 @@ or the matching numpad keys. On a controller, D-pad up, right, down and left
 choose cards 1, 2, 3 and 4 respectively. The other players can keep playing. Offers wait
 for their owner and saves retain outstanding choices with their slots.
 
-**Luck** starts at a 20% chance per roll. Each rank adds 1.6 percentage points,
-reaching 100% at rank 50. Luck also increases the chance of drawing expensive
-upgrades. A player can improve both odds by buying Luck in the shop or taking
+The shop and stats column show **Luck** only while **Free upgrade choice** is enabled.
+Existing Luck ranks carry over when the host turns the option back on.
+Luck starts at a 20% chance per roll. The first rank raises it to 24%. Each
+new rank adds a smaller bonus until rank 20, which adds one percentage point
+and brings the chance to 70%. Later ranks add one point each, reaching 100%
+at rank 50. Luck also increases the chance of drawing expensive upgrades.
+A player can improve both odds by buying Luck in the shop or taking
 it as a free upgrade. In shared mode the team shares its Luck rank, and each
 player still gets a separate roll.
 
-Both modes have independent checkboxes for damage dealt, kills, damage taken
+These modes have independent checkboxes for damage dealt, kills, damage taken
 and defeat. Kill rewards start enabled. With damage rewards enabled, dealing a
 full health bar of damage earns the opponent's bounty. With both rewards
 enabled, the killing blow can earn damage XP and a kill bounty. The damage
@@ -110,6 +117,13 @@ penalty costs 40% of a bounty per full health bar lost and draws from pooled
 XP down to zero. Defeat costs one bounty. It uses pooled XP first and takes
 any remainder from committed XP. For a 16 XP penalty with 10 XP pooled,
 the committed balance loses 6 XP.
+
+With progression enabled, the host can select **XP handicap** on each human
+slot in the Players panel. A defeat awards that slot one defeat bounty in
+committed XP, including when **Lose XP on defeat** is enabled. Shared
+upgrades credit the team's wallet. The slot keeps its handicap when saved or
+reassigned. **Local leaders may set XP handicaps** lets each computer's
+designated leader edit its own players. This permission starts off.
 
 **Campaign.** Purple XP is pending until a checkpoint or chapter victory banks
 it as green XP. A new checkpoint can also award a 25 XP bonus. A retry clears
@@ -126,6 +140,15 @@ the balance left at the end of each round banks automatically. The host can enab
 deciding round with both enabled earns 125 XP. The paid shop opens once
 the match-win camera finishes. Players can carry pending free choices into the next round or match.
 
+**Survival.** A team banks its pooled XP when it clears its own enemies from a
+wave. The round-win option awards a wave bonus, and the match-win option awards
+a battery bonus to surviving teams. Free upgrades roll after the finishing
+camera at the start of the battery break. A full wipe opens the team scoreboard.
+The host can left-click to retry or right-click to return the party to the lobby.
+In Survival, a finite upgrade timer adds its seconds to the next battery
+countdown. Zero keeps the ordinary break. Players can shop until the first wave
+deploys, or mark themselves ready earlier. Infinite waits for players to finish.
+
 **Independent upgrades** give each player a wallet and an individual shop on
 their screen. Use the target selector for self or friendly bots. **Shared
 upgrades** give each team a wallet. Its first connected human by seat ID leads
@@ -137,19 +160,25 @@ teammate owns the current tier for that slot. Individuals keep their own
 loadout choices.
 Bots can receive gear and AI training. The multiplayer upgrade timer can
 advance everyone after 10, 15, 30, 60 or 120 seconds.
-Infinite waits for everyone. Solo shops always wait.
+Infinite waits for everyone. Solo Campaign and Arena shops wait for the player.
+
+Each stat card shows the gain for its next rank. The gain decreases linearly
+from the first rank through rank 20. Every later rank gives the same gain as
+rank 20, while purchase prices continue to rise.
 
 | Purchase | XP | Effect |
 | --- | ---: | --- |
-| Durability, damage, speed | 16, 23, 34 for the first three ranks of each stat | Each rank adds 8%, 6% or 3%, respectively |
-| Passive or active stealth | Same prices as the other stats | Each rank adds 6% concealment while standing or crouching, respectively |
+| Durability, damage, speed | 16, 23, 34 for the first three ranks of each stat | First rank adds 16%, 12% or 6% of the base stat, respectively. Rank 20 and later add 4%, 3% or 1.5%. |
+| Passive or active stealth | Same prices as the other stats | Sight and hearing ranges shrink by 7% of their original range at rank 1 and by 0.25% per rank from rank 20 onward. |
 | Luck | Same prices as the other stats | Increases the chance of a free choice and improves the odds of drawing higher-priced upgrades |
+| Restore health | Up to 8 + 2 per completed campaign level, Arena round or Survival wave | The card shows current price / maximum XP. The most depleted of permanent, temporary, blood and block health determines the price, rounded to the nearest XP. Any injury costs at least 1 XP. A healthy fighter shows 0 XP. If your balance is smaller than the quote, you can spend it all to repair that fraction of each health pool and reduce ongoing bleeding. A free choice heals in full. |
+| Race upgrade | 1,200 / 2,400 / 9,600 / 38,400 | Mouse → Rabbit → Cat → Dog → Wolf. Shared upgrades rotate among humans at the lowest race. Select a companion to upgrade it individually. Companions start as rabbits. |
 | Wood | 155–195 | First shoulder, forearm or thigh guard |
 | Chitin | 310–600 | Second limb guard or first chest, back or head piece |
 | Dog armor | 465–900 | Upgrades any Chitin slot |
 | Therium grey | 775–1,500 | Upgrades any Dog armor slot |
 | Dagger | 140 | Separate offhand toggle |
-| Staff, sword, spear or broadsword | 360, 880, 1,040 or 1,280 | Select one large weapon or choose None |
+| Staff, spear, sword or broadsword | 360, 880, 1,040 or 1,280 | Select one large weapon or choose None |
 | Recruit | 2,400 for the team's first | Starts at Casual AI. Subsequent recruits cost 2.25× the preceding price |
 | Train a bot | 1,800, 3,400, then 8,600 | Hardcore, Expert, then Nightmare. Nightmare earns XP and buys its lowest stat ranks at each shop |
 
@@ -163,7 +192,7 @@ is selected. Selecting both a large weapon and a dagger gives exactly that pair.
 The stats column shows each player’s armor. The green bar shows banked XP as a share of the projected final balance, which includes the estimated reward from remaining enemies. The purple bar shows pending XP against the estimated reward for the current encounter. Both bars display the actual balance for the player or shared team.
 
 All six stat cards keep their neutral Common appearance at every rank.
-Detection range is divided by `1 + 0.06 × stealth rank`, using active stealth
-while crouched and passive stealth otherwise. During an unarmed or staff rear
+Active stealth reduces detection range while crouched and passive stealth
+applies otherwise. During an unarmed or staff rear
 choke, the holder’s attack damage increases knockout speed and the defender’s
 durability extends the time they can resist.

@@ -66,6 +66,8 @@
 #include <Compat/fileio.h>
 #include <XML/level_loader.h>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <iterator>
 #include <cctype>
 #include <Objects/reflectioncaptureobject.h>
@@ -240,7 +242,7 @@ static bool Finite3(const vec3& v) {
 static std::string CampaignForLevel(const Online& online, const std::string& path) {
     // Freeplay can launch a map also listed in a campaign. Peers must use
     // the lobby's selected rules even when both modes share the same XML.
-    if (online.LobbyMode() == "freeplay" || online.LobbyMode() == "sandbox")
+    if (online.LobbyMode() == "freeplay" || online.LobbyMode() == "sandbox" || online.IsSurvivalMode())
         return online.LobbyCampaign();
     return ModLoading::Instance().WhichCampaignLevelBelongsTo(path);
 }
@@ -4833,6 +4835,41 @@ void Online::CoopReviveRequest(const string& msg) {
     if (n == 4 || n == 6 || n == 7 || n == 11) {
         pending_revives.push_back({GetObjectID(cid), vec3(x, y, z), vec3(fx, 0.0f, fz), OnlineClockMs(), anchor >= 0 ? GetObjectID(anchor) : -1, vitals});
     }
+}
+
+static MovementObject* RestoreCharacter(ObjectID id) {
+    SceneGraph* graph = Engine::Instance()->GetSceneGraph();
+    Object* object = graph && id >= 0 ? graph->GetObjectFromID(id) : nullptr;
+    return object && object->GetType() == _movement_object ? static_cast<MovementObject*>(object) : nullptr;
+}
+
+bool Online::CanProgressionRestoreHealth(PlayerID player) const {
+    if (!online_session) return false;
+    auto seat = online_session->player_states.find(player);
+    if (seat == online_session->player_states.end()) return false;
+    auto* character = RestoreCharacter(seat->second.object_id);
+    return character && character->GetHealthRestoreState().Injured();
+}
+
+bool Online::ProgressionRestoreHealth(PlayerID player, float fraction) {
+    if (!IsHosting() || !(fraction > 0 && fraction <= 1) || !CanProgressionRestoreHealth(player)) return false;
+    auto* character = RestoreCharacter(online_session->player_states.at(player).object_id);
+    const bool phase = !character->net_restore_phase;
+    character->RequestHealthRestore(phase, fraction);
+    if (!local_only_session_) {
+        // All peers remember the request in case another machine takes over
+        // the character for a throw or a grab while it is in flight.
+        std::ostringstream command;
+        command << "ohg heal " << GetOriginalID(character->GetID()) << ' ' << int(phase) << ' '
+                << std::setprecision(std::numeric_limits<float>::max_digits10) << fraction;
+        Send<OnlineMessages::SendLevelMessage>(command.str());
+    }
+    return true;
+}
+
+void Online::ReceiveHealthRestore(CommonObjectID id, bool phase, float fraction) {
+    if (!IsClient() || !(fraction > 0 && fraction <= 1)) return;
+    if (auto* character = RestoreCharacter(GetObjectID(id))) character->RequestHealthRestore(phase, fraction);
 }
 
 // Our player's character (by the player states: a teammate dragging it runs it for now)

@@ -28,7 +28,8 @@ void DrawLobbyBaseDifficulty() {
 
 void DrawLobbyDifficultyForm(float scale) {
     if(!lobby_difficulty_open) return;
-    float sw = float(GetScreenWidth()), sh = float(GetScreenHeight());
+    vec2 display = ImGui_GetDisplaySize();
+    float sw = display.x, sh = display.y;
     vec2 size(min(920.0f * scale, sw - 40.0f), sh - 64.0f);
     bool scaling = LobbyScalingDifficulty();
     ImGui_PushStyleColor(ImGuiCol_WindowBg, vec4(0.02f, 0.02f, 0.02f, 0.98f));

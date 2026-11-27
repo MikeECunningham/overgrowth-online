@@ -28,12 +28,13 @@ The mod loading system should fullfill the following features for mods
 
 ## Session mods
 
-Overgrowth Online installs **Difficulty Scaling** and **Friendly Progression** under
-`Data/Mods/`. Both are active on first discovery. At the main menu, change either in **Mods**, then start or load a game.
+Overgrowth Online installs **Difficulty Scaling**, **Friendly Progression** and
+**Survival** under `Data/Mods/`. They are active on first discovery. At the main
+menu, change them in **Mods**, then start or load a game.
 The choice takes effect without restarting the application and survives restarts and updates.
 In the lobby, the host still chooses Traditional or Scaling difficulty and whether
 to award XP for that mode. Slot ownership, split-screen, host-local save cards
-and armor protection work independently of both packages.
+and armor protection work independently of these packages.
 
 The bundled manifests contain numerical tuning under `Rule`, including XP bounties,
 shop prices and difficulty gains. Their AngelScript files supply the campaign and
@@ -76,10 +77,17 @@ Prefix each setting key with the mod ID and a dot. Values are zero-based indices
 into the choices. The host can set preferences per mode, and the engine supplies
 the lobby control and preserves the selection across peers, host handoffs and
 save/load. A pair of `Off` and `On` choices draws a checkbox. Other choices draw
-a dropdown. Omit `modes` for all play modes or comma-separate `campaign`, `arena`
-and `sandbox`. To show an option only when another of the mod's settings is
+a dropdown. Omit `modes` for all play modes or comma-separate `campaign`, `arena`,
+`survival` and `sandbox`. To show an option only when another of the mod's settings is
 nonzero, use its full key in `depends_on`. Set `live="true"` to allow host scripts
 to change the setting during play. The default permits edits in the lobby.
+
+A setting with `type="seed"` accepts integers from 0 through 2147483647.
+Omit its choices. The host generates its first value when selecting the mode,
+and the lobby offers a number field and a Randomize seed button. Switching
+maps preserves the seed. For a dropdown shared with other modes, append
+`<Choice modes="survival">` entries after its common choices to offer extra
+values in Survival while preserving the existing indices.
 
 Read the selection with `LobbyGetModeSetting("session-rules.duration")`.
 `LobbySetModeSetting(key, value)` checks host authority, mode, timing and range.

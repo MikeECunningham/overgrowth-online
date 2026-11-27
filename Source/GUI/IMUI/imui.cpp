@@ -222,10 +222,23 @@ void IMUIContext::ClearHot() {
 void IMUIContext::UpdateControls() {
     Input* user_input = Input::Instance();
     const Mouse& mouse = user_input->getMouse();
-    const vec2 local_mouse = PlayerMenuUI::MouseTopLeft();
-    mouse_pos[0] = local_mouse[0];
-    mouse_pos[1] = PlayerMenuUI::Height() - local_mouse[1];
     const bool pressed = PlayerMenuUI::AllowsMouse() && mouse.mouse_down_[Mouse::LEFT];
+    const bool was_pressed = lmb_state == kMouseDown || lmb_state == kMouseStillDown;
+    const bool dragging = was_pressed && press_started_here_ && PlayerMenuUI::AllowsMouse();
+    vec2 position;
+    const bool located = PlayerMenuUI::MouseTopLeft(position, dragging);
+    if (pressed && !was_pressed) press_started_here_ = located;
+    if (located && (!was_pressed || press_started_here_)) {
+        mouse_pos = vec2(position.x(), PlayerMenuUI::Height() - position.y());
+    } else if (!dragging || !pressed) {
+        mouse_pos = vec2(-100000.0f);
+    }
+    // A drag with a temporarily unavailable OS pointer keeps its last position.
+    // A release outside the window must not click the last hovered control.
+    if (was_pressed && !pressed && !located) {
+        lmb_state = kMouseStillUp;
+        return;
+    }
     switch (lmb_state) {
         case kMouseUp:
             lmb_state = kMouseStillUp;

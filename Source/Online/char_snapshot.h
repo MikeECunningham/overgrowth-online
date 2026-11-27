@@ -64,6 +64,9 @@ struct Morph {
 const uint8_t kVitalOnGround = 1;
 const uint8_t kVitalStartled = 2;
 const uint8_t kVitalBlocking = 4;
+const uint8_t kVitalHasWound = 8;       // active bleeding, burning or depleted knockout shield
+const uint8_t kVitalRestorePhase = 16;  // acknowledges the last in-place heal on the simulation owner
+const uint8_t kVitalRestoreSucceeded = 32;
 
 struct Vitals {
     bool valid = false;

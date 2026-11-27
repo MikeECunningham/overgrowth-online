@@ -28,6 +28,7 @@
 #include <Graphics/graphics.h>
 
 #include <UserInput/input.h>
+#include <UserInput/window_pointer.h>
 #include <Main/engine.h>
 
 void GameCursor::Draw() {
@@ -39,8 +40,10 @@ void GameCursor::Draw() {
     if (!visible || !m_texture_ref.valid()) return;
 
     CHECK_GL_ERROR();
-    int* mouse_pos = Input::Instance()->getMouse().pos_;
+    vec2 mouse_pos;
+    if (!ReadWindowPointer().MenuPosition(mouse_pos)) return;
     int* window_dims = Graphics::Instance()->window_dims;
+    if (mouse_pos.x() < 0 || mouse_pos.y() < 0 || mouse_pos.x() >= window_dims[0] || mouse_pos.y() >= window_dims[1]) return;
     vec3 draw_pos(
         (float)(mouse_pos[0] + m_offset_x),
         (float)((window_dims[1] - mouse_pos[1]) - m_offset_y),

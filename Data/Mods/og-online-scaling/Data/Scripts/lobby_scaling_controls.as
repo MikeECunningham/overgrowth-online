@@ -93,21 +93,24 @@ void DrawLobbyPerformanceScaling() {
 
 void DrawLobbyScalingControls() {
     if(LobbyScalingDifficulty()) {
+        bool survival = LobbyGetMode() == "survival";
         ImGui_Separator();
         ImGui_TextColored(kLobbyTitle, "Scaling factors");
-        DifficultyFactor("campaign_mp_scaling", "Party stats and reinforcements",
-            "More main-team humans and friendly bots strengthen campaign enemies and add matching reinforcements. Bots count less; enemy numbers grow logarithmically.", LobbyModeIsCampaign());
+        DifficultyFactor("campaign_mp_scaling", survival ? "Party stats" : "Party stats and reinforcements",
+            survival ? "Strengthen newly spawned enemies according to the size of the team they face. Bots count less than humans." :
+            "More main-team humans and friendly bots strengthen campaign enemies and add matching reinforcements. Bots count less; enemy numbers grow logarithmically.", survival || LobbyModeIsCampaign());
         DifficultyFactor("campaign_armor_scaling", "Physical armor",
             "Adds wearable armor pieces to hostile NPCs as difficulty grows. Coverage starts late and grows gradually; authored equipment is preserved.");
-        DifficultyFactor("campaign_weapon_scaling", "Weapons for extra enemies",
-            "Generated reinforcements start unarmed. Daggers appear first, then more armed enemies, and swords or spears late. Wolves never receive weapons.", LobbyModeIsCampaign());
+        DifficultyFactor("campaign_weapon_scaling", survival ? "Weapons for wave enemies" : "Weapons for extra enemies",
+            survival ? "From battery 4, difficulty can arm eligible wave enemies with a dagger, sword or spear." :
+            "Give unarmed reinforcements a chance to carry a dagger, sword or spear as difficulty increases. Wolves never receive weapons.", survival || LobbyModeIsCampaign());
         DrawLobbyAIRate();
         ImGui_Spacing();
         ImGui_Separator();
         ImGui_TextColored(kLobbyTitle, "Progression");
         DrawModeRate("challenge_time", "Active time", "Standard: +5% enemy durability every five active minutes. Loading, shared pauses and cutscenes do not count.");
-        if(LobbyModeIsArena() || LobbyModeIsCampaign()) DrawModeRate("challenge_round", LobbyModeIsArena() ? "Match completion" : "Level completion",
-            "Standard: +8% enemy durability per completed match or level. Retrying does not count as another completion.");
+        if(survival || LobbyModeIsArena() || LobbyModeIsCampaign()) DrawModeRate("challenge_round", survival ? "Battery completion" : LobbyModeIsArena() ? "Match completion" : "Level completion",
+            "Standard adds 8% enemy durability per completed campaign level, Arena match or Survival battery. Each completion counts once.");
         DrawLobbyPerformanceScaling();
         ImGui_Spacing();
         ImGui_TextColored(kLobbyDim, "Scaling changes enemies, while the selected starting preset remains the base. Friendly bots retain base stats.");

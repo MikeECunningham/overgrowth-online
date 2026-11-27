@@ -38,6 +38,7 @@
 #include <Scripting/angelscript/ascontext.h>
 #include <Online/campaign_difficulty.h>
 #include <Online/friendly_progression.h>
+#include <Online/progression_economy.h>
 #include <Online/session_saves.h>
 #include <Scripting/angelscript/lobby_bindings.h>
 #include <Scripting/angelscript/add_on/scriptarray/scriptarray.h>
@@ -463,14 +464,15 @@ float AS_GetLookYAxis(int controller_id) {
 void AS_SetGrabMouse(bool grab) {
     if (!PlayerMenuUI::AllowsMouse()) return;
     Input* input = Input::Instance();
+    Engine* engine = Engine::Instance();
     if (grab) {
-        Engine* engine = Engine::Instance();
-        const int keyboard = input->LocalKeyboardPlayerIndex();
-        // Character and cinematic updates can run under a menu. Entering SDL
-        // relative mode even briefly moves the pointer on some backends.
-        if (engine->current_engine_state_.type == kEngineScriptableUIState ||
-            PlayerMenuUI::Current() || FriendlyProgression::ShopOpen() ||
-            (keyboard >= 0 && engine->PlayerHasMenu(input->GetLocalPlayerInputID(keyboard)))) return;
+        // Character and dialogue updates also run behind menus. Only change
+        // capture when the keyboard player's gameplay actually owns the pointer.
+        if (input->GetGrabMouse() || PlayerMenuUI::Current() || !engine->GameplayOwnsMouse()) return;
+    } else if (input->GetGrabMouse() && !PlayerMenuUI::Current() && engine->HasPlayerMenus() && engine->GameplayOwnsMouse()) {
+        // Level scripts release when any seat has focus. A pad-only menu must
+        // leave the mouse captured for the keyboard player who is still moving.
+        return;
     }
     input->SetGrabMouse(grab);
 }
@@ -1676,6 +1678,8 @@ void Attach3DMathFuncs(ASContext* context) {
 }
 
 #include "Graphics/camera.h"
+#include <Graphics/local_viewport.h>
+#include <Physics/bulletworld.h>
 
 Camera* GetCamera(int* id) { return (*id == -1 ? ActiveCameras::Get() : ActiveCameras::GetCamera(*id)); }
 
@@ -1761,6 +1765,27 @@ static int GetScreenHeight() {
     return PlayerMenuUI::Height();
 }
 
+// Lobby screens are one-based. HUD images use bottom-left window pixels,
+// even when a split view renders at a different internal resolution.
+static bool ProjectToLocalScreen(int screen, const vec3& point, float inset, vec2& pixel, bool check_occlusion) {
+    Engine* engine = Engine::Instance();
+    const int views = static_cast<int>(engine->RenderedViewCount());
+    if (screen < 1 || screen > views || screen > ActiveCameras::NumCameras() || ActiveCameras::GetID() == ActiveCameras::kPreviewCameraId) return false;
+    Camera* cam = ActiveCameras::GetCamera(screen - 1);
+    const vec3 eye = cam->GetPos();
+    if (dot(point - eye, cam->GetFacing()) <= 0.0f) return false;
+    const vec3 projected = cam->ProjectPoint(point);
+    if (!(projected.z() > 0.0f && projected.z() <= 1.0f)) return false;
+    const auto rect = LocalViewports::ForPlayer(screen - 1, views);
+    const auto& dims = Graphics::Instance()->window_dims;
+    pixel = vec2(rect.left * dims[0] + projected.x() * (rect.right - rect.left),
+                 rect.bottom * dims[1] + projected.y() * (rect.top - rect.bottom));
+    if (pixel.x() < rect.left * dims[0] + inset || pixel.x() > rect.right * dims[0] - inset ||
+        pixel.y() < rect.bottom * dims[1] + inset || pixel.y() > rect.top * dims[1] - inset) return false;
+    SceneGraph* scene = engine->GetSceneGraph();
+    return !check_occlusion || (scene && scene->bullet_world_ && !scene->bullet_world_->CheckRayCollision(eye, point));
+}
+
 static int GetBloodLevel() {
     return Graphics::Instance()->config_.blood();
 }
@@ -1770,6 +1795,7 @@ static const vec3& GetBloodTint() {
 }
 
 void AttachScreenWidth(ASContext* context) {
+    context->RegisterGlobalFunction("bool ProjectToLocalScreen(int screen, const vec3 &in point, float inset, vec2 &out pixel, bool check_occlusion = false)", asFUNCTION(ProjectToLocalScreen), asCALL_CDECL);
     context->RegisterGlobalFunction("int GetScreenWidth()", asFUNCTION(GetScreenWidth), asCALL_CDECL);
     context->RegisterGlobalFunction("int GetScreenHeight()", asFUNCTION(GetScreenHeight), asCALL_CDECL);
 }
@@ -3820,6 +3846,11 @@ vec2 AS_ImGui_GetCursorScreenPos() {
     return vec2(result.x, result.y);
 }
 
+vec2 AS_ImGui_GetDisplaySize() {
+    const auto size = ImGui::GetIO().DisplaySize;
+    return vec2(size.x, size.y);
+}
+
 void AS_ImGui_SetCursorScreenPos(const vec2& pos) {
     ImVec2 temp_pos(pos[0], pos[1]);
     ImGui::SetCursorScreenPos(temp_pos);
@@ -5040,6 +5071,7 @@ void AttachIMGUI(ASContext* context) {
     context->RegisterGlobalFunction("void ImGui_SetCursorPosY(float y)", asFUNCTION(AS_ImGui_SetCursorPosY), asCALL_CDECL);
     context->RegisterGlobalFunction("vec2 ImGui_GetCursorStartPos()", asFUNCTION(AS_ImGui_GetCursorStartPos), asCALL_CDECL);
     context->RegisterGlobalFunction("vec2 ImGui_GetCursorScreenPos()", asFUNCTION(AS_ImGui_GetCursorScreenPos), asCALL_CDECL);
+    context->RegisterGlobalFunction("vec2 ImGui_GetDisplaySize()", asFUNCTION(AS_ImGui_GetDisplaySize), asCALL_CDECL);
     context->RegisterGlobalFunction("void ImGui_SetCursorScreenPos(const vec2 &in pos)", asFUNCTION(AS_ImGui_SetCursorScreenPos), asCALL_CDECL);
     context->RegisterGlobalFunction("void ImGui_AlignFirstTextHeightToWidgets()", asFUNCTION(AS_ImGui_AlignTextToFramePadding), asCALL_CDECL);
     context->RegisterGlobalFunction("void ImGui_AlignTextToFramePadding()", asFUNCTION(AS_ImGui_AlignTextToFramePadding), asCALL_CDECL);
@@ -6002,6 +6034,7 @@ bool AS_Online_CampaignIsMainCharacter(int avatar) { return Online::Instance()->
 std::string AS_Online_CampaignWaitingText() { return Online::Instance()->CampaignWaitingText(); }
 void AS_Online_ChallengeEncounterBegin(const std::string& key) { Online::Instance()->ChallengeEncounterBegin(key); }
 void AS_CaptureEnemyDifficulty(bool new_match) { Online::Instance()->CaptureEnemyDifficulty(new_match); }
+void AS_FreezeSurvivalEnemy(int id, bool allow_weapons) { Online::Instance()->FreezeSurvivalEnemy(id, allow_weapons); }
 void AS_ProgressionCampaignLoop() { Online::Instance()->BeginChallengeCampaignLoop(); }
 static std::vector<int> ProgressionAvatars(const CScriptArray& array) {
     std::vector<int> avatars;
@@ -6016,15 +6049,19 @@ static void AS_ProgressionArenaRoundComplete(const CScriptArray& winners, const 
     const auto participants = ProgressionAvatars(roster);
     FriendlyProgression::ArenaWin(ProgressionAvatars(winners), false, &participants);
 }
+static void AS_ProgressionSurvivalClear(int battery, int wave, const CScriptArray& winners) {
+    FriendlyProgression::SurvivalClear(battery, wave, ProgressionAvatars(winners));
+}
 void AS_ProgressionArenaLoadouts() { Online::Instance()->RefreshProgressionLoadouts(true); }
 float AS_WornArmorRating(int id) { return Online::Instance()->WornArmorRating(id); }
 void AS_Online_ChallengeEncounterWin(const std::string& key) { Online::Instance()->ChallengeEncounterWin(key); }
+void AS_Online_ChallengeEncounterWipe(const std::string& key) { Online::Instance()->ChallengeEncounterWipe(key); }
 void AS_Online_ChallengeCompletion(const std::string& key) { Online::Instance()->ChallengeCompletion(key); }
 int AS_Online_ChallengeReferenceAvatar() { return Online::Instance()->ChallengeReferenceAvatar(); }
 float AS_Online_ChallengePressure() { return Online::Instance()->ModeChallengePressure(); }
-bool AS_Online_GetEnemyDifficultySample(float& pressure, int& ai_rate, int& humans) {
+bool AS_Online_GetEnemyDifficultySample(float& pressure, int& ai_rate, int& humans, int actor) {
     const auto* online = Online::Instance();
-    const auto sample = online->EnemyDifficulty();
+    const auto sample = actor < 0 ? online->EnemyDifficulty() : online->EnemyDifficultyFor(actor);
     pressure = sample.pressure;
     ai_rate = sample.ai_rate;
     humans = sample.humans;
@@ -6283,13 +6320,20 @@ static void AS_Online_StopListening(const std::string& channel) {
 
 void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("bool ProgressionEnabled()", asFUNCTION(FriendlyProgression::Enabled), asCALL_CDECL);
+    context->RegisterGlobalFunction("float ProgressionDurabilityMultiplier(int rank)", asFUNCTION(FriendlyProgression::DurabilityMultiplier), asCALL_CDECL);
+    context->RegisterGlobalFunction("float ProgressionDamageMultiplier(int rank)", asFUNCTION(FriendlyProgression::DamageMultiplier), asCALL_CDECL);
+    context->RegisterGlobalFunction("float ProgressionSpeedMultiplier(int rank)", asFUNCTION(FriendlyProgression::SpeedMultiplier), asCALL_CDECL);
+    context->RegisterGlobalFunction("float ProgressionStealthRange(int rank)", asFUNCTION(FriendlyProgression::StealthRangeMultiplier), asCALL_CDECL);
     context->RegisterGlobalFunction("vec2 ProgressionLayoutArenaScore(float, float, float, float)", asFUNCTION(ProgressionUI::LayoutArenaScore), asCALL_CDECL);
     context->RegisterGlobalFunction("vec2 ProgressionLayoutArenaAnnouncement(float, float, float)", asFUNCTION(ProgressionUI::LayoutArenaAnnouncement), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ProgressionShopOpen()", asFUNCTION(FriendlyProgression::ShopOpen), asCALL_CDECL);
+    context->RegisterGlobalFunction("int ProgressionSurvivalShopSeconds()", asFUNCTION(FriendlyProgression::SurvivalShopSeconds), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionCloseSurvivalUpgrades()", asFUNCTION(FriendlyProgression::CloseSurvivalUpgrades), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ProgressionLoopChosen()", asFUNCTION(FriendlyProgression::LoopChosen), asCALL_CDECL);
     context->RegisterGlobalFunction("bool ProgressionBeginShop(bool final_level = false)", asFUNCTION(FriendlyProgression::BeginShop), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionArenaWin(const array<int> &in winners, bool match)", asFUNCTION(AS_ProgressionArenaWin), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionArenaRoundComplete(const array<int> &in winners, const array<int> &in roster)", asFUNCTION(AS_ProgressionArenaRoundComplete), asCALL_CDECL);
+    context->RegisterGlobalFunction("void ProgressionSurvivalClear(int battery, int wave, const array<int> &in winners)", asFUNCTION(AS_ProgressionSurvivalClear), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionReportRecovery(int victim)", asFUNCTION(FriendlyProgression::ReportRecovery), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionCheckpoint(int checkpoint = 0, int source = -1)", asFUNCTION(FriendlyProgression::Checkpoint), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionResetAttempt()", asFUNCTION(FriendlyProgression::ResetAttempt), asCALL_CDECL);
@@ -6311,19 +6355,24 @@ void AttachOnline(ASContext* context) {
     context->RegisterGlobalFunction("void SessionSetCampaignTransition(bool pending, const string &in destination)", asFUNCTION(SessionSaves::SetCampaignTransition), asCALL_CDECL);
     context->RegisterGlobalFunction("bool SessionCampaignTransition(string &out destination)", asFUNCTION(SessionSaves::CampaignTransition), asCALL_CDECL);
     context->RegisterGlobalFunction("void SessionAutosave()", asFUNCTION(SessionSaves::Autosave), asCALL_CDECL);
+    context->RegisterGlobalFunction("void SessionFinishSurvivalRun()", asFUNCTION(SessionSaves::FinishSurvivalRun), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_EndSurvivalRun()", asFUNCTION(SessionSaves::EndSurvivalRun), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_RetrySurvivalRun()", asFUNCTION(SessionSaves::RetrySurvivalRun), asCALL_CDECL);
     context->RegisterGlobalFunction("int SessionArenaRound(int)", asFUNCTION(SessionSaves::ArenaRound), asCALL_CDECL);
     context->RegisterGlobalFunction("int SessionArenaPoints(int,int)", asFUNCTION(SessionSaves::ArenaPoints), asCALL_CDECL);
     context->RegisterGlobalFunction("void SessionArenaState(const string &in)", asFUNCTION(SessionSaves::ArenaState), asCALL_CDECL);
     context->RegisterGlobalFunction("string SessionArenaRestore()", asFUNCTION(SessionSaves::ArenaRestore), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_CaptureEnemyDifficulty(bool new_match = false)", asFUNCTION(AS_CaptureEnemyDifficulty), asCALL_CDECL);
+    context->RegisterGlobalFunction("void Online_FreezeSurvivalEnemy(int avatar, bool allow_weapons = true)", asFUNCTION(AS_FreezeSurvivalEnemy), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionCampaignLoop()", asFUNCTION(AS_ProgressionCampaignLoop), asCALL_CDECL);
     context->RegisterGlobalFunction("void ProgressionArenaLoadouts()", asFUNCTION(AS_ProgressionArenaLoadouts), asCALL_CDECL);
     context->RegisterGlobalFunction("float Online_WornArmorRating(int)", asFUNCTION(AS_WornArmorRating), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_ChallengeEncounterWin(const string &in key)", asFUNCTION(AS_Online_ChallengeEncounterWin), asCALL_CDECL);
+    context->RegisterGlobalFunction("void Online_ChallengeEncounterWipe(const string &in key)", asFUNCTION(AS_Online_ChallengeEncounterWipe), asCALL_CDECL);
     context->RegisterGlobalFunction("void Online_ChallengeCompletion(const string &in key)", asFUNCTION(AS_Online_ChallengeCompletion), asCALL_CDECL);
     context->RegisterGlobalFunction("int Online_ChallengeReferenceAvatar()", asFUNCTION(AS_Online_ChallengeReferenceAvatar), asCALL_CDECL);
     context->RegisterGlobalFunction("float Online_ChallengePressure()", asFUNCTION(AS_Online_ChallengePressure), asCALL_CDECL);
-    context->RegisterGlobalFunction("bool Online_GetEnemyDifficultySample(float &out pressure, int &out ai_rate, int &out humans)", asFUNCTION(AS_Online_GetEnemyDifficultySample), asCALL_CDECL);
+    context->RegisterGlobalFunction("bool Online_GetEnemyDifficultySample(float &out pressure, int &out ai_rate, int &out humans, int avatar = -1)", asFUNCTION(AS_Online_GetEnemyDifficultySample), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_IsDifficultyEnemy(int local_id)", asFUNCTION(AS_Online_IsDifficultyEnemy), asCALL_CDECL);
     context->RegisterGlobalFunction("bool Online_FindSafeSpot(const vec3 &in base, const vec3 &in facing, int index, vec3 &out spot)", asFUNCTION(AS_Online_FindSafeSpot), asCALL_CDECL);
     context->RegisterGlobalFunction("string Online_ObjectFile(int id)", asFUNCTION(AS_Online_ObjectFile), asCALL_CDECL);

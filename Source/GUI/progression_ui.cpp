@@ -50,8 +50,15 @@ int arena_score_frame = -1;
 Box arena_announcement{};
 int arena_announcement_frame = -1;
 
+constexpr float stats_width = 174.0f;
+constexpr float stats_line_height = 22.0f;
+// Name, five stats, optional Luck, two armor lines, with padding and section gaps.
+constexpr float full_stats_height = 9 * stats_line_height + 25.0f;
+
 float gameplay_scale(const Box& area) {
-    return std::max(0.55f, std::min({1.16f, area.w / 420.0f, area.h / 480.0f}));
+    const float scale = std::max(0.55f, std::min({1.16f, area.w / 420.0f, area.h / 480.0f}));
+    // In very small split views, leave room below the centered stats for the XP bars.
+    return std::min({scale, area.w / (stats_width + 24.0f), area.h / (full_stats_height + 2 * 58.0f)});
 }
 
 Box gameplay_viewport(unsigned index, unsigned count, ImVec2 display) {
@@ -65,14 +72,10 @@ Box gameplay_wallet(const Box& area, float scale) {
     return {area.x + area.w - width - 12 * scale, area.y + area.h - 46 * scale, width, 34 * scale};
 }
 
-Box gameplay_stats(const Box& area, float scale) {
+Box gameplay_stats(const Box& area, float scale, bool has_luck = true) {
     const float margin = 12.0f * scale;
-    const float width = 174.0f * scale;
-    const float height = 223.0f * scale;
-    const float wallet_width = gameplay_wallet(area, scale).w;
-    const bool above_wallet = width + wallet_width + 3*margin > area.w;
-    const float bottom = above_wallet ? 58*scale : margin;
-    return {area.x + margin, std::max(area.y + margin, area.y + area.h - bottom - height), width, height};
+    const float height = (has_luck ? full_stats_height : full_stats_height - stats_line_height) * scale;
+    return {area.x + margin, area.y + (area.h - height) * 0.5f, stats_width * scale, height};
 }
 
 ImVec2 arena_units() {
@@ -142,7 +145,9 @@ struct Seat {
     unsigned target = UINT32_MAX;
     std::string focus, notice;
     double notice_until = 0;
-    float scroll = 0;
+    std::array<float, 2> scroll{};
+    int drag_column = -1;
+    float drag_offset = 0;
     int old_dx = 0, old_dy = 0;
     double next_move = 0;
     bool accept_down = false, back_down = false;
@@ -150,7 +155,7 @@ struct Seat {
     uint16_t next_reward_key = 0;
     uint32_t next_reward_pad = 0;
     ImVec2 previous_mouse{-10000,-10000};
-    void reset_list() { focus.clear(); scroll = 0; dropdown = false; }
+    void reset_list() { focus.clear(); scroll = {}; dropdown = false; drag_column = -1; }
 };
 std::map<uint32_t, Seat> seats;
 Json::Value layout;
@@ -165,6 +170,7 @@ struct Artwork {
 
 Artwork card_art(const std::string& id, int material) {
     if (id == "health") return {nullptr, "VIT"};
+    if (id == "restore_health") return {nullptr, "HEAL"};
     if (id == "damage") return {nullptr, "DMG"};
     if (id == "speed") return {nullptr, "SPD"};
     if (id == "stealth_passive") return {nullptr, "STL"};
@@ -188,7 +194,8 @@ Artwork card_art(const std::string& id, int material) {
         return armor[id[6] - '0'];
     for (const auto& weapon : FriendlyProgression::Weapons()) if (id == weapon.key)
         return {weapon.artwork, id == "dagger" ? "DGR" : id == "sword" ? "SWD" :
-                id == "spear" ? "SPR" : id == "staff" ? "STF" : "BSW", false, true, id == "staff"};
+                weapon.offhand ? "KNF" : id == "spear" ? "SPR" : id == "staff" ? "STF" : "WPN", false, true, id == "staff"};
+    if (id == "race_upgrade") return {nullptr, "RACE"};
     if (id == "recruit") return {"Character/turner", "BOT"};
     return {"Character/rabbitguard", "AI"};
 }
@@ -291,7 +298,7 @@ std::string number(double value, int precision = 2) {
 void stats_column(ImDrawList* draw, Box box, const Json::Value& stats, float scale, bool armor_details = true) {
     draw->AddRectFilled(box.min(), box.max(), ink, 3*scale);
     draw->AddLine(box.min(), {box.x+box.w,box.y}, gold, std::max(1.f,scale));
-    const float pad = 8*scale, size = std::max(10.f,15*scale), line = 22*scale;
+    const float pad = 8*scale, size = std::max(10.f,15*scale), line = stats_line_height*scale;
     float y = box.y+pad;
     label(draw,{box.x+pad,y,box.w-2*pad,line},stats["name"].asString(),18*scale,ivory,true);
     y += line+4*scale;
@@ -306,8 +313,8 @@ void stats_column(ImDrawList* draw, Box box, const Json::Value& stats, float sca
     row("Durability", "x"+number(stats["durability"].asDouble()));
     row("Damage", "x"+number(stats["damage"].asDouble()));
     row("Movement", "x"+number(stats["movement"].asDouble()));
-    row("Passive stealth", number((1-stats["passive_range"].asDouble())*100,0)+"%");
-    row("Active stealth", number((1-stats["active_range"].asDouble())*100,0)+"%");
+    row("Passive stealth", number((1-stats["passive_range"].asDouble())*100)+"%");
+    row("Active stealth", number((1-stats["active_range"].asDouble())*100)+"%");
     if (stats.isMember("luck_rank")) {
         row("Luck", std::to_string(stats["luck_rank"].asInt()) + " (" + number(stats["reward_chance"].asDouble()*100,1) + "%)");
     }
@@ -335,7 +342,7 @@ float input_depth(const PlayerInput* input, const char* key) {
     return it != input->key_down.end() && it->second.count > 0 ? it->second.depth : 0.0f;
 }
 
-enum class Action { TargetMenu, Target, PageShop, PageLoadout, PageTeam, Buy, Equip, Leader, Ready, Loop };
+enum class Action { TargetMenu, Target, PageShop, PageLoadout, PageTeam, Buy, Heal, Equip, Sell, Leader, Ready, Loop };
 struct Button {
     std::string id, title, detail, badge;
     Action action;
@@ -344,10 +351,14 @@ struct Button {
     uint32_t target = UINT32_MAX;
     unsigned rarity = 0;
     int armor_material = 0;
+    unsigned column = 0;
 };
 struct Panel {
-    Box bounds, list, wallet, heading, note, stats;
-    float scale, total = 0;
+    Box bounds, wallet, heading, note, stats;
+    std::array<Box, 2> list{};
+    std::array<float, 2> total{};
+    float scale;
+    bool columns = false;
     std::vector<Button> buttons;
 };
 
@@ -385,67 +396,109 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     if (!can_buy && seat.page == Page::Shop) seat.page = Page::Loadout;
     const auto& targets = v["targets"];
     const std::string name = target_name(targets, seat.target, player.playername);
-    p.buttons.push_back({"target", name+"   v", "", "", Action::TargetMenu,
-                         {x,y,w,line}, targets.size() > 1});
+    const auto& cards = v["cards"];
+    const Json::Value* recovery = nullptr;
+    for (const auto& card : cards) if (card["id"].asString() == "restore_health") recovery = &card;
+    const float target_width = recovery ? (w-gap)*.36f : w;
+    p.buttons.push_back({"target", name + (targets.size() > 1 ? "   v" : ""), "", "", Action::TargetMenu,
+                         {x,y,target_width,line}, targets.size() > 1});
+    if (recovery) {
+        const auto& card = *recovery;
+        const double spend = card["cost"].asDouble();
+        const int quote = card.get("heal_quote", card["cost"]).asInt();
+        std::string text = "Heal   " + std::to_string(quote) + " / " + std::to_string(card["full_cost"].asInt()) + " XP";
+        if (spend < quote)
+            text += "   Spend " + number(spend, spend == std::floor(spend) ? 0 : 2) + " XP";
+        p.buttons.push_back({"restore_health",text,card["description"].asString(),"",Action::Heal,
+                             {x+target_width+gap,y,w-target_width-gap,line},card["available"].asBool()});
+    }
     y += line+gap;
-    int tabs = (can_buy ? 1 : 0) + 1 + (shared ? 1 : 0);
-    float tw = (w-gap*(tabs-1))/tabs, tx = x;
-    auto tab = [&](Action action, const char* key, const char* title, Page page) {
-        p.buttons.push_back({key,title,"",seat.page == page ? "selected" : "",action,{tx,y,tw,line}});
-        tx += tw+gap;
-    };
-    if (can_buy) tab(Action::PageShop, "shop", "Upgrades", Page::Shop);
-    tab(Action::PageLoadout, "loadout", "Equipment", Page::Loadout);
-    if (shared) tab(Action::PageTeam, "team", "Team", Page::Team);
-    y += line+gap;
-    p.list = {x,y,w,std::max(1.0f,p.note.y-gap-y)};
-    float ly = 0;
-    auto row = [&](Action action, const std::string& key, const std::string& title,
-                   bool active, uint32_t target = UINT32_MAX, const std::string& detail = "") {
-        p.buttons.push_back({key,title,detail,"",action,{x,y+ly,w,line},active,true,target});
-        ly += line+gap;
+    p.columns = w >= 615*s && area.h >= 450 && !seat.dropdown;
+    if (!p.columns && !seat.dropdown) {
+        const int tabs = int(can_buy) + 1 + int(shared);
+        const float tw = (w-gap*(tabs-1))/tabs;
+        float tx = x;
+        auto tab = [&](Action action, const char* key, const char* title, Page page) {
+            p.buttons.push_back({key,title,"",seat.page == page ? "selected" : "",action,{tx,y,tw,line}});
+            tx += tw+gap;
+        };
+        if (can_buy) tab(Action::PageShop, "shop", "Upgrades", Page::Shop);
+        tab(Action::PageLoadout, "loadout", "Equipment", Page::Loadout);
+        if (shared) tab(Action::PageTeam, "team", "Team", Page::Team);
+        y += line+gap;
+    } else if (p.columns) y += 23*s;
+    const float lh = std::max(1.0f,p.note.y-gap-y);
+    const float ew = p.columns && can_buy ? std::min(315*s,w*.41f) : w;
+    p.list[0] = {x,y,p.columns && can_buy ? w-ew-gap : w,lh};
+    if (p.columns && can_buy) p.list[1] = {x+w-ew,y,ew,lh};
+    const float rail = 11*s;
+    auto row = [&](unsigned c, Action action, std::string key, std::string title, bool active,
+                   uint32_t target = UINT32_MAX, std::string detail = "") {
+        const Box& list = p.list[c];
+        p.buttons.push_back({key,title,detail,"",action,{list.x,list.y+p.total[c],list.w-rail,line},
+                             active,true,target,0,0,c});
+        p.total[c] += line+gap;
     };
     if (seat.dropdown) {
         for (const auto& tgt : targets) {
             uint32_t id = tgt["id"].asUInt();
-            row(Action::Target,"target_"+std::to_string(id),tgt["name"].asString()+(tgt["bot"].asBool()?"  (bot)":""),true,id);
+            row(0,Action::Target,"target_"+std::to_string(id),tgt["name"].asString()+(tgt["bot"].asBool()?"  (bot)":""),true,id);
         }
-    } else if (seat.page == Page::Shop) {
-        const int columns = std::max(1, static_cast<int>((w+gap)/(141*s+gap)));
-        const float size = (w-(columns-1)*gap)/columns;
+        return p;
+    }
+    if (can_buy && (p.columns || seat.page == Page::Shop)) {
+        Box list = p.list[0];
+        const int columns = std::max(1, static_cast<int>((list.w-rail+gap)/(141*s+gap)));
+        const float size = (list.w-rail-(columns-1)*gap)/columns;
         int index = 0;
-        for (const auto& card : v["cards"]) {
-            const auto col = index%columns, r = index/columns;
+        for (const auto& card : cards) {
+            if (card["id"].asString() == "restore_health") continue;
+            const int col = index%columns, r = index/columns;
             p.buttons.push_back({card["id"].asString(),card["label"].asString(),card["description"].asString(),
                                  std::to_string(card["cost"].asInt())+" XP",Action::Buy,
-                                 {x+col*(size+gap),y+r*(size+gap),size,size},card["available"].asBool(),true,UINT32_MAX,
+                                 {list.x+col*(size+gap),list.y+r*(size+gap),size,size},card["available"].asBool(),true,UINT32_MAX,
                                  static_cast<unsigned>(std::max(0,std::min(4,card["rarity"].asInt()))), card["armor_material"].asInt()});
             ++index;
         }
-        ly = ((index+columns-1)/columns)*(size+gap);
-    } else if (seat.page == Page::Loadout) {
-        int equipped = v["big_weapon"].asInt();
-        const bool edit = v["can_equip"].asBool();
-        row(Action::Equip,"none",equipped == 0 ? "(*)  No main weapon" : "( )  No main weapon",edit);
-        for (const auto& weapon : FriendlyProgression::Weapons()) if (weapon.selection && v[std::string("owned_")+weapon.key].asBool())
-            row(Action::Equip,weapon.key,std::string(equipped == weapon.selection ? "(*)  " : "( )  ")+weapon.label,edit);
-        if (v["owned_dagger"].asBool()) row(Action::Equip,"dagger",v["dagger"].asBool() ? "[x]  Offhand dagger" : "[ ]  Offhand dagger",edit);
-    } else {
+        p.total[0] = ((index+columns-1)/columns)*(size+gap);
+    }
+    const unsigned c = p.columns && can_buy ? 1 : 0;
+    if (p.columns || seat.page == Page::Loadout) {
+        for (const auto& item : v["inventory"]) {
+            std::string title = item["slot"].asString() + "   ";
+            title += item.get("label","Empty").asString();
+            if (item.isMember("price")) title += "    Sell " + std::to_string(item["price"].asInt()) + " XP";
+            row(c,Action::Sell,item.get("sell_key","empty_"+item["slot"].asString()).asString(),title,
+                !ready && can_buy && item.isMember("sell_key"),UINT32_MAX,
+                item.isMember("price") ? "Sell this carried item for its full shop price." : "");
+        }
+        p.total[c] += gap;
+        const int equipped = v["big_weapon"].asInt();
+        const bool edit = !ready && v["can_equip"].asBool();
+        row(c,Action::Equip,"equip_none",equipped == 0 ? "(*)  No main weapon" : "( )  No main weapon",edit);
+        for (const auto& weapon : FriendlyProgression::Weapons()) {
+            if (!v[std::string("owned_")+weapon.key].asBool()) continue;
+            const bool selected = weapon.offhand ? v["dagger"].asBool() && v["dagger_variant"].asInt() == weapon.selection : equipped == weapon.selection;
+            const std::string mark = weapon.offhand ? (selected ? "[x]  " : "[ ]  ") : (selected ? "(*)  " : "( )  ");
+            row(c,Action::Equip,std::string("equip_")+weapon.key,mark+weapon.label,edit);
+        }
+    }
+    if (shared && (p.columns || seat.page == Page::Team)) {
+        if (p.columns) p.total[c] += gap;
         for (const auto& member : v["teammates"]) {
             const uint32_t id = member["id"].asUInt();
             bool leader = id == v["team_leader"].asUInt();
-            row(Action::Leader,"leader_"+std::to_string(id),member["name"].asString()+(leader ? "   (Team leader)" : ""),
-                !leader && player.player_id == v["team_leader"].asUInt(), id,
+            row(c,Action::Leader,"leader_"+std::to_string(id),member["name"].asString()+(leader ? "   (Team leader)" : ""),
+                !ready && !leader && player.player_id == v["team_leader"].asUInt(), id,
                 leader ? "" : "Choose this player as team leader.");
         }
     }
-    p.total = std::max(0.f,ly-gap);
     return p;
 }
 
 void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, double now) {
     if (!btn.active) return;
-    if (btn.action == Action::TargetMenu) { s.dropdown = !s.dropdown; s.scroll = 0; s.focus = s.dropdown ? "target_"+std::to_string(s.target) : "target"; return; }
+    if (btn.action == Action::TargetMenu) { s.dropdown = !s.dropdown; s.scroll = {}; s.focus = s.dropdown ? "target_"+std::to_string(s.target) : "target"; return; }
     if (btn.action == Action::Target) { s.target = btn.target; s.reset_list(); s.focus = "target"; return; }
     if (btn.action == Action::PageShop || btn.action == Action::PageLoadout || btn.action == Action::PageTeam) {
         s.page = btn.action == Action::PageShop ? Page::Shop : btn.action == Action::PageTeam ? Page::Team : Page::Loadout;
@@ -454,8 +507,9 @@ void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, 
     std::string action, key = btn.id;
     uint32_t target = s.target;
     switch (btn.action) {
-        case Action::Buy: action = "buy"; break;
-        case Action::Equip: action = "equip"; break;
+        case Action::Buy: case Action::Heal: action = "buy"; break;
+        case Action::Sell: action = "sell"; break;
+        case Action::Equip: action = "equip"; key = btn.id.substr(6); break;
         case Action::Ready: action = "ready"; key.clear(); break;
         case Action::Loop: action = "loop"; key = v["loop"].asBool() ? "no" : "yes"; break;
         case Action::Leader: action = "leader"; target = btn.target; key.clear(); break;
@@ -560,13 +614,14 @@ void checkpoint_reward(ImDrawList* draw, const Box& viewport, const Box& wallet,
 // cards without ever moving the focus belonging to another local player.
 Box screen_box(const Button& b, const Seat& seat) {
     Box rect = b.box;
-    if (b.in_list) rect.y -= seat.scroll;
+    if (b.in_list) rect.y -= seat.scroll[b.column];
     return rect;
 }
 bool visible(const Button& b, const Panel& p, const Seat& seat) {
     if (!b.in_list) return true;
     Box box = screen_box(b,seat);
-    return box.y < p.list.y+p.list.h && box.y+box.h > p.list.y;
+    const auto& list = p.list[b.column];
+    return box.y < list.y+list.h && box.y+box.h > list.y;
 }
 const Button* selected(const Panel& p, const std::string& id) {
     for (const auto& b : p.buttons) if (b.id == id) return &b;
@@ -583,7 +638,7 @@ void navigate(const Panel& p, Seat& seat, int dx, int dy) {
         Box r = screen_box(b,seat);
         // Treat the clipped list as a single region when entering from a tab
         // or footer. Once inside, allow movement through the entire list.
-        if (!current->in_list && !visible(b,p,seat)) continue;
+        if ((!current->in_list || current->column != b.column) && !visible(b,p,seat)) continue;
         float x = r.x+r.w/2 - (from.x+from.w/2);
         float y = r.y+r.h/2 - (from.y+from.h/2);
         float along = dx ? dx*x : dy*y;
@@ -592,7 +647,8 @@ void navigate(const Panel& p, Seat& seat, int dx, int dy) {
         float cost = along + across*2.25f;
         if (current->in_list && !b.in_list && dy) {
             // Prefer the next/previous list row over a fixed footer/header.
-            if ((dy > 0 && b.box.y < p.list.y+p.list.h) || (dy < 0 && b.box.y > p.list.y)) continue;
+            const auto& list = p.list[current->column];
+            if ((dy > 0 && b.box.y < list.y+list.h) || (dy < 0 && b.box.y > list.y)) continue;
             cost += 10000;
         }
         if (cost < best_cost) { best = &b; best_cost = cost; }
@@ -600,9 +656,11 @@ void navigate(const Panel& p, Seat& seat, int dx, int dy) {
     if (!best) return;
     seat.focus = best->id;
     if (best->in_list) {
-        float top = best->box.y-p.list.y, bottom = top+best->box.h;
-        if (top < seat.scroll) seat.scroll = top;
-        else if (bottom > seat.scroll+p.list.h) seat.scroll = std::max(top,bottom-p.list.h);
+        const auto& list = p.list[best->column];
+        float& scroll = seat.scroll[best->column];
+        float top = best->box.y-list.y, bottom = top+best->box.h;
+        if (top < scroll) scroll = top;
+        else if (bottom > scroll+list.h) scroll = std::max(top,bottom-list.h);
     }
 }
 void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, Box area, Seat& seat,
@@ -615,22 +673,43 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
         for (const auto& b : p.buttons) if (b.in_list) { seat.focus = b.id; break; }
     }
     const bool hover_mouse = mouse_owner && area.contains(io.MousePos);
-    float scroll_axis = input_depth(input,"menu_scroll_down") - input_depth(input,"menu_scroll_up");
-    const float previous_scroll = seat.scroll;
-    seat.scroll += scroll_axis*std::min(io.DeltaTime,0.1f)*600*s;
-    if (hover_mouse && p.list.contains(io.MousePos)) seat.scroll -= io.MouseWheel*50*s;
-    seat.scroll = std::max(0.f,std::min(std::max(0.f,p.total-p.list.h),seat.scroll));
     const Button* old_focus = selected(p,seat.focus);
+    unsigned focused_column = old_focus && old_focus->in_list ? old_focus->column : 0;
+    const float previous_scroll = seat.scroll[focused_column];
+    const float scroll_axis = input_depth(input,"menu_scroll_down") - input_depth(input,"menu_scroll_up");
+    seat.scroll[focused_column] += scroll_axis*std::min(io.DeltaTime,0.1f)*600*s;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) seat.drag_column = -1;
+    for (unsigned c = 0; c < p.list.size(); ++c) {
+        const auto& list = p.list[c];
+        const float limit = std::max(0.f,p.total[c]-list.h);
+        if (limit > 0 && list.h > 0) {
+            const float thumb = std::min(list.h,std::max(14*s,list.h*list.h/p.total[c]));
+            const float travel = list.h-thumb;
+            const float thumb_y = list.y+seat.scroll[c]/limit*travel;
+            Box rail{list.x+list.w-10*s,list.y,10*s,list.h};
+            if (hover_mouse && list.contains(io.MousePos)) {
+                seat.scroll[c] -= io.MouseWheel*60*s;
+                if (rail.contains(io.MousePos) && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    seat.drag_column = c;
+                    seat.drag_offset = io.MousePos.y >= thumb_y && io.MousePos.y < thumb_y+thumb ? io.MousePos.y-thumb_y : thumb*.5f;
+                }
+            }
+            if (seat.drag_column == int(c) && travel > 0)
+                seat.scroll[c] = limit*(io.MousePos.y-list.y-seat.drag_offset)/travel;
+        }
+        seat.scroll[c] = std::max(0.f,std::min(limit,seat.scroll[c]));
+    }
+    const auto& active_list = p.list[focused_column];
     auto readable = [&](const Button& button) {
         const Box r = screen_box(button,seat);
-        const float exposed = std::min(r.y+r.h,p.list.y+p.list.h)-std::max(r.y,p.list.y);
-        return exposed >= std::min(r.h,p.list.h)*0.5f;
+        const float exposed = std::min(r.y+r.h,active_list.y+active_list.h)-std::max(r.y,active_list.y);
+        return exposed >= std::min(r.h,active_list.h)*0.5f;
     };
-    if (seat.scroll != previous_scroll && old_focus && old_focus->in_list && !readable(*old_focus)) {
-        const float anchor = seat.scroll > previous_scroll ? p.list.y : p.list.y+p.list.h;
+    if (seat.scroll[focused_column] != previous_scroll && old_focus && old_focus->in_list && !readable(*old_focus)) {
+        const float anchor = seat.scroll[focused_column] > previous_scroll ? active_list.y : active_list.y+active_list.h;
         float distance = std::numeric_limits<float>::max();
         for (const auto& b : p.buttons) {
-            if (!b.in_list || !readable(b)) continue;
+            if (!b.in_list || b.column != focused_column || !readable(b)) continue;
             Box r = screen_box(b,seat);
             float d = std::abs(r.y+r.h/2-anchor) + std::abs(r.x-old_focus->box.x)*2;
             if (d < distance) { distance = d; seat.focus = b.id; }
@@ -665,6 +744,13 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     if (!clock.empty()) label(draw,{p.heading.x+p.heading.w-49*s,p.heading.y,49*s,p.heading.h},clock,22*s,gold,true);
     balance(draw,seat.wallet,p.wallet,now,s);
     stats_column(draw,p.stats,view["stats"],s);
+    if (p.columns) {
+        const bool can_buy = view["can_buy"].asBool();
+        for (int c = 0; c <= int(can_buy); ++c) {
+            const auto& list = p.list[c];
+            label(draw,{list.x,list.y-23*s,list.w,23*s}, can_buy && c==0 ? "Upgrades" : "Equipment",18*s,ivory,true);
+        }
+    }
     bool mouse_delta = io.MousePos.x != seat.previous_mouse.x || io.MousePos.y != seat.previous_mouse.y;
     seat.previous_mouse = io.MousePos;
     bool clicked = mouse_owner && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
@@ -673,15 +759,20 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     for (const auto& b : p.buttons) {
         if (!visible(b,p,seat)) continue;
         Box box = screen_box(b,seat);
-        if (b.in_list) draw->PushClipRect(p.list.min(),p.list.max(),true);
-        bool hovered = hover_mouse && box.contains(io.MousePos) && (!b.in_list || p.list.contains(io.MousePos));
+        const auto& list = p.list[b.column];
+        if (b.in_list) draw->PushClipRect(list.min(),list.max(),true);
+        bool hovered = hover_mouse && box.contains(io.MousePos) && (!b.in_list || list.contains(io.MousePos));
         if (hovered && (mouse_delta || clicked)) seat.focus = b.id;
         bool focused = seat.focus == b.id;
         const bool card = b.action == Action::Buy;
-        if (card) audit["visible_cards"].append(b.id);
+        if (card || b.action == Action::Heal) audit["visible_cards"].append(b.id);
         const Tier& tier = tiers[b.rarity];
         ImU32 surface = card ? tier.surface : focused ? IM_COL32(86,67,40,255) : IM_COL32(47,41,34,255);
         ImU32 border = focused || b.badge == "selected" ? gold : card ? tier.accent : IM_COL32(97,83,65,255);
+        if (b.action == Action::Heal) {
+            surface = IM_COL32(40,69,57,255);
+            border = focused ? gold : green;
+        }
         draw->AddRectFilled(box.min(),box.max(),surface,3*s);
         draw->AddRect(box.min(),box.max(),border,3*s,0,focused ? 3*s : s);
         if (card) {
@@ -690,7 +781,7 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
             const float title_y = box.y+edge+art_h+4*s, footer_y = box.y+box.h-32*s;
             label(draw,{box.x+edge,title_y,content,footer_y-title_y},b.title,21*s,ivory,true,true);
             draw->AddLine({box.x+edge,footer_y},{box.x+box.w-edge,footer_y},tier.accent);
-            const float badge_size = 16*s;
+            const float badge_size = std::min(16*s,content/std::max(1.f,font(true)->CalcTextSizeA(1,10000,0,b.badge.c_str()).x));
             const float cost_w = font(true)->CalcTextSizeA(badge_size,10000,0,b.badge.c_str()).x;
             label(draw,{box.x+edge,footer_y+5*s,content,24*s},b.badge,badge_size,
                   b.active ? IM_COL32(208,255,174,255) : ivory,true);
@@ -700,22 +791,28 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
                 label(draw,{box.x+box.w-edge-tier_w,footer_y+6*s,tier_w+1,24*s},tier.name,tier_size,tier.accent);
         } else {
             const float edge = 6*s;
-            label(draw,{box.x+edge,box.y+edge*0.7f,box.w-2*edge,box.h-edge*0.6f},b.title,18*s,b.active ? ivory : muted);
+            const float size = std::min(18*s,(box.w-2*edge)/std::max(1.f,font(false)->CalcTextSizeA(1,10000,0,b.title.c_str()).x));
+            label(draw,{box.x+edge,box.y+(box.h-size)*.5f,box.w-2*edge,box.h},b.title,size,b.active ? ivory : muted);
         }
         if (b.in_list) draw->PopClipRect();
         if (b.active && ((clicked && hovered) || (accept_press && focused))) chosen = &b;
     }
-    if (p.total > p.list.h) {
-        const float thumb = std::max(8*s,p.list.h*p.list.h/p.total);
-        const float top = p.list.y+seat.scroll/(p.total-p.list.h)*(p.list.h-thumb);
-        draw->AddRectFilled({p.list.x+p.list.w-3*s,top},{p.list.x+p.list.w,top+thumb},gold);
+    for (unsigned c = 0; c < p.list.size(); ++c) {
+        const auto& list = p.list[c];
+        if (list.h <= 0 || p.total[c] <= list.h) continue;
+        const float thumb = std::min(list.h,std::max(14*s,list.h*list.h/p.total[c]));
+        const float y = list.y+seat.scroll[c]/(p.total[c]-list.h)*(list.h-thumb);
+        draw->AddRectFilled({list.x+list.w-8*s,list.y},list.max(), IM_COL32(55,50,45,255),3*s);
+        draw->AddRectFilled({list.x+list.w-8*s,y},{list.x+list.w,y+thumb},gold,3*s);
     }
     const Button* focus = selected(p,seat.focus);
     const std::string note = seat.notice_until > now ? seat.notice : focus ? focus->detail : "";
     label(draw,p.note,note,16*s,muted,false,true);
     audit["focus"] = seat.focus;
     audit["target"] = seat.target;
-    audit["scroll"] = seat.scroll;
+    audit["scroll"] = seat.scroll[0];
+    audit["equipment_scroll"] = seat.scroll[1];
+    audit["columns"] = p.columns;
     audit["page"] = !view["shop_enabled"].asBool() ? "ready" :
                     seat.page == Page::Shop ? "shop" : seat.page == Page::Loadout ? "equipment" : "team";
     audit["stats_drawn"] = true;
@@ -808,6 +905,8 @@ void Draw(Engine& engine) {
         for (auto& entry : seats) entry.second.reward_generation = 0;
         return;
     }
+    const auto* scene = engine.GetSceneGraph();
+    if (scene->level->showing_results) return;
     if (FriendlyProgression::ShopOpen()) {
         if (!brush.valid() && FindFilePath("Data/Textures/ui/menus/main/brushStroke.png", kAnyPath, false).isValid())
             brush = engine.GetAssetManager()->LoadSync<TextureAsset>("Data/Textures/ui/menus/main/brushStroke.png", PX_NOMIPMAP|PX_NOCONVERT|PX_NOREDUCE, 0);
@@ -826,15 +925,17 @@ void Draw(Engine& engine) {
         if (seat.target == UINT32_MAX) seat.target = player.player_id;
         auto view = FriendlyProgression::View(player.player_id,seat.target);
         if (!view["enabled"].asBool()) continue;
-        bool open = view["shop_open"].asBool();
+        // A Survival battery's reward hand is the first part of that seat's intermission.
+        const bool battery_reward = view["shop_open"].asBool() && online->IsSurvivalMode() && view["reward_pending"].asBool();
+        bool open = view["shop_open"].asBool() && !battery_reward;
         const Box area = gameplay_viewport(std::max(0,player.screen-1),count,display);
         if (area.w < 1 || area.h < 1) continue;
         const int actual = devices->GetLocalPlayerInputID(player.local_index);
         const PlayerInput* input = devices->GetController(actual);
         const bool keyboard_owner = int(player.local_index) == devices->LocalKeyboardPlayerIndex();
-        const auto* scene = engine.GetSceneGraph();
+        const bool personal_menu = !battery_reward && engine.PlayerHasMenu(actual);
         const bool display_reward = !open && view["reward_pending"].asBool() &&
-            !engine.waiting_for_input_ && !engine.paused && !engine.PlayerHasMenu(actual) &&
+            !engine.waiting_for_input_ && !engine.paused && !personal_menu &&
             !online->TimeFrozen() && !online->CoopCutscene() && !online->RemoteCutsceneActive() &&
             scene->map_editor->state_ == MapEditor::kInGame &&
             !scene->level->HasScriptFocus() && !scene->level->DialogueCameraControl();
@@ -866,11 +967,11 @@ void Draw(Engine& engine) {
         }
         draw->PushClipRect(area.min(),area.max(),true);
         if (open) shop(draw,player,view,area,seat,input,keyboard_owner,now,audit);
-        else if (!engine.waiting_for_input_ && !engine.PlayerHasMenu(actual)) {
+        else if (!engine.waiting_for_input_ && !personal_menu) {
             const float s = gameplay_scale(area);
             const Box wallet = gameplay_wallet(area,s);
             balance(draw,seat.wallet,wallet,now,s);
-            const Box stats = gameplay_stats(area,s);
+            const Box stats = gameplay_stats(area, s, view["stats"].isMember("luck_rank"));
             stats_column(draw,stats,view["stats"],s,false);
             if (display_reward) checkpoint_reward(draw,area,wallet,stats,player,seat,view,keyboard_owner,audit);
             for (float value : {stats.x, stats.y, stats.x+stats.w, stats.y+stats.h}) audit["stats_rect"].append(value);

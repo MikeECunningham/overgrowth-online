@@ -65,6 +65,13 @@ void SendLevelMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID
             Engine::Instance()->FollowGameSpeed((float)atof(lm->msg.c_str() + 10));  // the host's game speed
         } else if (lm->msg.compare(0, 11, "ohg revive ") == 0) {
             online->CoopReviveRequest(lm->msg);  // a checkpoint: our character back up
+        } else if (peer == 0 && lm->msg.compare(0, 9, "ohg heal ") == 0) {
+            int character = -1, phase = -1;
+            float fraction = 1.0f;
+            if (sscanf(lm->msg.c_str() + 9, "%d %d %f", &character, &phase, &fraction) >= 2 &&
+                character >= 0 && (phase == 0 || phase == 1)) {
+                online->ReceiveHealthRestore(character, phase != 0, fraction);
+            }
         } else if (lm->msg.compare(0, 4, "ohl ") != 0 && (lm->msg.find(' ') != std::string::npos || lm->msg.find("reset") == std::string::npos)) {
             // Overgrowth Online: from the network only the level channel and the
             // host's reset (never "loadlevel <path>", "go_to_main_menu", ...)
