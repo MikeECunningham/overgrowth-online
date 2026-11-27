@@ -3,6 +3,7 @@
 #include "difficulty_hud.h"
 
 #include <imgui.h>
+#include <GUI/dimgui/dimgui.h>
 #include <GUI/dimgui/imgui_impl_sdl_gl3.h>
 #include <Asset/assetmanager.h>
 #include <Asset/Asset/texture.h>
@@ -400,7 +401,7 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     const bool loop = v["can_loop"].asBool();
     const float footer_width = loop ? (w-gap)*0.5f : w;
     std::string ready_label = ready ? "Ready  [x]" : "Ready";
-    if (keyboard_owner) ready_label += "   [Enter]";
+    if (keyboard_owner) ready_label += "   [Space]";
     p.buttons.push_back({"ready",ready_label, "", "", Action::Ready,
                          {x+w-footer_width,bottom-primary,footer_width,primary},paid || loop || !ready});
     if (loop)
@@ -424,7 +425,7 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
         const auto& card = *recovery;
         const double spend = card["cost"].asDouble();
         const int quote = card.get("heal_quote", card["cost"]).asInt();
-        std::string text = (keyboard_owner ? std::string("Heal [Space]   ") : std::string("Heal   ")) +
+        std::string text = (keyboard_owner ? std::string("Heal [H]   ") : std::string("Heal   ")) +
                            std::to_string(quote) + " / " + std::to_string(card["full_cost"].asInt()) + " XP";
         if (spend < quote)
             text += "   Spend " + number(spend, spend == std::floor(spend) ? 0 : 2) + " XP";
@@ -618,7 +619,7 @@ SDL_Scancode shop_shortcut(Seat& seat, const Keyboard& keys, bool accepting) {
         const auto& key = keys.keycode_input_buffer[i];
         if (key.mod & (KMOD_CTRL | KMOD_SHIFT | KMOD_ALT | KMOD_GUI)) continue;
         const auto code = static_cast<SDL_Scancode>(key.scancode);
-        if (code == SDL_SCANCODE_RETURN || code == SDL_SCANCODE_KP_ENTER || code == SDL_SCANCODE_SPACE || code == SDL_SCANCODE_E) return code;
+        if (code == SDL_SCANCODE_H || code == SDL_SCANCODE_SPACE || code == SDL_SCANCODE_E) return code;
     }
     return SDL_SCANCODE_UNKNOWN;
 }
@@ -815,11 +816,12 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     const bool accept = input_depth(input,"menu_return") > 0.5f;
     const bool back = input_depth(input,"menu_cancel") > 0.5f;
     const auto& keys = Input::Instance()->getKeyboard();
-    const auto shortcut = shop_shortcut(seat,keys,mouse_owner && !io.WantTextInput);
+    const bool typing = mouse_owner && (IsWritingOnlineChat() || io.WantTextInput || keys.isScancodeDown(SDL_SCANCODE_RETURN,KIMF_ANY));
+    const auto shortcut = shop_shortcut(seat,keys,mouse_owner && !typing);
     const bool reserved = mouse_owner && (keys.isScancodeDown(SDL_SCANCODE_RETURN,KIMF_ANY) ||
                                           keys.isScancodeDown(SDL_SCANCODE_KP_ENTER,KIMF_ANY) ||
                                           keys.isScancodeDown(SDL_SCANCODE_SPACE,KIMF_ANY));
-    const bool accept_press = shortcut == SDL_SCANCODE_E || (accept && !seat.accept_down && !reserved && shortcut == SDL_SCANCODE_UNKNOWN);
+    const bool accept_press = !typing && (shortcut == SDL_SCANCODE_E || (accept && !seat.accept_down && !reserved && shortcut == SDL_SCANCODE_UNKNOWN));
     if (back && !seat.back_down) {
         if (seat.dropdown) { seat.reset_list(); seat.focus = "target"; }
         else seat.focus = "ready";
@@ -946,8 +948,8 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     audit["page"] = !view["shop_enabled"].asBool() ? "ready" :
                     seat.page == Page::Shop ? "shop" : seat.page == Page::Loadout ? "equipment" : "team";
     audit["stats_drawn"] = p.wallet.w > 0;
-    if (shortcut == SDL_SCANCODE_SPACE) chosen = selected(p,"restore_health");
-    if (shortcut == SDL_SCANCODE_RETURN || shortcut == SDL_SCANCODE_KP_ENTER) chosen = selected(p,"ready");
+    if (shortcut == SDL_SCANCODE_H) chosen = selected(p,"restore_health");
+    if (shortcut == SDL_SCANCODE_SPACE) chosen = selected(p,"ready");
     if (chosen) dispatch(*chosen,seat,player.player_id,view,now);
 }
 }

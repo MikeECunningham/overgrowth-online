@@ -156,15 +156,28 @@ def survival_shop(ctx):
     wait(lambda: card("restore_health")["heal_quote"] == 8, "host sees the guest's bone injury")
     heal = card("restore_health")
     assert heal["cost"] == 2.5 and heal["full_cost"] == 10 and heal["heal_fraction"] == 2.5 / 8
+    def chat_open():
+        return any(w["name"] == "Online Chat Write" for w in host.bridge.call("ui_state")["windows"])
+
+    host.bridge.call("key", key="Return", down=True)
+    wait(chat_open, "text chat opens over the shop")
+    host.bridge.call("key", key="Return", down=False)
+    host.bridge.call("key", key="H")
     host.bridge.call("key", key="Space")
+    assert not view()["ready"] and card("restore_health")["available"]
+    host.bridge.call("key", key="Return", down=True)
+    wait(lambda: not chat_open(), "text chat closes")
+    host.bridge.call("key", key="Return", down=False)
+    wait(lambda: not host.bridge.call("ui_state")["want_text_input"], "shop regains keyboard shortcuts")
+    host.bridge.call("key", key="H")
     wait(lambda: all(math.isclose(fighter(p, visitor)["permanent_health"], .45, abs_tol=.005)
                      for p in peers), "only the purchased fraction heals on both peers")
     assert not card("restore_health")["available"]
-    host.bridge.call("key", key="Return")
-    wait(lambda: view()["ready"], "Enter readies the keyboard seat after healing")
+    host.bridge.call("key", key="Space")
+    wait(lambda: view()["ready"], "Space readies the keyboard seat after healing")
     assert not guest.bridge.call("progression", actor=visitor)["view"]["ready"]
-    host.bridge.call("key", key="Keypad Enter")
-    wait(lambda: not view()["ready"], "keypad Enter toggles only this seat back")
+    host.bridge.call("key", key="Space")
+    wait(lambda: not view()["ready"], "Space toggles only this seat back")
     assert wear(guest, visitor, visitor, "rat") and wear(host, owner, bot, "cat")
     chosen = {owner: "/male_cat.xml", visitor: "/rat.xml", bot: "/male_cat.xml"}
     expect_races(chosen)

@@ -47,7 +47,7 @@ and the remaining Steam friends/relay checks.
   They start enabled in **Mods**. The host chooses Scaling in **Difficulty** or
   turns on **Progression** in **Mode settings** for a particular game.
   Its shop offers separate bone and flesh damage upgrades and resistance to
-  long falls. In the shop, Space heals and Enter toggles Ready.
+  long falls. In the shop, H heals and Space toggles Ready.
   Each mod can be disabled independently. Slots, split-screen, save cards
   and the armor protection models are engine features.
   See [campaign scaling](Docs/Markdown/Campaign%20Difficulty.md) and

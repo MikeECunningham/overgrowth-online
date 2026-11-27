@@ -180,6 +180,11 @@ bool show_sound = false;
 bool show_mp_info = true;
 bool show_input_debug = false;
 bool show_chat = true;
+static bool write_to_chat = false;
+
+bool IsWritingOnlineChat() {
+    return show_chat && write_to_chat;
+}
 bool show_build_watermark = true;
 bool show_pose = false;
 bool show_script = false;
@@ -3839,7 +3844,6 @@ Mark Stockton\nMikko Tarmia\nDavid Lyhed Danielsson");
         ImGui::PopStyleColor(2);
     }
 
-    static bool write_to_chat = false;
     if (online->IsActive()) {
         Input* input = Input::Instance();
         const Keyboard& keyboard = input->getKeyboard();

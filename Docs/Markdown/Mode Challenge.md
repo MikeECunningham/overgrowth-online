@@ -193,8 +193,8 @@ Bots can receive gear and AI training. The multiplayer upgrade timer can
 advance everyone after 10, 15, 30, 60 or 120 seconds.
 Infinite waits for everyone. Solo Campaign and Arena shops wait for the player.
 
-In the shop, **Space** buys the displayed heal for the selected target and
-**Enter** or **keypad Enter** toggles Ready for the keyboard player. **E** or
+In the shop, **H** buys the displayed heal for the selected target and
+**Space** toggles Ready for the keyboard player. Chat suppresses both shortcuts. **E** or
 the controller’s confirm button activates the focused control. Stats, armor,
 daggers, main-hand weapons and character upgrades each start their own row.
 Race upgrades and recruitment are in the Characters section.
