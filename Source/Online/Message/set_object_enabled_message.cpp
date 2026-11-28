@@ -56,7 +56,7 @@ void SetObjectEnabledMessage::Execute(const OnlineMessageRef& ref, void* object,
     ObjectID object_id = Online::Instance()->GetObjectID(t->object_id);
 
     Object* obj = Engine::Instance()->GetSceneGraph()->GetObjectFromID(object_id);
-    if (obj) {
+    if (obj && Online::Instance()->GetOriginalID(object_id) == t->object_id) {
         obj->SetEnabled(t->is_enabled);
     } else {
         LOGW << "We were sent an update for \"" << object_id << " (" << t->object_id << ")\", but were not able to apply it due to not finding said object" << endl;

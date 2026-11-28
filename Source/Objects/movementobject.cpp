@@ -5369,7 +5369,9 @@ void MovementObject::ChildLost(Object* obj) {
         for (int i = 0, len = rigged_object_->children.size(); i < len; ++i) {
             if (rigged_object_->children[i].direct_ptr == obj) {
                 rigged_object_->children.erase(rigged_object_->children.begin() + i);
-                if (online->IsActive()) {
+                // Applying a host armor replacement on a replica also calls ChildLost.
+                // Sending it back can detach a newer piece after the host reuses the old ID.
+                if (online->IsActive() && !(online->IsClient() && obj->GetScriptParams()->HasParam("Progression Armor Region"))) {
                     online->Send<OnlineMessages::AttachToMessage>(GetID(), obj->GetID(), 0, false, false);
                 }
 

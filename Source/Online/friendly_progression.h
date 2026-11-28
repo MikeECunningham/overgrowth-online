@@ -56,6 +56,6 @@ void ReportRecovery(int victim);
 void ReportHit(int victim, int attacker, float damage, bool defeat);
 bool ReceiveEvent(uint8_t peer, const Json::Value& message);
 bool ReceiveAction(uint32_t actor, const Json::Value& message);
-Json::Value Snapshot();
+Json::Value Snapshot(bool include_purchase_notice = false);
 bool Restore(const Json::Value& snapshot, bool validate_only = false);
 }

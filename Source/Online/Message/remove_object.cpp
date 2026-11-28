@@ -59,7 +59,7 @@ void RemoveObject::Execute(const OnlineMessageRef& ref, void* object, PeerID pee
 
     if (sg != nullptr) {
         Object* o = sg->GetObjectFromID(object_id);
-        if (o != nullptr) {
+        if (o != nullptr && o->GetType() == ro->type && Online::Instance()->GetOriginalID(object_id) == ro->id) {
             sg->map_editor->RemoveObject(o, sg, true);
             Online::Instance()->DeRegisterHostClientIDTranslation(object_id);
         } else {

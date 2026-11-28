@@ -1774,6 +1774,11 @@ void SetTargetID(int id) {
 }
 
 void MovementObjectDeleted(int id) {
+    if(id == tether_id) {
+        SetTetherID(-1);
+        UnTether();
+    }
+
     if(id == target_id) {
         SetTargetID(-1);
     }
@@ -3920,7 +3925,7 @@ vec3 CheckTerminalVelocity(const vec3 &in velocity, const Timestep &in ts) {
 }
 
 void UnTether() {
-    if(tether_id != -1) {
+    if(tether_id != -1 && MovementObjectExists(tether_id)) {
         MovementObject @char = ReadCharacterID(tether_id);
         char.Execute("SetTetherID(-1); UnTether();");
     }

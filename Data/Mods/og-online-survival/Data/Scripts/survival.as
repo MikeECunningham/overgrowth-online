@@ -601,13 +601,33 @@ void Launch(const array<PlayerState> &in seats) {
     due = the_time + wave_interval;
 }
 
+void CleanupCorpses() {
+    for (int i = int(corpses.length()) - 1; i >= 0; --i) {
+        if (the_time < remove_at[i]) continue;
+        if (MovementObjectExists(corpses[i])) {
+            MovementObject@ corpse = ReadCharacterID(corpses[i]);
+            int partner = corpse.HasVar("tether_id") ? corpse.GetIntVar("tether_id") : -1;
+            if (partner >= 0 && MovementObjectExists(partner)) continue;
+            QueueDeleteObjectID(corpses[i]);
+        }
+        corpses.removeAt(i); remove_at.removeAt(i);
+    }
+}
+
 void CleanupGear() {
     array<int>@ items = GetObjectIDsType(_item_object);
     for (uint i = 0; i < items.length(); ++i) {
         int id = items[i];
         ScriptParams@ params = ReadObjectFromID(id).GetScriptParams();
-        if (!params.HasParam("Survival Recall Slot") && (params.HasParam("Survival Weapon") || params.HasParam("Campaign Weapon Owner")) &&
-            ReadItemID(id).HeldByWhom() < 0 && ReadItemID(id).StuckInWhom() < 0) QueueDeleteObjectID(id);
+        if (params.HasParam("Survival Recall Slot") || !(params.HasParam("Survival Weapon") || params.HasParam("Campaign Weapon Owner"))) continue;
+        const string stamp = "Survival Ground Battery";
+        if (ReadItemID(id).HeldByWhom() >= 0 || ReadItemID(id).StuckInWhom() >= 0) {
+            if (params.HasParam(stamp)) params.Remove(stamp);
+        } else if (!params.HasParam(stamp)) {
+            params.SetInt(stamp, battery);
+        } else if (battery - params.GetInt(stamp) >= 3) {
+            QueueDeleteObjectID(id);
+        }
     }
 }
 
@@ -873,7 +893,7 @@ void Fight(const array<PlayerState> &in seats) {
                 SetTags(r.id, EnemyTags(r.team, present));
                 continue;
             } else if (MovementObjectExists(r.id)) {
-                corpses.insertLast(r.id); remove_at.insertLast(the_time + 4.0f);
+                corpses.insertLast(r.id); remove_at.insertLast(the_time + 16.0f);
             }
             // Both sides can fall in the same tick. Count the opponent even
             // when its team has just been eliminated and its cohort despawns.
@@ -960,11 +980,7 @@ void Update(int is_paused) {
             SessionFinishSurvivalRun();
         }
     }
-    for (int i = int(corpses.length()) - 1; i >= 0; --i) {
-        if (the_time < remove_at[i]) continue;
-        if (MovementObjectExists(corpses[i])) QueueDeleteObjectID(corpses[i]);
-        corpses.removeAt(i); remove_at.removeAt(i);
-    }
+    CleanupCorpses();
     if (the_time + 0.2f < due) PrepareNextWave(seats);
     if (phase == fighting) { Fight(seats); CountdownTick(); return; }
     if (phase == preparing || phase == victory || phase == resting) {

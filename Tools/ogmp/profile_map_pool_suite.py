@@ -156,7 +156,8 @@ def profile_map_pool(ctx):
     _skip(host)
     _code(host, "ProgressionBeginShop(false);", "level")
     wait(lambda: panel(host,owner).get("shop"), "host opens shared shop")
-    assert not data(guest,visitor)["view"]["shop_open"] and not panel(guest,visitor).get("shop")
+    wait(lambda: panel(guest,visitor).get("spectating"), "guest watches shared shop")
+    assert panel(guest,visitor)["shop"] and "ready" not in panel(guest,visitor)["action_rects"]
     wait(lambda: "Use Heal above" in panel(host,owner).get("empty_upgrades", ""), "heal-only upgrade display")
     assert "Roll upgrade" in panel(host,owner)["empty_upgrades"]
     assert card_keys(host,owner) == {"restore_health"} and "restore_health" in panel(host,owner)["action_rects"]

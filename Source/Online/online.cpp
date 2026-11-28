@@ -145,6 +145,11 @@ void Online::GetConnectionStatus(const Peer& peer, ConnectionStatus* status) con
 }
 
 void Online::RegisterHostObjectID(CommonObjectID hostid, ObjectID clientid) {
+    // Local object numbers can be recycled independently on each machine.
+    const auto old_local = to_object_id.find(hostid);
+    if (old_local != to_object_id.end()) to_common_id.erase(old_local->second);
+    const auto old_host = to_common_id.find(clientid);
+    if (old_host != to_common_id.end()) to_object_id.erase(old_host->second);
     to_object_id[hostid] = clientid;
     to_common_id[clientid] = hostid;
 }
@@ -154,12 +159,10 @@ void Online::DeRegisterHostClientIDTranslation(ObjectID clientid) {
     // character later receives the same local object ID on this replica.
     coop_cutscene_players.erase(clientid);
     coop_hidden.erase(std::remove(coop_hidden.begin(), coop_hidden.end(), clientid), coop_hidden.end());
-    // check if we need to remove a translation
-    auto translation = GetOriginalID(clientid);
-
-    if (translation) {
-        to_object_id.erase(translation);
-        to_common_id.erase(clientid);
+    const auto translation = to_common_id.find(clientid);
+    if (translation != to_common_id.end()) {
+        to_object_id.erase(translation->second);
+        to_common_id.erase(translation);
     }
 }
 

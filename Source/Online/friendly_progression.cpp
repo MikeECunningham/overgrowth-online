@@ -72,6 +72,8 @@ struct Run {
     std::map<ID, Account> players;
     std::map<int, Team> teams;
     unsigned shop_generation = 0, reward_generation = 0, attempt = 0;
+    unsigned purchase_serial = 0;
+    std::string purchase_key, purchase_label;
     unsigned completed_rounds = 0;
     std::map<int, int> checkpoints;
     bool open = false, final = false, loop = false;
@@ -657,6 +659,11 @@ void CommitRestore(ID recipient, const PendingRestore& restore) {
     } else {
         Wallet& wallet = restore.team_wallet ? run.teams[restore.team_wallet].wallet : run.players[restore.buyer].wallet;
         wallet.Earn(-restore.cost, true);
+        if (restore.team_wallet) {
+            ++run.purchase_serial;
+            run.purchase_key = "restore_health";
+            run.purchase_label = "Restore health";
+        }
         if (restore.rotate) run.teams[restore.team_wallet].last_recipient = recipient;
     }
 }
@@ -724,6 +731,7 @@ bool GrantOffer(const PlayerState& buyer, const PlayerState& target, const Offer
         ++account.build.ai;
         account.build.trained = true;
     } else if (const auto* weapon = WeaponCategories::Find(key)) {
+        Net()->ProgressionWeaponAwarded(offer.recipient, weapon->offhand);
         account.weapons.insert(weapon->id);
         (weapon->offhand ? account.build.offhand_weapon : account.build.main_weapon) = weapon->id;
     } else {
@@ -740,6 +748,11 @@ bool Buy(const PlayerState& buyer, const PlayerState& target, const std::string&
     if (it == offers.end() || Spendable(buyer) < it->cost) return false;
     if (key == "restore_health") return it->cost > 0 && GrantRestore(buyer, target, *it, 0);
     if (!GrantOffer(buyer, target, *it)) return false;
+    if (Shared()) {
+        ++run.purchase_serial;
+        run.purchase_key = key;
+        run.purchase_label = it->label;
+    }
     Balance(buyer).held -= it->cost;
     return true;
 }
@@ -815,7 +828,6 @@ bool ClaimReward(const PlayerState& buyer, const Offer& offer, unsigned generati
     if (offer.id == "restore_health") return GrantRestore(buyer, buyer, offer, generation);
     const auto* subject = offer.id == "ai" ? Seat(offer.recipient) : &buyer;
     if (!subject || !GrantOffer(buyer, *subject, offer)) return false;
-    if (const auto* weapon = WeaponCategories::Find(offer.id)) Net()->ProgressionWeaponAwarded(offer.recipient, weapon->offhand);
     auto& hands = run.players[buyer.player_id].reward_hands;
     hands.erase(hands.begin(), hands.upper_bound(generation));
     return true;
@@ -1164,6 +1176,9 @@ bool BeginShop(bool final) {
     if (!Net()->ModeSetting("progression_shop_heal"))
         for (const auto& seat : Net()->GetPlayerStates()) Net()->ProgressionRestoreHealth(seat.player_id, 1.0f);
     if (PaidShop()) TrainBots();
+    run.purchase_serial = 0;
+    run.purchase_key.clear();
+    run.purchase_label.clear();
     ++run.shop_generation;
     run.open = PaidShop() || final;
     if (!run.open && Net()->IsSurvivalMode())
@@ -1345,6 +1360,9 @@ Json::Value View(ID actor, ID target) {
     v["reward_generation"] = hand;
     if (!run.open) return v;
     v["shared"] = Shared();
+    v["purchase_serial"] = run.purchase_serial;
+    v["purchase_key"] = run.purchase_key;
+    v["purchase_label"] = run.purchase_label;
     v["can_buy"] = PaidShop() && (!Shared() || Net()->IsLobbyHost(actor));
     if (run.restrict_upgrades) v["map_unlock_count"] = static_cast<Json::UInt>(run.map_upgrades.size());
     v["targets"] = Json::Value(Json::arrayValue);
@@ -1452,7 +1470,10 @@ bool ReceiveAction(ID actor, const Json::Value& m) {
             const auto* weapon = WeaponCategories::Find(key);
             if (!weapon || !acc.weapons.count(key)) return false;
             if (weapon->offhand && acc.build.offhand_weapon == key) acc.build.offhand_weapon.clear();
-            else (weapon->offhand ? acc.build.offhand_weapon : acc.build.main_weapon) = key;
+            else {
+                (weapon->offhand ? acc.build.offhand_weapon : acc.build.main_weapon) = key;
+                Net()->ProgressionWeaponAwarded(target, weapon->offhand);
+            }
         }
     } else return false;
     if (action != "ready") run.ready.erase(actor);
@@ -1525,7 +1546,7 @@ bool ReadCombatRanks(const Json::Value& row, StatRanks& ranks) {
     return true;
 }
 }
-Json::Value Snapshot() {
+Json::Value Snapshot(bool include_purchase_notice) {
     if (Net()->IsHosting()) FinishRemoteRestores();
     Json::Value j;
     j["checkpoints"] = Json::Value(Json::arrayValue);
@@ -1548,6 +1569,11 @@ Json::Value Snapshot() {
     if (run.restrict_upgrades) {
         j["map_upgrades"] = Json::Value(Json::arrayValue);
         for (const auto& key : run.map_upgrades) j["map_upgrades"].append(key);
+    }
+    if (include_purchase_notice && run.open && run.purchase_serial) {
+        j["purchase_serial"] = run.purchase_serial;
+        j["purchase_key"] = run.purchase_key;
+        j["purchase_label"] = run.purchase_label;
     }
     j["completed_rounds"] = run.completed_rounds;
     j["reward_generation"] = run.reward_generation;
@@ -1625,6 +1651,12 @@ bool Restore(const Json::Value& j, bool validate_only) {
         !j["ready"].isArray() || j["ready"].size() > 8192 || !j["shop"].isUInt() || !j["attempt"].isUInt() ||
         !j["open"].isBool() || !j["final"].isBool() || !j["loop"].isBool() || !j["ms_left"].isNumeric()) return false;
     Run next;
+    if (j.isMember("purchase_serial")) {
+        if (!j["purchase_serial"].isUInt() || !j["purchase_key"].isString() || !j["purchase_label"].isString()) return false;
+        next.purchase_serial = j["purchase_serial"].asUInt();
+        next.purchase_key = j["purchase_key"].asString();
+        next.purchase_label = j["purchase_label"].asString();
+    }
     if (j.isMember("map_upgrades")) {
         const auto& keys = j["map_upgrades"];
         if (!keys.isArray() || keys.size() > 8192) return false;

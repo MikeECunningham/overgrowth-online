@@ -148,7 +148,8 @@ struct Seat {
     Page page = Page::Shop;
     unsigned target = UINT32_MAX;
     std::string focus, notice;
-    double notice_until = 0;
+    double notice_until = 0, purchase_until = 0;
+    unsigned purchase_serial = 0;
     std::array<float, 2> scroll{};
     int drag_column = -1;
     float drag_offset = 0;
@@ -408,7 +409,7 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     const float ready_x = loop ? x+footer_width+gap : x;
     std::string ready_label = ready ? "Ready  [x]" : "Ready";
     ready_label += keyboard_owner ? "   [Space]" : "   [R2]";
-    p.buttons.push_back({"ready",ready_label, "", "", Action::Ready,
+    if (!v["spectating"].asBool()) p.buttons.push_back({"ready",ready_label, "", "", Action::Ready,
                          {ready_x,bottom-primary,footer_width,primary},paid || loop || !ready});
     if (force_finish)
         p.buttons.push_back({"force_finish", "Force finish", "Close the shop for everyone and continue.", "", Action::ForceFinish,
@@ -579,6 +580,7 @@ void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, 
         s.page = btn.action == Action::PageShop ? Page::Shop : Page::Loadout;
         s.reset_list(); s.focus = btn.id; return;
     }
+    if (v["spectating"].asBool()) return;
     std::string action, key = btn.id;
     uint32_t target = s.target;
     switch (btn.action) {
@@ -625,7 +627,7 @@ SDL_Scancode shop_shortcut(Seat& seat, const Keyboard& keys, bool accepting) {
     return SDL_SCANCODE_UNKNOWN;
 }
 
-void checkpoint_reward(ImDrawList* draw, const Box& viewport, const Box& wallet, const Box& stats,
+void checkpoint_reward(ImDrawList* draw, const Box& viewport,
                        const PlayerState& player, Seat& seat, const Json::Value& view, bool keyboard_owner,
                        Json::Value& audit) {
     const auto& cards = view["reward_cards"];
@@ -652,22 +654,23 @@ void checkpoint_reward(ImDrawList* draw, const Box& viewport, const Box& wallet,
 
     const float scale = std::max(.55f,std::min({1.16f,viewport.w/560.f,viewport.h/390.f}));
     const float gap = 4*scale, pad = 6*scale, heading = 25*scale;
-    const float right = wallet.x + wallet.w;
-    const float width = std::min(440*scale, std::max(1.f, right - ((config["show_stats_readout"].toBool() ? stats.x+stats.w : viewport.x)+gap)));
+    const float width = std::min(440*scale, viewport.w-2*pad);
     const int cols = width >= 310*scale ? 2 : 1;
     const int rows = (static_cast<int>(cards.size())+cols-1)/cols;
     const float cell_w = (width-(cols-1)*gap)/cols;
     const bool details = viewport.h >= 300*scale && cell_w >= 195*scale;
     const float cell_h = (details ? 73.f : 38.f)*scale;
-    const float top = wallet.y - pad - rows*(cell_h+gap) - heading;
-    const float left = right-width;
+    const float top = viewport.y + (viewport.h-heading-rows*(cell_h+gap))*.5f;
+    const float left = viewport.x + (viewport.w-width)*.5f;
+    const float right = left+width;
     draw->AddRectFilled({left,top},{right,top+heading},ink,3*scale);
     label(draw,{left+pad,top+scale,width-2*pad,heading},"Choose a free upgrade",17*scale,ivory,true);
-    if (has_pad || !keyboard_owner) {
-        const float hint_w = font(false)->CalcTextSizeA(13*scale,10000,0,"D-pad").x + pad;
-        label(draw,{right-hint_w,top+3*scale,hint_w,heading},"D-pad",13*scale,muted);
+    const bool show_pad = has_pad || !keyboard_owner;
+    if (show_pad) {
+        const float hint_w = font(true)->CalcTextSizeA(16*scale,10000,0,"D-PAD").x + pad;
+        label(draw,{right-hint_w,top+3*scale,hint_w,heading},"D-PAD",16*scale,gold,true);
     }
-    static const char* const directions[] = {"Up", "Right", "Down", "Left"};
+    static const char* const directions[] = {"UP", "RIGHT", "DOWN", "LEFT"};
     audit["page"] = "reward";
     audit["visible_cards"] = Json::Value(Json::arrayValue);
     for (unsigned i=0; i<cards.size() && i<4; ++i) {
@@ -675,12 +678,20 @@ void checkpoint_reward(ImDrawList* draw, const Box& viewport, const Box& wallet,
         const Tier& tier = tiers[std::min(4,std::max(0,card["rarity"].asInt()))];
         const float x = left+(i%cols)*(cell_w+gap), y = top+heading+gap+(i/cols)*(cell_h+gap);
         std::string key = keyboard_owner ? std::to_string(i+1) : "";
-        if (has_pad || !keyboard_owner) key += (key.empty() ? std::string() : " / ") + directions[i];
-        const float key_w = font(true)->CalcTextSizeA(17*scale,10000,0,key.c_str()).x + 2*pad;
+        if (show_pad) key += (key.empty() ? std::string() : " / ") + directions[i];
+        const float arrow_w = show_pad ? 14*scale : 0;
+        const float key_w = font(true)->CalcTextSizeA(17*scale,10000,0,key.c_str()).x + 2*pad + arrow_w;
         draw->AddRectFilled({x,y},{x+cell_w,y+cell_h},tier.surface,3*scale);
         draw->AddRectFilled({x,y},{x+key_w,y+cell_h},ink,3*scale);
         draw->AddLine({x+key_w,y},{x+key_w,y+cell_h},tier.accent);
-        label(draw,{x+pad,y+(cell_h-19*scale)/2,key_w,20*scale},key,17*scale,tier.accent,true);
+        if (show_pad) {
+            static const ImVec2 direction[] = {{0,-1},{1,0},{0,1},{-1,0}};
+            const ImVec2 d = direction[i];
+            const float cx = x+pad+arrow_w*.5f, cy = y+cell_h*.5f, r = 6*scale;
+            draw->AddTriangleFilled({cx+r*d.x,cy+r*d.y}, {cx-r*(d.x+d.y),cy-r*(d.y-d.x)},
+                                    {cx-r*(d.x-d.y),cy-r*(d.y+d.x)}, gold);
+        }
+        label(draw,{x+pad+arrow_w,y+(cell_h-19*scale)/2,key_w-arrow_w,20*scale},key,17*scale,tier.accent,true);
         const float text_x = x+key_w+pad, text_w = std::max(1.f,cell_w-key_w-2*pad);
         const auto title = card["label"].asString();
         const float name_size = 16*scale;
@@ -848,10 +859,16 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     draw->AddLine(area.min(), {area.x+area.w,area.y}, gold, std::max(1.f,s));
     std::string title = "Upgrade shop";
     if (!view["shop_enabled"].asBool()) title = view["can_loop"].asBool() ? "Campaign complete" : "Waiting for players";
+
+    const auto purchase = view["purchase_serial"].asUInt();
+    if (purchase != seat.purchase_serial) {
+        seat.purchase_serial = purchase;
+        seat.purchase_until = purchase ? now + 2.5 : 0;
+    }
     paint_heading(draw,p.heading);
     const int seconds = view["seconds_left"].asInt();
     const std::string clock = seconds >= 0 ? std::to_string(seconds)+"s" : "";
-    label(draw,{p.heading.x,p.heading.y,p.heading.w-(clock.empty()?0:52*s),p.heading.h},title+"  /  "+player.playername,25*s,ivory,true);
+    label(draw,{p.heading.x,p.heading.y,p.heading.w-(clock.empty()?0:52*s),p.heading.h},view["spectating"].asBool() ? "Shared shop  /  Host is shopping" : title+"  /  "+player.playername,25*s,ivory,true);
     if (!clock.empty()) label(draw,{p.heading.x+p.heading.w-49*s,p.heading.y,49*s,p.heading.h},clock,22*s,gold,true);
     if (p.wallet.w) {
         balance(draw,seat.wallet,p.wallet,now,s);
@@ -911,6 +928,10 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
             surface = IM_COL32(40,69,57,255);
             border = focused ? gold : green;
         }
+        if (now < seat.purchase_until && b.id == view["purchase_key"].asString()) {
+            surface = IM_COL32(86,79,40,255);
+            border = gold;
+        }
         draw->AddRectFilled(box.min(),box.max(),surface,3*s);
         draw->AddRect(box.min(),box.max(),border,3*s,0,focused ? 3*s : s);
         const ImU32 item_text = b.active ? ivory : IM_COL32(255,115,108,255);
@@ -955,7 +976,8 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
         draw->AddRectFilled({list.x+list.w-8*s,y},{list.x+list.w,y+thumb},gold,3*s);
     }
     const Button* focus = selected(p,seat.focus);
-    const std::string note = seat.notice_until > now ? seat.notice : focus ? focus->detail : "";
+    if (now < seat.purchase_until) audit["highlight_purchase"] = view["purchase_key"];
+    const std::string note = now < seat.purchase_until ? "Purchased  /  " + view["purchase_label"].asString() : seat.notice_until > now ? seat.notice : focus ? focus->detail : "";
     label(draw,p.note,note,16*s,muted,false,true);
     audit["focus"] = seat.focus;
     audit["target"] = seat.target;
@@ -1081,10 +1103,17 @@ void Draw(Engine& engine) {
         if (seat.target == UINT32_MAX) seat.target = player.player_id;
         auto view = FriendlyProgression::View(player.player_id,seat.target);
         if (!view["enabled"].asBool()) continue;
+        const bool spectator = online->IsClient() && FriendlyProgression::ShopOpen() &&
+            view["shared"].asBool() && view["shop_enabled"].asBool() && !view["reward_pending"].asBool();
+        if (spectator) {
+            view = FriendlyProgression::View(online->LobbyHostPlayerID(),seat.target);
+            view["spectating"] = true;
+            view["can_force_finish"] = view["can_loop"] = view["reward_pending"] = false;
+        }
         // A Survival battery's reward hand is the first part of that seat's intermission.
         const bool battery_reward = view["shop_open"].asBool() && online->IsSurvivalMode() && view["reward_pending"].asBool();
         bool open = view["shop_open"].asBool() && !battery_reward;
-        const bool full_shop = open && view["shared"].asBool() && view["shop_enabled"].asBool();
+        const bool full_shop = open && (!spectator || count == 1) && view["shared"].asBool() && view["shop_enabled"].asBool();
         Box area = full_shop ? Box{0,0,display.x,display.y} : gameplay_viewport(std::max(0,player.screen-1),count,display);
         const vec2 inset = DifficultyHUD::ShopInset(player.player_id);
         if (!full_shop) area.w -= inset.x();
@@ -1102,6 +1131,8 @@ void Draw(Engine& engine) {
         if (!display_reward) seat.reward_generation = 0;
         seat.wallet.update(view,now);
         if (open && !seat.shopping) {
+            seat.purchase_serial = 0;
+            seat.purchase_until = 0;
             seat.next_shop_key = devices->getKeyboard().keycode_input_buffer_sequence_counter;
             seat.target = player.player_id;
             seat.page = view["can_buy"].asBool() ? Page::Shop : Page::Loadout;
@@ -1116,6 +1147,7 @@ void Draw(Engine& engine) {
         audit["actor"] = player.player_id;
         audit["screen"] = player.screen;
         audit["shop"] = open;
+        audit["spectating"] = spectator;
         audit["display_held"] = seat.wallet.held;
         audit["display_pooled"] = seat.wallet.pool;
         audit["green_max"] = seat.wallet.projected_held();
@@ -1136,7 +1168,7 @@ void Draw(Engine& engine) {
             balance(draw,seat.wallet,wallet,now,s);
             const Box stats = gameplay_stats(area, s, view["stats"].isMember("luck_rank"));
             if (config["show_stats_readout"].toBool()) stats_column(draw,stats,view["stats"],s,false);
-            if (display_reward) checkpoint_reward(draw,area,wallet,stats,player,seat,view,keyboard_owner,audit);
+            if (display_reward) checkpoint_reward(draw,area,player,seat,view,keyboard_owner,audit);
             for (float value : {stats.x, stats.y, stats.x+stats.w, stats.y+stats.h}) audit["stats_rect"].append(value);
             if (arena_score_frame == ImGui::GetFrameCount())
                 for (float value : {arena_score.x, arena_score.y, arena_score.x+arena_score.w, arena_score.y+arena_score.h})

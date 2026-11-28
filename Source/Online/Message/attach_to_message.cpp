@@ -108,6 +108,8 @@ void AttachToMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID 
     AttachToMessage* t = static_cast<AttachToMessage*>(object);
     ObjectID parent_object_id = Online::Instance()->GetObjectID(t->parent_id);
     ObjectID child_object_id = Online::Instance()->GetObjectID(t->child_id);
+    if (Online::Instance()->GetOriginalID(child_object_id) != t->child_id ||
+        Online::Instance()->GetOriginalID(parent_object_id) != t->parent_id) return;
     if (!Online::Instance()->PeerMayChange(from, parent_object_id)) {
         return;  // (a guest attaches to and takes from its own character only)
     }
@@ -122,6 +124,8 @@ void AttachToMessage::Execute(const OnlineMessageRef& ref, void* object, PeerID 
 
     Online* online = Online::Instance();
     if ((t->exact_env || t->runtime_item) && online->IsHosting()) return;  // reserved host-authored gear; never relay a forged client attachment
+
+    if (online->IsHosting() && child && child->GetScriptParams()->HasParam("Progression Armor Region")) return;
 
     // Overgrowth Online: the host decides who holds an item. A client grabbing
     // one that is already in someone else's hand here gets told who has it.

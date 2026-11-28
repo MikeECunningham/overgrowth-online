@@ -93,7 +93,7 @@ def progression_free_buff_ui(ctx):
     wait(lambda: not data(p1)["view"]["reward_pending"], "number row claims the fourth upgrade")
     check_choice(p1, rows[0]["visible_cards"][3], first)
     assert data(p2)["view"]["reward_pending"]
-    assert not panels()[0].get("page") and panels()[1].get("page") == "reward"
+    wait(lambda: not panels()[0].get("page") and panels()[1].get("page") == "reward", "only the unclaimed hand remains visible")
     tap_pad(4)  # open P2's personal menu
     wait(lambda: bridge.status()["open_menu_players"] == [1], "controller opens personal menu during pending hand")
     assert panels()[1].get("page") != "reward"

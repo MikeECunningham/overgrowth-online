@@ -35,7 +35,7 @@ Json::Value Section(const ModInstance& mod, Scope scope) {
     section["version"] = Version(mod, scope);
     const auto found = script_data.find(mod.id.str());
     section["data"] = found == script_data.end() ? Json::Value(Json::objectValue) : found->second;
-    if (mod.session.feature == "progression") section["runtime"] = FriendlyProgression::Snapshot();
+    if (mod.session.feature == "progression") section["runtime"] = FriendlyProgression::Snapshot(scope == Scope::Network);
     if (mod.session.feature == "scaling")
         Json::Reader().parse(Online::Instance()->ModeChallengePayload(), section["runtime"], false);
     return section;

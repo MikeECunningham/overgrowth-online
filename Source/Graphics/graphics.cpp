@@ -22,6 +22,7 @@
 //   limitations under the License.
 //
 //-----------------------------------------------------------------------------
+#include <Utility/stacktrace.h>
 #include "graphics.h"
 
 #include <map>
@@ -1385,7 +1386,10 @@ static void NoteGLDebugMessage(GLenum type, GLuint id, const GLchar* message) {
     ++g_gl_debug_problem_count;
     std::string key = std::to_string(id) + ": " + std::string(message ? message : "").substr(0, 200);
     if (g_gl_debug_problems.size() < 64 || g_gl_debug_problems.count(key)) {
-        ++g_gl_debug_problems[key];
+        const int occurrences = ++g_gl_debug_problems[key];
+        if (type == GL_DEBUG_TYPE_ERROR && occurrences == 1) {
+            LOGE << "OpenGL driver error call stack for " << key << "\n" << GenerateStacktrace() << std::endl;
+        }
     }
 }
 

@@ -637,7 +637,7 @@ struct tri_data {
 };
 
 void BloodSurface::AddDecalToTriangles(const std::vector<int> &hit_list, vec3 pos, vec3 dir, float size, const TextureAssetRef &texture_ref) {
-    if (!framebuffer_created) {
+    if (!framebuffer_created || hit_list.empty()) {
         return;
     }
     PROFILER_ZONE(g_profiler_ctx, "BloodSurface::AddDecalToTriangles");

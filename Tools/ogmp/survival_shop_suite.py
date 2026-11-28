@@ -151,6 +151,8 @@ def survival_shop(ctx):
     assert not wear(host, owner, owner, "cat") and not wear(host, owner, bot, "rat")
     for _ in range(2):
         buy("race_upgrade", owner, 1200)
+    wait(lambda: any(p.get("spectating") and p.get("highlight_purchase") == "race_upgrade"
+                     for p in guest.bridge.status()["progression_ui"]), "remote shared purchase highlight")
     expect_races({owner: "/turner.xml", visitor: "/turner.xml"})
     assert wear(host, owner, owner, "rat")
     assert not wear(guest, visitor, visitor, "rat")
@@ -207,6 +209,21 @@ def survival_shop(ctx):
     assert view()["shop_open"]
     wait(lambda: state("int(phase)") == "0", "next battery deploys")
     wait(lambda: state("int(phase)") == "1" and not view()["shop_open"], "unready shop closes when fighting resumes")
+    # Expire a body during a drag. Normal expiry keeps it, while a forced removal
+    # must immediately release the surviving actor's interaction state.
+    hero = fighter(host, owner)["id"]
+    body = int(state("CreateObject(actors[0],true)"))
+    director(f'ReadCharacterID({hero}).Execute("StartBodyDrag(\\"head\\",0,{body});");'
+             f'corpses.insertLast({body});remove_at.insertLast(the_time-1);CleanupCorpses();'
+             f'level.SendMessage("retained_drag "+(corpses.find({body})>=0));DeleteObjectID({body});')
+    assert host.bridge.call("level_messages", prefix="retained_drag")["messages"][-1] == "retained_drag true"
+    assert _probe(host, "tethered == _TETHERED_FREE && tether_id == -1", hero) == "true"
+    discarded = int(state('CreateObject("Data/Items/rat_weapons/rat_throwing_blade.xml",true)'))
+    director(f'ScriptParams@ p=ReadObjectFromID({discarded}).GetScriptParams();p.SetInt("Survival Weapon",battery);'
+             'CleanupGear();p.SetInt("Survival Ground Battery",battery-2);CleanupGear();')
+    assert state(f"ObjectExists({discarded})") == "true"
+    director(f'ReadObjectFromID({discarded}).GetScriptParams().SetInt("Survival Ground Battery",battery-3);CleanupGear();')
+    wait(lambda: state(f"ObjectExists({discarded})") == "false", "expired ground weapon removed")
     assert not script_errors(host) and not script_errors(guest), (script_errors(host), script_errors(guest))
     return {"passed": True, "metrics": {"partial_heal_xp": 2.5, "companion_highest": "wolf", "companion_equipped": "cat", "shop_seconds": 10}, "notes": []}
 
