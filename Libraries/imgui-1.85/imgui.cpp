@@ -7522,6 +7522,37 @@ void ImGui::ItemSize(const ImRect& bb, float text_baseline_y)
     ItemSize(bb.GetSize(), text_baseline_y);
 }
 
+// Cross a gap between two separate menu panes using the direction of the
+// panes, even if their rows are at different heights. Ordinary navigation
+// scores (including flattened children) take priority within the pane.
+static void NavScoreLinkedWindowItem(ImGuiContext& g, ImGuiWindow* window)
+{
+    if (g.NavLayer != window->DC.NavLayerCurrent)
+        return;
+    const ImRect from = g.NavWindow->RootWindow->Rect();
+    const ImRect to = window->RootWindow->Rect();
+    const ImGuiDir dir = g.NavMoveDir;
+    if ((dir == ImGuiDir_Left && to.Max.x > from.Min.x) || (dir == ImGuiDir_Right && to.Min.x < from.Max.x) ||
+        (dir == ImGuiDir_Up && to.Max.y > from.Min.y) || (dir == ImGuiDir_Down && to.Min.y < from.Max.y))
+        return;
+    ImRect src = g.NavWindow->NavRectRel[g.NavLayer];
+    src.Translate(g.NavWindow->Pos);
+    ImRect dst = g.LastItemData.NavRect;
+    dst.ClipWithFull(window->ClipRect);
+    const bool horizontal = dir == ImGuiDir_Left || dir == ImGuiDir_Right;
+    const float gap = horizontal ? ImMax(src.Min.x - dst.Max.x, dst.Min.x - src.Max.x)
+                                 : ImMax(src.Min.y - dst.Max.y, dst.Min.y - src.Max.y);
+    const ImVec2 delta = dst.GetCenter() - src.GetCenter();
+    const float off_axis = ImFabs(horizontal ? delta.y : delta.x);
+    const float score = ImMax(0.0f, gap) + off_axis * 2.0f;
+    ImGuiNavItemData& result = g.NavMoveResultOther;
+    if (result.ID && (result.Window->RootWindow == g.NavWindow->RootWindow || result.DistCenter <= score))
+        return;
+    result.DistBox = FLT_MAX; // A same-pane candidate submitted later can replace this one.
+    result.DistCenter = score;
+    ImGui::NavApplyItemToResult(&result);
+}
+
 // Declare item bounding box for clipping and interaction.
 // Note that the size can be different than the one provided to ItemSize(). Typically, widgets that spread over available surface
 // declare their minimum size requirement to ItemSize() and provide a larger region to ItemAdd() which is used drawing/interaction.
@@ -7552,9 +7583,22 @@ bool ImGui::ItemAdd(const ImRect& bb, ImGuiID id, const ImRect* nav_bb_arg, ImGu
         // If we crash on a NULL g.NavWindow we need to fix the bug elsewhere.
         window->DC.NavLayersActiveMaskNext |= (1 << window->DC.NavLayerCurrent);
         if (g.NavId == id || g.NavAnyRequest)
+        {
             if (g.NavWindow->RootWindowForNav == window->RootWindowForNav)
+            {
                 if (window == g.NavWindow || ((window->Flags | g.NavWindow->Flags) & ImGuiWindowFlags_NavFlattened))
                     NavProcessItem();
+            }
+            else if (g.NavMoveScoringItems && g.NavMoveDir != ImGuiDir_None && g.OpenPopupStack.empty() &&
+                     (window->RootWindow->Flags & g.NavWindow->RootWindow->Flags & ImGuiWindowFlags_LinkNavigation) &&
+                     window->ClipRect.Overlaps(g.LastItemData.NavRect) &&
+                     !(g.LastItemData.InFlags & (ImGuiItemFlags_Disabled | ImGuiItemFlags_NoNav)))
+            {
+                // Keep within-window movement first. If it hits an edge,
+                // consider visible controls in the other panes of this menu.
+                NavScoreLinkedWindowItem(g, window);
+            }
+        }
 
         // [DEBUG] Item Picker tool, when enabling the "extended" version we perform the check in ItemAdd()
 #ifdef IMGUI_DEBUG_TOOL_ITEM_PICKER_EX

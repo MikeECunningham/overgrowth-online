@@ -270,7 +270,8 @@ class Engine : public ModLoadingCallback {
     static Engine* instance_;
 
     std::deque<EngineStateAction> queued_engine_state_;
-    std::deque<std::tuple<std::string, std::string>> popup_pueue;
+    std::mutex popup_mutex_;
+    std::vector<std::pair<std::string, std::string>> pending_popups_;
 #ifdef WIN32
     HANDLE data_change_notification;
     HANDLE write_change_notification;

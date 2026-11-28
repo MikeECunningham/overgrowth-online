@@ -157,6 +157,10 @@ def profile_menus(ctx):
         # The slot owner can select a host-local profile.
         assert g.probe(f'LobbyProfileEdit({other},"select","","{name}")') == 'true'
         axis(5)
+        assert g.probe(f'LobbyProfile({other}).category') == '0', 'an ordinary couch pad changed a profile'
+        assert g.status()['menu_owner'] == 0
+        assert g.probe(f'LobbyPromoteLeader({other})') == 'true'
+        axis(5)
         g.wait(lambda: g.probe(f'LobbyProfile({other}).category')=='1', 'R2 opens mouse outfits')
         other_view = lambda: json.loads(g.probe(f'LobbyProfileView({other})'))
         g.pad(10)

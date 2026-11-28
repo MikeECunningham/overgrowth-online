@@ -5341,6 +5341,8 @@ void AttachIMGUI(ASContext* context) {
     context->RegisterEnumValue("ImGuiWindowFlags_", "ImGuiWindowFlags_NoInputs", ImGuiWindowFlags_NoInputs);
     context->RegisterEnumValue("ImGuiWindowFlags_", "ImGuiWindowFlags_MenuBar", ImGuiWindowFlags_MenuBar);
     context->RegisterEnumValue("ImGuiWindowFlags_", "ImGuiWindowFlags_HorizontalScrollbar", ImGuiWindowFlags_HorizontalScrollbar);
+    context->RegisterEnumValue("ImGuiWindowFlags_", "ImGuiWindowFlags_LinkNavigation", ImGuiWindowFlags_LinkNavigation);
+    context->RegisterEnumValue("ImGuiWindowFlags_", "ImGuiWindowFlags_NavFlattened", ImGuiWindowFlags_NavFlattened);
     context->RegisterEnumValue("ImGuiWindowFlags_", "ImGuiWindowFlags_NoFocusOnAppearing", ImGuiWindowFlags_NoFocusOnAppearing);
     context->RegisterEnumValue("ImGuiWindowFlags_", "ImGuiWindowFlags_NoBringToFrontOnFocus", ImGuiWindowFlags_NoBringToFrontOnFocus);
     context->RegisterEnumValue("ImGuiWindowFlags_", "ImGuiWindowFlags_AlwaysVerticalScrollbar", ImGuiWindowFlags_AlwaysVerticalScrollbar);

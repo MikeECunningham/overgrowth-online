@@ -69,12 +69,28 @@ def combat_session(ctx, profile="typical"):
     hid = host.bridge.me()["id"]
     cid = c1.bridge.me()["id"]
 
+    # Give each bout the same start. Recover restores vitals, but leaves the
+    # combatants wherever the previous knockout or chase sent them.
+    origin = _char(c1, cid)["pos"]
+
+    def stage(inst, actor, offset, facing):
+        x, y, z = origin
+        pose = (f"this_mo.position=vec3({x + offset},{y + .1},{z});this_mo.velocity=vec3(0);"
+                f"this_mo.SetRotationFromFacing(vec3({facing},0,0));FixDiscontinuity();")
+        inst.bridge.call("exec", target=actor, code="UnTether();Recover();SetState(_movement_state);" + pose)
+
+    def stage_duel():
+        stage(host, hid, 1.2, -1)
+        stage(c1, cid, 0, 1)
+        time.sleep(1.5)
+
     # --- 1. a guard (the host runs it) against the client's character -------------------
     # The host's own character joins the guard's side so the guard leaves it alone
     host.bridge.call("exec", target=hid, code='ReadObjectFromID(this_mo.GetID()).GetScriptParams().SetString("Teams", "guard");')
     cpos = _char(host, cid)["pos"]
     npc = host.bridge.call("spawn", pos=[cpos[0] + 2.5, cpos[1] + 0.3, cpos[2]], teams="guard")["object_id"]
     host.bridge.call("exec", target=npc, code="p_block_skill = 0.0f;")  # a guard that blocks everything proves nothing here
+    host.bridge.call("exec", target=npc, code="combat_allowed = false;")
     t0 = time.time()
 
     while time.time() - t0 < 15.0 and _char(c1, npc) is None:
@@ -84,16 +100,19 @@ def combat_session(ctx, profile="typical"):
     if not m["npc_on_client"]:
         fails.append("the spawned guard never reached the client")
 
+    stage(host, hid, -6, 1)
+    stage(host, npc, 1.2, -1)
+    stage(c1, cid, 0, 1)
     time.sleep(1.5)
     h0, c0 = _counters(host, c1)
     # First the client attacks a guard that doesn't strike back (it still
     # blocks what it faces), then the guard is let loose on the client
-    host.bridge.call("exec", target=npc, code="combat_allowed = false;")
     _fight([ChaseBot(c1, seed=3, target_id=npc)], 14.0)
     host.bridge.call("exec", target=npc, code="combat_allowed = true;")
     t_loose = time.time()
     while time.time() - t_loose < 14.0:
         time.sleep(0.5)
+    host.bridge.call("exec", target=npc, code="combat_allowed = false;")
     time.sleep(1.5)
     h1, c1c = _counters(host, c1)
     dh, dc = _delta(h0, h1), _delta(c0, c1c)
@@ -119,20 +138,16 @@ def combat_session(ctx, profile="typical"):
     # --- 2. the two players duel ----------------------------------------------------------
     # The guard out of the way, both players healed, on opposing teams
     host.bridge.call("exec", target=npc, code="ko_shield = 0; TakeDamage(2.0f);")
-    host.bridge.call("exec", target=hid, code="Recover();")
-    c1.bridge.call("exec", target=cid, code="Recover();")
     for inst in (host, c1):
         inst.bridge.call("exec", target=hid, code='ReadObjectFromID(this_mo.GetID()).GetScriptParams().SetString("Teams", "duel_a");')
         inst.bridge.call("exec", target=cid, code='ReadObjectFromID(this_mo.GetID()).GetScriptParams().SetString("Teams", "duel_b");')
-    time.sleep(1.5)
+    stage_duel()
 
     h0, c0 = _counters(host, c1)
     # Turns: the host attacks while the client stands, then the other way round
     bots = [ChaseBot(host, seed=1, target_id=cid), ChaseBot(c1, seed=2, target_id=hid)]
     _fight([bots[0]], 14.0)
-    host.bridge.call("exec", target=hid, code="Recover();")
-    c1.bridge.call("exec", target=cid, code="Recover();")
-    time.sleep(1.0)
+    stage_duel()
     snd0 = _online(host)["sounds_from_clients"]
     _fight([bots[1]], 14.0)
     m["client_sounds_heard_by_host"] = _online(host)["sounds_from_clients"] - snd0
@@ -164,9 +179,7 @@ def combat_session(ctx, profile="typical"):
     # --- 3. a throw: the client grabs the host's (idle) player --------------------------
     # The client takes the victim for the throw, hands it back once it is down
     # and settled, and the host can move it again on both screens
-    host.bridge.call("exec", target=hid, code="Recover();")
-    c1.bridge.call("exec", target=cid, code="Recover();")
-    time.sleep(1.5)
+    stage_duel()
     t_before = _online(c1)["takeovers"]
     thrown = False
     t0 = time.time()
@@ -390,3 +403,51 @@ def weapons_session(ctx, profile="typical"):
     if errs:
         fails.append("script errors")
     return {"passed": not fails, "metrics": m, "notes": fails + notes}
+
+
+def remote_choke(ctx):
+    """An observer gets the guard's real awareness; the host arbitrates stale grabs."""
+    from .campaign_scaling_suite import RENDER_KEYS
+    from .mode_settings_suite import _code, _probe, SANDBOX_MAP
+    from .newcampaign_local_suite import _rows, _ready
+    host = ctx.instance("grab_host", keys={**RENDER_KEYS, "mp_port": "29761"})
+    guest = ctx.instance("grab_guest", keys={**RENDER_KEYS, "mp_port": "29762"})
+    wait = lambda check, message: guest.bridge.wait(check, 25, step=.1, what=message)
+    _code(host, 'LobbyBeginHost();')
+    guest.bridge.call("connect", ip="127.0.0.1:29761")
+    wait(lambda: len(_rows(host)) == 2, "guest in roster")
+    _code(host, f'LobbySetSelection("sandbox","","{SANDBOX_MAP}",false);LobbyStart();')
+    for peer in (host, guest):
+        _ready(peer, SANDBOX_MAP)
+        peer.bridge.call("net_sim", latency_ms=90, jitter_ms=40, loss=.04)
+    avatar = guest.bridge.me()["id"]
+    x,y,z = _char(guest, avatar)["pos"]
+    npc = host.bridge.call("spawn", pos=[x+1.3,y,z], teams="guard")["object_id"]
+    wait(lambda: _char(guest, npc), "replicated guard")
+    _code(host,'this_mo.static_char=true; combat_allowed=false;goal=_attack;startled=false;'
+               'asleep=false;always_unaware=true;this_mo.SetRotationFromFacing(vec3(1,0,0));', npc)
+
+    def unaware():
+        return _probe(guest, f'ReadCharacterID({npc}).QueryIntFunction("int IsUnaware()")', "level") == "1"
+    wait(unaware, "unaware guard reported by owner")
+    _code(host, 'goal=_attack;startled=false;always_unaware=false;', npc)
+    wait(lambda: not unaware(), "aware guard reported despite paused remote AI")
+    # Simulate a grab racing the guard's awareness update over a bad link.
+    # The public takeover entry point also accepts the older untagged tether request.
+    def request():
+        assert _probe(guest, f'Online_TakeOver({npc},60.0f)', "level") == "true"
+    def rejected():
+        return _char(guest, npc)["proxy"] and not _char(host, npc)["proxy"] and _online(guest)["overrides"] == 0
+    request()
+    wait(rejected, "host rejects a sneak grab against alert guard")
+    _code(host, 'always_unaware=true;this_mo.SetRotationFromFacing(vec3(-1,0,0));', npc)
+    wait(unaware, "guard eligible again")
+    request()
+    wait(rejected, "host rejects a frontal sneak grab")
+    _code(host, 'this_mo.SetRotationFromFacing(vec3(1,0,0));', npc)
+    request()
+    wait(lambda: _char(host, npc)["proxy"] and not _char(guest, npc)["proxy"], "rear grab accepted")
+    _code(guest, f'Online_ReleaseTakeOver({npc});', 'level')
+    wait(rejected, "released guard returned to host")
+    assert all(not script_errors(peer) for peer in (host, guest))
+    return {"passed": True, "metrics": {"aware_refused": True, "front_refused": True, "rear_admitted": True}, "notes": []}

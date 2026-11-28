@@ -203,6 +203,7 @@ void DrawBrowser() {
             if(!CanJoin(g.mods)) {
                 ImGui_TextColored(kDimColor, "Can't join");
             } else if(ImGui_Button("Join##" + g.lobby, vec2(130.0f * scale, row_h * 0.8f))) {
+                LobbyCaptureRoleDevice(true);
                 if(Online_JoinPublicGame(g.lobby)) {
                     this_ui.SendCallback("multiplayer_menu_connecting.as");
                 } else {

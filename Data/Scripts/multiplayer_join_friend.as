@@ -161,6 +161,7 @@ void DrawFriends() {
                 DrawGameMods(f.mods);
 
                 if(CanJoin(f.mods) && ImGui_Button("Join##" + f.id, vec2(160.0f, 36.0f))) {
+                    LobbyCaptureRoleDevice(true);
                     if(Online_JoinFriend(f.id)) {
                         this_ui.SendCallback("multiplayer_menu_connecting.as");
                     } else {

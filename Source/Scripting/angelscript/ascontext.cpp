@@ -329,6 +329,8 @@ ASContext::~ASContext() {
     DeregisterAngelscriptContext(this);
     angelscript_error_string.clear();
 
+    // Saved native values and reconstructed handles belong to this engine.
+    module.ClearSavedVars();
     // We must release the contexts when no longer using them
     ctx->Release();
     // Release the engine

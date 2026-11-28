@@ -1228,6 +1228,14 @@ def _lobby_role_ui(ctx):
 SCENARIOS["lobby_role_ui"] = _lobby_role_ui
 
 
+def _lobby_device_claims(ctx):
+    from .lobby_role_ui_suite import lobby_device_claims
+    return lobby_device_claims(ctx)
+
+
+SCENARIOS["lobby_device_claims"] = _lobby_device_claims
+
+
 def _gui_navigation(ctx):
     from .gui_navigation_suite import gui_navigation
     return gui_navigation(ctx)
@@ -1733,3 +1741,11 @@ def _progression_falls(ctx):
 
 
 SCENARIOS["progression_falls"] = _progression_falls
+
+
+def _remote_choke(ctx):
+    from .combat_suite import remote_choke
+    return remote_choke(ctx)
+
+
+SCENARIOS["remote_choke"] = _remote_choke

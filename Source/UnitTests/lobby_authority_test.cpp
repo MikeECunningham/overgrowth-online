@@ -38,7 +38,8 @@ template<> template<> void lobby_authority_test::test<2>() {
 template<> template<> void lobby_authority_test::test<3>() {
     set_test_name("own-team permission cannot edit another player or override natural mode teams");
     ensure(!roles.CanSetTeam(seats, 256, 256, true, true));
-    ensure(roles.CanSetTeam(seats, 256, 256, false, true));
+    ensure(!roles.CanSetTeam(seats, 256, 256, false, true));
+    ensure(roles.CanSetTeam(seats, 1, 257, false, true));
     ensure(!roles.CanSetTeam(seats, 256, 1, false, true));
     ensure(!roles.CanSetTeam(seats, 256, 256, false, false));
     ensure(roles.CanSetTeam(seats, 255, 1, true, false));

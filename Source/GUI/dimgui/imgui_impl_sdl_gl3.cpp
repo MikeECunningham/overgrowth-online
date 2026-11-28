@@ -198,7 +198,14 @@ int KeyRemap(int key) {
     }
 }
 
+static bool LobbyBlocksKeyboardMouse() {
+    auto* online = Online::Instance();
+    return online->IsActive() && online->LobbyWaiting() &&
+           !online->CanDriveLobbyMenu(Input::Instance()->LocalKeyboardPlayerIndex());
+}
+
 bool ImGui_ImplSdlGL3_ProcessEvent(SDL_Event* event) {
+    if (LobbyBlocksKeyboardMouse() && event->type != SDL_KEYUP) return false;
     ImGuiIO& io = ImGui::GetIO();
     switch (event->type) {
         case SDL_MOUSEWHEEL: {
@@ -346,6 +353,7 @@ static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
         // Attribute each action to its seat, including when the keyboard is
         // shared with the leader's bindings but belongs to another player.
         for (unsigned local = 0; local < devices->GetNumLocalPlayers(); ++local) {
+            if (!online->CanDriveLobbyMenu(local)) continue;
             const int candidate = devices->GetLocalPlayerInputID(local);
             const uint64_t serial = devices->GetMenuInputSerial(candidate);
             if (serial <= last_input_serial ||
@@ -354,7 +362,14 @@ static void UpdateMenuNavigation(ImGuiIO& io, bool ignore_input) {
             if (!ignore_input) config.GetRef("controller_menu_owner") = static_cast<int>(local);
             last_input_serial = serial;
         }
-        actual = devices->GetLocalPlayerInputID(config["controller_menu_owner"].toNumber<int>());
+        int owner = config["controller_menu_owner"].toNumber<int>();
+        if (!online->CanDriveLobbyMenu(owner)) {
+            for (unsigned local = 0; local < devices->GetNumLocalPlayers(); ++local) {
+                if (online->CanDriveLobbyMenu(local)) { owner = static_cast<int>(local); break; }
+            }
+            config.GetRef("controller_menu_owner") = owner;
+        }
+        actual = devices->GetLocalPlayerInputID(owner);
     } else {
         last_input_serial = std::max(last_input_serial, devices->GetMenuInputSerial(actual));
     }
@@ -436,14 +451,15 @@ void ImGui_ImplSdlGL3_NewFrame(SDL_Window* window, bool ignore_mouse) {
     io.DeltaTime = (current_time - g_Time) > 0.0 ? (float)(current_time - g_Time) : (float)(1.0f / 60.0f);
     g_Time = current_time;
 
-    if (ignore_mouse) {
+    const bool block_pointer = LobbyBlocksKeyboardMouse();
+    if (ignore_mouse || block_pointer) {
         io.MouseDown[0] = false;
         io.MouseDown[1] = false;
         io.MouseDown[2] = false;
         g_MousePressed[0] = g_MousePressed[1] = g_MousePressed[2] = false;
 
         io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
-        io.MouseWheel = g_MouseWheel;
+        io.MouseWheel = block_pointer ? 0.0f : g_MouseWheel;
         g_MouseWheel = 0.0f;
     } else {
         // Setup inputs

@@ -385,12 +385,12 @@ std::vector<std::string> Config::GetDifficultyPresets() {
     return presets;
 }
 
-std::string Config::GetDifficultyPreset() {
+std::string Config::GetDifficultyPreset(bool include_ledge_grab) {
     for (int i = 0; difficulty_presets[i] != NULL; ++i) {
         if ((*this)["game_difficulty"].toNumber<float>() == difficulty_preset_values[i * 2] &&
             (*this)["global_time_scale_mult"].toNumber<float>() == difficulty_preset_values[i * 2 + 1] &&
             (*this)["tutorials"].toBool() == difficulty_tutorials_preset_values[i] &&
-            (*this)["auto_ledge_grab"].toBool() == difficulty_ledge_grab_preset_values[i]) {
+            (!include_ledge_grab || (*this)["auto_ledge_grab"].toBool() == difficulty_ledge_grab_preset_values[i])) {
             return difficulty_presets[i];
         }
     }
@@ -411,7 +411,7 @@ std::string Config::GetClosestDifficulty() {
     return difficulty;
 }
 
-void Config::SetDifficultyPreset(std::string name) {
+void Config::SetDifficultyPreset(std::string name, bool include_ledge_grab) {
     // Accept old scripts/saves while exposing only the original base presets.
     if (name == "Nightmare") {
         name = "Expert";
@@ -423,7 +423,7 @@ void Config::SetDifficultyPreset(std::string name) {
             GetRef("game_difficulty") = difficulty_preset_values[i * 2];
             GetRef("global_time_scale_mult") = difficulty_preset_values[i * 2 + 1];
             GetRef("tutorials") = difficulty_tutorials_preset_values[i];
-            GetRef("auto_ledge_grab") = difficulty_ledge_grab_preset_values[i];
+            if (include_ledge_grab) GetRef("auto_ledge_grab") = difficulty_ledge_grab_preset_values[i];
             GetRef("campaign_mp_nightmare") = false;
         }
     }

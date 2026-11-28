@@ -90,10 +90,10 @@ void CaptureNaturalPlayerTeam(SceneGraph* graph, const std::string& level, Objec
 
 const char* const migration_match_settings[] = {
     "oo_arena_bots", "oo_arena_random", "oo_public_game", "game_difficulty",
-    "global_time_scale_mult", "tutorials", "auto_ledge_grab", "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_ai_scaling_rate", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized"
+    "global_time_scale_mult", "tutorials", "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_ai_scaling_rate", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized"
 };
 const char* const campaign_match_settings[] = {
-    "game_difficulty", "global_time_scale_mult", "tutorials", "auto_ledge_grab",
+    "game_difficulty", "global_time_scale_mult", "tutorials",
     "campaign_mp_scaling", "difficulty_scaling", "campaign_ai_scaling", "campaign_ai_scaling_rate", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized", "oo_arena_random"
 };
 
@@ -190,6 +190,19 @@ PlayerID Online::LobbyPlayerIDForLocalIndex(unsigned index) const {
 PlayerID Online::LocalLobbyLeaderPlayerID() const {
     const auto found = lobby_authority_.leaders.find(LocalPeerID());
     return found == lobby_authority_.leaders.end() ? LobbyPlayerIDForLocalIndex(0) : found->second;
+}
+
+bool Online::CanDriveLobbyMenu(int local_index) const {
+    if (local_index < 0) return false;
+    const auto id = LobbyPlayerIDForLocalIndex(static_cast<unsigned>(local_index));
+    const auto leader = LocalLobbyLeaderPlayerID();
+    // The initiating device can still cancel while admission is pending.
+    if (leader == LobbyAuthority::InvalidPlayer && IsClient()) return local_index == 0;
+    return id != LobbyAuthority::InvalidPlayer && (id == leader || IsLobbyHost(id));
+}
+
+void Online::ResetLocalPartyForRole() {
+    if (!IsActive()) local_lobby_profiles_.clear();
 }
 
 PlayerID Online::ResolveLobbyActor(PlayerID actor) const {
@@ -1350,7 +1363,7 @@ bool Online::SetCampaignMatchSetting(const std::string& key, const std::string& 
         return true;
     }
     const Config before = config;
-    if (key == "difficulty_preset") config.SetDifficultyPreset(normalized);
+    if (key == "difficulty_preset") config.SetDifficultyPreset(normalized, false);
     else config.GetRef(key) = normalized;
     if (config != before) {
         config.ReloadDynamicSettings();
@@ -1462,7 +1475,7 @@ Json::Value Online::SaveGameRules() const {
         if (MatchSettingAvailable(key) && config.HasKey(key)) rules["match"][key] = config[key].str();
     if (!rules["match"].isMember("oo_arena_random")) rules["match"]["oo_arena_random"] = "0";
     if (!rules["match"].isMember("oo_public_game")) rules["match"]["oo_public_game"] = "1";
-    rules["preset"] = config.GetDifficultyPreset();
+    rules["preset"] = config.GetDifficultyPreset(false);
     rules["join_character"] = default_hot_join_characte_path;
     rules["allow_pause"] = lobby_allow_all_pause_;
     rules["force_teams"] = lobby_force_teams_;
@@ -1484,7 +1497,8 @@ bool Online::ValidateGameRules(const Json::Value& rules) {
         const auto value = entry.asString();
         if (key == "oo_arena_bots") {
             if (value.empty() || value.size() > 4 || value.find_first_not_of("0123456789") != std::string::npos) return false;
-        } else if (key == "oo_public_game") {
+        } else if (key == "oo_public_game" || key == "auto_ledge_grab") {
+            // Older cards stored ledge assist among match rules. Validate and ignore it on restore.
             if (value != "0" && value != "1" && value != "true" && value != "false") return false;
         } else {
             std::string normalized;
@@ -1498,7 +1512,7 @@ void Online::RestoreGameRules(const Json::Value& rules) {
     if (rules["join_character"].isString()) SetDefaultHotJoinCharacter(rules["join_character"].asString());
     std::string preset;
     if (NormalizeCampaignMatchSetting("difficulty_preset", rules["preset"].asString(), &preset))
-        config.SetDifficultyPreset(preset);
+        config.SetDifficultyPreset(preset, false);
     for (const char* key : migration_match_settings) {
         const auto& value = rules["match"][key];
         if (MatchSettingAvailable(key) && value.isString()) config.GetRef(key) = value.asString();
@@ -1519,7 +1533,7 @@ bool Online::StartLobbyGame(const std::string& level, const std::string& campaig
     }
     const std::string selected = level.empty() ? lobby_map_ : level;
     const std::string camp = campaign.empty() ? lobby_campaign_ : campaign;
-    if (selected.empty() || selected.find("..") != std::string::npos) return false;
+    if (selected.empty() || selected.front() == '@' || selected.find("..") != std::string::npos) return false;
     // Every connected peer must have completed its roster handshake first.
     for (const auto& peer : online_session->connected_peers) {
         bool present = false;

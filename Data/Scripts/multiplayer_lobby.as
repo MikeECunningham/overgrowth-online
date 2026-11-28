@@ -168,6 +168,7 @@ void LobbyForm(const string &in title, const vec2 &in position, const vec2 &in s
     int flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoTitleBar;
+    if(!lobby_difficulty_open && editing_name < 0) flags |= ImGuiWindowFlags_LinkNavigation;
     ImGui_Begin(title, flags);
     MPWindowScale(scale);
     MPPanelBackground();
@@ -278,16 +279,16 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
             ImGui_TextColored(kLobbyDim, "Filter maps by name");
         }
         float list_height = min(230.0f * scale, max(100.0f, size.y * 0.35f));
-        ImGui_BeginChild("maps", vec2(0.0f, list_height), true);
+        ImGui_BeginChild("maps", vec2(0.0f, list_height), true, ImGuiWindowFlags_NavFlattened);
         MPWindowScale(1.0f);
         array<int>@ matches = mode.MatchingMaps(map_filter);
         int selected_map = LobbySelectedMap(mode);
         ImGui_BeginDisabled(matches.length() == 0);
-        if(MPButton("Random map", vec2(-1.0f, 36.0f)) && LobbyChooseRandomMap(selected, matches, selected_map)) {
+        if(MPComboOption("Random map", LobbyGetMap().findFirst(kRandomMapPrefix) == 0) && LobbyChooseRandomMap(selected, map_filter)) {
             selected_map = LobbySelectedMap(mode);
             notice = "";
         }
-        LobbyHint("Choose a random map from this list.");
+        LobbyHint("Draw from this list when the host starts the game.");
         ImGui_EndDisabled();
         if(matches.length() == 0) ImGui_TextColored(kLobbyDim, "No matching maps");
         for(uint m = 0; m < matches.length(); ++m) {
@@ -313,6 +314,9 @@ void DrawModeForm(const vec2 &in position, const vec2 &in size, float scale) {
             float image_width = ImGui_GetContentRegionAvailWidth();
             ImGui_Image(preview_texture, vec2(image_width, image_width * 0.56f));
             LobbyHint("Map preview: " + map.title + ".");
+        } else if(LobbyGetMap().findFirst(kRandomMapPrefix) == 0) {
+            string pool = LobbyGetMap().substr(kRandomMapPrefix.length());
+            ImGui_TextWrapped(pool == "" ? "Random map at game start" : "Random map at game start (filter: " + pool + ")");
         } else if(LobbyGetMap() != "") {
             ImGui_TextWrapped("Selected map: " + LobbyLevelTitle(LobbyGetMap()));
         }
@@ -334,7 +338,7 @@ void DrawPlayersForm(const vec2 &in position, const vec2 &in size, float scale) 
     ImGui_Spacing();
     int locals = LocalPlayers();
     bool show_handicaps = LobbyGetMode() != "" && !LobbyGetBuildMode() && LobbyGetModeSetting("progression") != 0;
-    if(fixed_footer) ImGui_BeginChild("player_list", vec2(0), true);
+    if(fixed_footer) ImGui_BeginChild("player_list", vec2(0), true, ImGuiWindowFlags_NavFlattened);
     MPWindowScale(1.0f);
     ImGui_PushStyleVar(ImGuiStyleVar_ItemSpacing, vec2(10.0f, 5.0f));
     if(focus_lobby_form && LobbyInitialForm() == "Players") {
@@ -588,7 +592,7 @@ void DrawLobbySessionActions(float scale, bool can_edit, bool compact = false) {
     float half = (ImGui_GetContentRegionAvailWidth() - 10.0f) * 0.5f;
     ImGui_BeginDisabled(!ready);
     if(MPButton("Start game", vec2(compact ? half : -1.0f, (compact ? 40.0f : 48.0f) * scale))) {
-        if(!LobbyStart()) notice = "The game could not start. Check the selection and connected players.";
+        if(!StartSelectedLobbyMap()) notice = "The game could not start. Check the selection and connected players.";
     }
     LobbyHint("Start the selected mode and map with this roster.");
     ImGui_EndDisabled();
@@ -650,8 +654,8 @@ void DrawHostingForm(const vec2 &in position, const vec2 &in size, float scale, 
     ImGui_Spacing();
     bool host_controls_teams = LobbyGetHostControlsTeams();
     if(MPCheckbox("Host controls teams", host_controls_teams)) LobbySetHostControlsTeams(host_controls_teams);
-    LobbyHint("On: only the host changes teams. Off: players can change their own team in modes that use lobby teams.");
-    ImGui_TextColored(kLobbyDim, "When off, players may change their own team in modes using lobby teams.");
+    LobbyHint("On: only the host changes teams. Off: local leaders can choose teams for their players in modes that use lobby teams.");
+    ImGui_TextColored(kLobbyDim, "When off, local leaders can choose teams for their players.");
     ImGui_Spacing();
     if(show_mode_settings) {
         bool force_teams = LobbyGetForceTeams();

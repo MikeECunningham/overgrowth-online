@@ -107,6 +107,7 @@ enum AppObjectType {
     _ao_nav_path,
     _ao_mat4,
     _ao_json,
+    _ao_registered_value,
     _ao_fontsetup,
     _ao_modlevel,
     _ao_textureassetref,
@@ -231,7 +232,7 @@ class ASModule {
    public:
     ASModule()
         : active_angelscript_error_string(NULL) {}
-    ~ASModule();
+    void ClearSavedVars();
 
     void SetErrorStringDestination(std::string* error_string);
 

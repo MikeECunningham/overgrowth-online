@@ -214,11 +214,22 @@ bool LobbyChooseMap(int mode_index, int map_index) {
     return LobbySetSelection(mode.id, mode.campaign, mode.maps[map_index].path, mode.build);
 }
 
-bool LobbyChooseRandomMap(int mode_index, const array<int> &in matches, int selected) {
+const string kRandomMapPrefix = "@random:";
+
+bool LobbyChooseRandomMap(int mode_index, const string &in filter) {
+    if(mode_index < 0 || mode_index >= int(lobby_modes.length())) return false;
+    LobbyModeChoice@ mode = lobby_modes[mode_index];
+    if(mode.MatchingMaps(filter).length() == 0) return false;
+    return LobbySetSelection(mode.id, mode.campaign, kRandomMapPrefix + filter, mode.build);
+}
+
+bool StartSelectedLobbyMap() {
+    string selection = LobbyGetMap();
+    if(selection.findFirst(kRandomMapPrefix) != 0) return LobbyStart();
+    int index = LobbySelectedMode();
+    if(index < 0 || !LobbyCanStart()) return false;
+    LobbyModeChoice@ mode = lobby_modes[index];
+    array<int>@ matches = mode.MatchingMaps(selection.substr(kRandomMapPrefix.length()));
     if(matches.length() == 0) return false;
-    // Reroll to a different map whenever the filter offers an alternative.
-    int skip = matches.length() > 1 ? matches.find(selected) : -1;
-    int pick = rand() % (int(matches.length()) - (skip >= 0 ? 1 : 0));
-    if(skip >= 0 && pick >= skip) ++pick;
-    return LobbyChooseMap(mode_index, matches[pick]);
+    return LobbyStartRandomMap(mode.maps[matches[rand() % matches.length()]].path);
 }

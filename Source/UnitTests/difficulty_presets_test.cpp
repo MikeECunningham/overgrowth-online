@@ -37,6 +37,10 @@ template<> template<> void difficulty_test::test<2>() {
     settings.SetDifficultyPreset("Hardcore");
     ensure_equals(settings["game_difficulty"].toNumber<float>(), 0.5f);
     ensure_equals(settings.GetDifficultyPreset(), std::string("Hardcore"));
+    settings.GetRef("auto_ledge_grab") = true;
+    settings.SetDifficultyPreset("Expert", false);
+    ensure("match presets preserve local assist", settings["auto_ledge_grab"].toBool());
+    ensure_equals(settings.GetDifficultyPreset(false), std::string("Expert"));
     for (const char* key : {"tutorials", "auto_ledge_grab"}) {
         settings.SetDifficultyPreset("Nightmare");
         settings.GetRef(key) = true;

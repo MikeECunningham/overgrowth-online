@@ -93,6 +93,9 @@ def lobby_role_ui(ctx):
                         ('ui_nav_id', 'ui_nav_window_id', 'ui_nav_window', 'menu_owner', 'current_menu_player')})
                     if focused(label, row, current):
                         return
+                    if device == 'pad' and row is not None and not current['ui_nav_window'].startswith('Players'):
+                        focus_window('Players')
+                        break
                     point = current['ui_nav_window_id'], current['ui_nav_id']
                     if point in visited:
                         break
@@ -103,17 +106,17 @@ def lobby_role_ui(ctx):
             shot('could_not_focus_' + label.replace(' ', '_'))
             raise AssertionError(f'{device} could not focus {label!r} on row {row}, last focus {point}')
 
-        def focus_actions():
+        def focus_window(name):
             # Hold X while moving through the window switcher with RB. The
             # selected window gets focus when X is released.
             inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=True)
             wait(lambda: inst.bridge.call('ui_state')['windowing_target'], 'open pad window switcher')
             for _ in range(8):
-                if inst.bridge.call('ui_state')['windowing_target'] == 'Session actions':
+                if inst.bridge.call('ui_state')['windowing_target'] == name:
                     break
                 pad(10)
             inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=False)
-            wait(lambda: state()['ui_nav_window'] == 'Session actions', 'pad reaches Players footer')
+            wait(lambda: state()['ui_nav_window'].split('/')[0] == name, 'pad reaches ' + name)
 
         def ownership():
             return probe('"" + LobbyCurrentPlayerID() + "|" + LobbyGetCurrentInputID() + "|" + '
@@ -126,6 +129,7 @@ def lobby_role_ui(ctx):
             wait(lambda: state()['online']['hosting'] and state()['online']['lobby_waiting'], 'keyboard chooses Host')
             inst.bridge.call('virtual_pad', action='attach', slot=0)
             time.sleep(0.15)
+            assert len(rows()) == 1, 'plugging a controller in created a seat'
             pad(0)
             wait(lambda: len(rows()) == 2, 'unassigned controller joins as local P2')
             print('lobby_role_ui', transfer, 'keyboard host and pad P2 joined', flush=True)
@@ -136,9 +140,7 @@ def lobby_role_ui(ctx):
             record['initial'] = state()
             assert probe('ImGui_IsAnyPopupOpen() || new_profile_seat >= 0 || editing_name >= 0') == 'false', \
                 'join A activated the previously focused profile selector'
-            # The join press belonged to P2; a keyboard arrow reclaims the UI
-            # for P1 before selecting the actual promotion button.
-            key('Up')
+            assert state()['menu_owner'] == 0, 'joining pad stole lobby navigation'
             if transfer in ('host_only', 'host_and_leader'):
                 seek('Make host', second['id'])
                 activate('keyboard')
@@ -161,10 +163,11 @@ def lobby_role_ui(ctx):
             assert list(map(int, claimed[:3])) == [second['id'], actual, actual], claimed
             record['new_owner'] = {'state': state(), 'ownership': claimed}
 
+            focus_window('Players')
             if transfer != 'host_only':
                 # The connected human's profile, team and screen are aligned.
                 # A right press skips the disabled Team for a non-host leader.
-                seek('##profile', second['id'], device='pad', directions=('down','up','left','down'))
+                seek('##profile', second['id'], device='pad', directions=('up','left','down'))
                 seek('##screen', second['id'], device='pad', directions=('right',))
                 activate('pad')
                 pad(11)  # Screen2 -> Screen1, through the rendered dropdown.
@@ -179,7 +182,7 @@ def lobby_role_ui(ctx):
                 if transfer == 'host_and_leader':
                     move('left', 'pad')
                     move('left', 'pad')
-                seek('Make host', first['id'], device='pad')
+                seek('Make host', first['id'], device='pad', directions=('up', 'down'))
                 if transfer == 'host_and_leader':
                     seek('##profile', first['id'], device='pad', directions=('up',))
                     seek('##team', first['id'], device='pad', directions=('right',))
@@ -192,34 +195,21 @@ def lobby_role_ui(ctx):
                      'new host changes another player team through dropdown')
                 record['host_team_changed'] = state()
 
-            focus_actions()
+            focus_window('Session actions')
             seek('Close lobby', device='pad')
             key('Down')
-            wait(lambda: state()['menu_owner'] == 0, 'old keyboard player reclaims interaction')
-            old_owner = ownership().split('|')
-            assert int(old_owner[0]) == first['id'] and int(old_owner[1]) == 0, old_owner
-            assert state()['online']['hosting'] and not state()['online']['client'], 'local promotion changed this machine into a guest'
-            record['old_keyboard'] = {'state': state(), 'ownership': old_owner,
-                                      'summary': probe('LobbyRoleSummary()')}
-            shot('old_keyboard_after_transfer')
             if transfer == 'host_and_leader':
-                assert old_owner[3:] == ['false', 'false', 'false'], old_owner
+                assert state()['menu_owner'] == 1, 'unprivileged keyboard reclaimed the lobby'
                 key('Escape')
-                time.sleep(0.25)
-                assert state()['online']['active'], 'unprivileged old keyboard escaped the lobby'
-                assert probe('"" + LobbyCanLeave()') == 'false'
-                assert probe('notice') != '', 'denied keyboard Back gave no authority explanation'
-                shot('old_keyboard_back_denied')
-                activate('keyboard')
-                time.sleep(0.25)
-                assert state()['online']['active'], 'unprivileged old player closed the lobby'
-                pad(12)
-                wait(lambda: state()['menu_owner'] == 1, 'new host/leader pad reclaims interaction')
+                assert state()['online']['active'] and len(rows()) == 2, 'unprivileged Escape closed the lobby'
+                key('Space')
+                assert state()['online']['active'] and state()['menu_owner'] == 1
+                assert probe('"" + LobbyCanLeave()') == 'true'
                 seek('Close lobby', device='pad')
-                shot('new_pad_close')
                 activate('pad')
             else:
-                assert old_owner[-1] == 'true', old_owner
+                wait(lambda: state()['menu_owner'] == 0, 'remaining role holder reclaims interaction')
+                assert ownership().split('|')[-1] == 'true'
                 seek('Close lobby')
                 activate('keyboard')
             closed_at = time.monotonic()
@@ -284,3 +274,70 @@ def lobby_role_ui(ctx):
         inst.stop()
         (Path(ctx.out_dir) / (inst.name + '.log')).write_text(inst.log())
     return {'passed': True, 'metrics': metrics, 'notes': []}
+
+
+def lobby_device_claims(ctx):
+    """Two idle pads on each machine, keyboard Host, second pad Connect."""
+    from .mode_settings_suite import _code, _probe
+
+    host, guest = (ctx.instance("device_" + role, keys={"mp_port": str(port), "master_volume": "0"})
+                   for role, port in (("host", 29743), ("guest", 29744)))
+
+    def press(inst, button, slot=1):
+        for down in (True, False):
+            inst.bridge.call("virtual_pad", action="button", slot=slot, button=button, down=down)
+            time.sleep(.10)
+
+    def key(inst, name):
+        for down in (True, False):
+            inst.bridge.call("key", key=name, down=down)
+            time.sleep(.10)
+
+    def players(inst):
+        return inst.bridge.status()["online"]["players"]
+
+    def assignments(inst):
+        return [p["local_index"] for p in inst.bridge.call("virtual_pad")["pads"]]
+
+    for inst in (host, guest):
+        for slot in (0, 1):
+            inst.bridge.call("virtual_pad", action="attach", slot=slot)
+    host.bridge.call("menu", script="multiplayer_menu.as")
+    host.bridge.wait(lambda: host.bridge.call("ui_state")["nav_window"] == "Multiplayer", 20, what="host button")
+    key(host, "Space")
+    host.bridge.wait(lambda: len(players(host)) == 1 and assignments(host) == [-1,-1], 20, what="only keyboard host")
+    assert _probe(host, "GetLocalKeyboardPlayerIndex()") == "0"
+
+    guest.bridge.call("menu", script="multiplayer_menu.as")
+    guest.bridge.wait(lambda: guest.bridge.call("ui_state")["nav_window"] == "Multiplayer", 20, what="role picker")
+    press(guest, 14)
+    press(guest, 0)
+    guest.bridge.wait(lambda: any(w["name"] == "Connect to a host" for w in guest.bridge.call("ui_state")["windows"]),
+                      20, what="pad opens connect form")
+    _code(guest, 'address="127.0.0.1:29743";', "menu")
+    # Clicking the address form's submit button must preserve the selected pad.
+    ui = guest.bridge.call("ui_state")
+    window = next(w for w in ui["windows"] if w["name"] == "Connect to a host")
+    left, top, right, bottom = window["rect"]
+    x = int((left + right) * .5)
+    target = zlib.crc32(b"Connect", window["id"])
+    for y in range(int(top + 8), int(bottom), 12):
+        guest.bridge.call("pointer", x=x, y=y, buttons=0)
+        time.sleep(.06)
+        if guest.bridge.call("ui_state")["hovered_id"] == target: break
+    else:
+        raise AssertionError("Connect button unreachable")
+    for buttons in (1, 0):
+        guest.bridge.call("pointer", x=x, y=y, buttons=buttons)
+        time.sleep(.10)
+    guest.bridge.wait(lambda: len(players(guest)) == 2 and assignments(guest) == [-1,0],
+                      30, what="activating pad owns client leader only")
+    assert _probe(guest, "GetLocalKeyboardPlayerIndex()") == "-1"
+    guest.bridge.call("virtual_pad", action="axis", slot=0, axis=0, value=23000)
+    time.sleep(.25)
+    assert assignments(guest) == [-1,0] and len(players(host)) == 2
+    press(guest, 0, slot=0)
+    host.bridge.wait(lambda: len(players(host)) == 3 and assignments(guest) == [1,0], 15, what="intentional pad join")
+    assert guest.bridge.status()["menu_owner"] == 0
+    assert not script_errors(host) and not script_errors(guest)
+    return {"passed": True, "metrics": {"host_pads": assignments(host), "client_pads": assignments(guest)}, "notes": []}

@@ -150,9 +150,9 @@ class Config {
     std::string GetSettingsPreset();
     std::vector<std::string> GetSettingsPresets();
     std::vector<std::string> GetDifficultyPresets();
-    std::string GetDifficultyPreset();
+    std::string GetDifficultyPreset(bool include_ledge_grab = true);
     std::string GetClosestDifficulty();
-    void SetDifficultyPreset(std::string name);
+    void SetDifficultyPreset(std::string name, bool include_ledge_grab = true);
 
     void ReloadStaticSettings();
     void ReloadDynamicSettings();

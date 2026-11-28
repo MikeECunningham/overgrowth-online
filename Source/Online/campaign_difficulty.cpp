@@ -1829,7 +1829,7 @@ std::string Online::DifficultyHUDSnapshot() {
     const bool gameplay = scene && (!IsActive() || host_started_level) && graph->map_editor->state_ == MapEditor::kInGame && !loading && !LobbyWaiting() && !LobbyBuild() && !BuildSession();
     const bool authoritative = !IsActive() || IsHosting();
     result["authoritative"] = authoritative;
-    result["base"]["name"] = config.GetDifficultyPreset().empty() ? "Custom" : config.GetDifficultyPreset();
+    result["base"]["name"] = config.GetDifficultyPreset(false);
     result["base"]["game_difficulty"] = config["game_difficulty"].toNumber<float>();
     result["base"]["time_scale"] = config["global_time_scale_mult"].toNumber<float>();
     DescribeChallengeHUD(result["progression"]);

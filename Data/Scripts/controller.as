@@ -971,57 +971,20 @@ IMElement@ GetNextElement(Direction direction, IMElement@ target, IMElement@ cur
 		return GetNextElement(direction, current, current.getParent(), target_position);
 	} else if (type == "Container") {
 		IMContainer@ container = cast<IMContainer>(current);
-		// Go through all floating elements and try to find elements.
-		// LHSHighestScore is used here.
-		array<IMElement@> floating_contents = container.getFloatingContents();
-		while(floating_contents.size() > 0) {
-			IMElement@ closest = null;
-			uint found_index = uint(-1);
-			for(uint i = 0; i < floating_contents.size(); ++i) {
-				IMElement@ candidate = floating_contents[i];
-				bool valid = false;
-				// I think LHSIsClosest might remove the need to do this
-				// filtering, but it's implemented now, so whatever
-				switch(direction) {
-					case Direction::LEFT:
-						if(candidate.getScreenPosition().x < target_position.x)
-							valid = true;
-						break;
-					case Direction::RIGHT:
-						if(candidate.getScreenPosition().x > target_position.x)
-							valid = true;
-						break;
-					case Direction::UP:
-						if(candidate.getScreenPosition().y < target_position.y)
-							valid = true;
-						break;
-					case Direction::DOWN:
-						if(candidate.getScreenPosition().y > target_position.y)
-							valid = true;
-						break;
-				}
-				if(valid) {
-					if(!LHSHighestScore(direction, target_position, closest, floating_contents[i])) {
-						@closest = floating_contents[i];
-						found_index = i;
-					}
-				} else {
-					floating_contents.removeAt(i);
-					i--;
-				}
-			}
-
-			if(found_index != uint(-1)) {
-				//Log(info, "Closest is at " + closest.getScreenPosition().x + ", " + closest.getScreenPosition().y);
-				IMElement@ potentialNext = GetClosestElement(closest, vec2(0.0f, 0.0f));
-				if(potentialNext !is null)
-					return potentialNext;
-
-				floating_contents.removeAt(found_index);
-			} else {
-				break;
+		// Score the actual focusable controls. Decorative containers can be
+		// much larger than their buttons and may start in another column.
+		array<IMElement@> floating = container.getFloatingContents();
+		IMElement@ closest;
+		for(uint i = 0; i < floating.length(); ++i) {
+			IMElement@ candidate = GetClosestElement(floating[i], target_position);
+			if(candidate is null || candidate is target) continue;
+			vec2 delta = candidate.getScreenPosition() - target_position;
+			if((direction == LEFT && delta.x < 0) || (direction == RIGHT && delta.x > 0) ||
+			   (direction == UP && delta.y < 0) || (direction == DOWN && delta.y > 0)) {
+				if(!LHSHighestScore(direction, target_position, closest, candidate)) @closest = candidate;
 			}
 		}
+		if(closest !is null) return closest;
 		if(container.getName().length() > 0) {
 			//Log(info, "Searching in " + container.getName() + " (container with contents)");
 			// A lot of elements are added to container and given an anonymous

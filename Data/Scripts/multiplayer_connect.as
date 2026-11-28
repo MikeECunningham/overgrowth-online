@@ -8,6 +8,7 @@ MusicLoad ml("Data/Music/menu.xml");
 IMGUI@ imGUI;
 string address;
 string notice;
+bool focus_connect = true;
 
 bool HasFocus() { return false; }
 bool CanGoBack() {
@@ -20,6 +21,7 @@ bool CanGoBack() {
 
 void Initialize() {
     ClearControllerItems();
+    focus_connect = true;
     SetControllerPlayer(0);
     @imGUI = CreateIMGUI();
     imGUI.setup();
@@ -46,13 +48,14 @@ void ScriptReloaded() { Dispose(); Initialize(); }
 void Draw() {}
 void Init(string str) {}
 
-void Connect() {
+void Connect(bool keyboard_submit) {
     if(address == "") {
         notice = "Enter the host's address first.";
         return;
     }
     SetConfigValueString("last_ip", address);
     SaveConfig();
+    LobbyCaptureRoleDevice(true, keyboard_submit);
     Online_Connect(address);
     this_ui.SendCallback("multiplayer_menu_connecting.as");
 }
@@ -73,6 +76,7 @@ void DrawGUI() {
     ImGui_PushStyleVar(ImGuiStyleVar_ItemSpacing, vec2(12.0f, 14.0f));
     ImGui_Begin("Connect to a host", ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoTitleBar);
+    if(focus_connect) ImGui_SetWindowFocus();
     MPWindowScale(scale);
     MPPanelBackground();
     MPHeading("Connect to a host", 50.0f);
@@ -83,7 +87,12 @@ void DrawGUI() {
     bool enter = ImGui_InputText("##host_address", address, 256, ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui_PopItemWidth();
     if(MPButton("Connect", vec2(-1.0f, 40.0f * scale)) || enter) {
-        Connect();
+        Connect(enter);
+    }
+    if(focus_connect) {
+        ImGui_SetItemDefaultFocus();
+        ImGui_SetKeyboardFocusHere(-1);
+        focus_connect = false;
     }
     if(notice != "") {
         ImGui_TextColored(vec4(1.0f, 0.65f, 0.4f, 1.0f), notice);

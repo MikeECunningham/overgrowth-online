@@ -2822,15 +2822,15 @@ void Online::ReceiveHitRequest(const OnlineMessageRef& ref, OnlineMessages::HitR
     m->damage_mult = std::max(0.0f, std::min(m->damage_mult, 4.0f));  // (a guest's word: no one-hit kills)
     m->knockback_mult = std::max(0.0f, std::min(m->knockback_mult, 4.0f));
 
+    if (IsHosting() && GetAvatarOwner(attacker_id) != from) {
+        return;  // only the attacker's owner asks about its attacks
+    }
+
     if (!IsLocalAvatar(target_id)) {
         if (IsHosting()) {
             SendToOwnerOf(target_id, ref, true);  // a player's character: its machine decides
         }
         return;
-    }
-
-    if (IsHosting() && GetAvatarOwner(attacker_id) != from) {
-        return;  // only the attacker's owner asks about its attacks
     }
 
     // Shown in the past here (a proxy): hold it until we see the attacker land it
@@ -2920,7 +2920,7 @@ void Online::ReceiveHitResult(const OnlineMessageRef& ref, OnlineMessages::HitRe
     ObjectID target_id = GetObjectID(m->target);
     MovementObject* attacker = CharacterByID(attacker_id);
 
-    if (attacker == nullptr) {
+    if (attacker == nullptr || (IsHosting() && GetAvatarOwner(target_id) != from)) {
         return;
     }
 
@@ -2931,16 +2931,15 @@ void Online::ReceiveHitResult(const OnlineMessageRef& ref, OnlineMessages::HitRe
         return;
     }
 
-    if (m->request_ms != 0) {
-        const auto key = std::make_tuple(m->attacker, m->target, m->type);
-        const auto pending = pending_hit_requests.find(key);
-        if (pending == pending_hit_requests.end() || pending->second != m->request_ms ||
-            (uint32_t)((uint32_t)OnlineClockMs() - m->request_ms) > 1500) {
-            ++stale_hit_results;
-            return;
-        }
-        pending_hit_requests.erase(pending);
+    const auto key = std::make_tuple(m->attacker, m->target, m->type);
+    const auto pending = pending_hit_requests.find(key);
+    if (pending == pending_hit_requests.end() ||
+        (m->request_ms != 0 && pending->second != m->request_ms) ||
+        static_cast<uint32_t>(static_cast<uint32_t>(OnlineClockMs()) - pending->second) > 1500) {
+        ++stale_hit_results;
+        return;
     }
+    pending_hit_requests.erase(pending);
     ++hit_results;
 
     string t = to_string(target_id), r = to_string(m->result);
@@ -2957,16 +2956,20 @@ void Online::ReceiveHitResult(const OnlineMessageRef& ref, OnlineMessages::HitRe
             " HandleAIEvent(_attack_failed); SwitchToBlockedAnim(); }"
             " else if(" + r + " == _going_to_dodge) { HandleAIEvent(_attack_failed); block_stunned = 0.5f; block_stunned_by_id = " + t + "; } }");
     } else {
+        // A delayed impact from a previous opponent cannot grant that opponent
+        // a fresh counter-throw after this attack has ended or changed target.
         attacker->Execute(
-            "if(" + r + " == _block_impact) { block_stunned = 0.5f; block_stunned_by_id = " + t + "; }"
-            " else if(" + r + " == _going_to_dodge) { HandleAIEvent(_attack_failed); block_stunned = 0.5f; block_stunned_by_id = " + t + "; }");
+            "if(state == _attack_state && target_id == " + t + ") {"
+            " if(" + r + " == _block_impact) { block_stunned = 0.5f; block_stunned_by_id = " + t + "; }"
+            " else if(" + r + " == _going_to_dodge) { HandleAIEvent(_attack_failed); block_stunned = 0.5f; block_stunned_by_id = " + t + "; } }");
     }
 }
 
 // ---- temporary ownership (throws, chokes, drags) ----------------------------------
 
-void Online::BroadcastOwnerOverride(CommonObjectID cid, PlayerID owner, bool active, float max_seconds, PeerID except, bool peers_locked) {
+void Online::BroadcastOwnerOverride(CommonObjectID cid, PlayerID owner, bool active, float max_seconds, PeerID except, bool peers_locked, CommonObjectID choke_actor) {
     OnlineMessageRef ref = message_handler.Create<OnlineMessages::OwnerOverride>(cid, (int32_t)owner, active, max_seconds);
+    static_cast<OnlineMessages::OwnerOverride*>(ref.GetData())->choke_actor = choke_actor;
 
     if (IsClient()) {
         Send(ref);
@@ -2993,7 +2996,7 @@ void Online::BroadcastOwnerOverride(CommonObjectID cid, PlayerID owner, bool act
 
 // Take a character another machine runs, for a throw, choke or drag that
 // starts now on ours. True if we run it now (or always did).
-bool Online::TakeOver(ObjectID id, float max_seconds) {
+bool Online::TakeOver(ObjectID id, float max_seconds, ObjectID choke_actor) {
     if (!IsActive() || online_session == nullptr) {
         return true;
     }
@@ -3034,7 +3037,8 @@ bool Online::TakeOver(ObjectID id, float max_seconds) {
     e.since_ms = OnlineClockMs();
     e.max_ms = max_seconds * 1000.0;
     static_cast<MovementObject*>(o)->SetNetworkProxy(false);  // now, not next update: the caller acts on it at once
-    BroadcastOwnerOverride(cid, e.owner, true, max_seconds, online_session->local_player_id, false);
+    BroadcastOwnerOverride(cid, e.owner, true, max_seconds, online_session->local_player_id, false,
+                           choke_actor == -1 ? -1 : GetOriginalID(choke_actor));
     ++takeovers;
     LOGI << "Took over character " << id << " for up to " << max_seconds << " s" << std::endl;
     return true;
@@ -3054,7 +3058,25 @@ void Online::ReleaseTakeOver(ObjectID id) {
     LOGI << "Handed back character " << id << std::endl;
 }
 
-void Online::ReceiveOwnerOverride(CommonObjectID cid, PlayerID owner, bool active, float max_seconds, PeerID from) {
+static bool CanStartRemoteGrab(MovementObject& holder, MovementObject& victim, bool rear_choke, float seconds) {
+    vec3 position = holder.position;
+    uint32_t oldest, latest;
+    if (holder.net_buffer.SourceTimeRange(oldest, latest)) holder.net_buffer.PositionAt(latest, position);
+    const vec3 delta = position - victim.position;
+    if (&holder == &victim || !Finite3(delta) || length_squared(delta) > 25.0f) return false;
+    // Legacy tether requests have no explicit holder. A long lease on a
+    // standing, conscious character also needs to satisfy the stealth check.
+    const bool standing = victim.NetworkVitalsSupported() &&
+                          victim.ASGetIntVar("state") != 4 && victim.ASGetIntVar("knocked_out") == 0;
+    if (!rear_choke && (seconds <= 5.0f || !standing)) return true;
+    if (!standing || length_squared(delta) > 9.0f || std::abs(delta.y()) > 0.75f) return false;
+    const int species = victim.ASHasVar("species") ? victim.ASGetIntVar("species") : -1;
+    if (species == 1 || species == 2 || !victim.HasFunction("int IsUnaware()") ||
+        victim.QueryIntFunction("int IsUnaware()") != 1) return false;
+    return (victim.ASHasVar("asleep") && victim.ASGetBoolVar("asleep")) || dot(victim.GetFacing(), delta) < 0.0f;
+}
+
+void Online::ReceiveOwnerOverride(CommonObjectID cid, PlayerID owner, bool active, float max_seconds, PeerID from, CommonObjectID choke_actor) {
     if (!host_started_level || online_session == nullptr) {
         return;
     }
@@ -3063,35 +3085,50 @@ void Online::ReceiveOwnerOverride(CommonObjectID cid, PlayerID owner, bool activ
     max_seconds = std::isfinite(max_seconds) ? std::max(0.0f, std::min(max_seconds, 60.0f)) : 0.0f;  // (a choke holds 60 s at most)
 
     if (IsHosting() && active && from != online_session->local_player_id) {
-        // A guest takes over what its own character grabs: beside it
-        SceneGraph* sg = Engine::Instance()->GetSceneGraph();
-        Object* target = sg != nullptr ? sg->GetObjectFromID(GetObjectID(cid)) : nullptr;
+        MovementObject* victim = CharacterByID(GetObjectID(cid));
         bool nearby_owner = false;
-        if (target && target->GetType() == _movement_object) {
+        if (victim) {
             for (const auto& entry : online_session->player_states) {
                 const PlayerState& player = entry.second;
-                if (player.peer_id != from) continue;
-                Object* taker = sg->GetObjectFromID(player.object_id);
-                if (taker && taker->GetType() == _movement_object &&
-                    distance(static_cast<MovementObject*>(taker)->position, static_cast<MovementObject*>(target)->position) <= 5.0f) {
+                if (!player.connected || player.is_bot || player.peer_id != from ||
+                    (choke_actor != -1 && GetOriginalID(player.object_id) != choke_actor)) continue;
+                MovementObject* holder = CharacterByID(player.object_id);
+                if (holder && CanStartRemoteGrab(*holder, *victim, choke_actor != -1, max_seconds)) {
                     nearby_owner = true;
                     break;
                 }
             }
         }
-        if (!nearby_owner) return;
+        if (!nearby_owner) {
+            // Roll back the requester's optimistic lease. Other peers did not take it.
+            if (Peer* peer = GetPeerFromID(from)) {
+                bool held = it != owner_overrides.end();
+                auto answer = message_handler.Create<OnlineMessages::OwnerOverride>(cid, held ? it->second.owner : 0,
+                    held, held ? (float)(it->second.max_ms / 1000.0) : 0.0f);
+                static_cast<OnlineMessages::OwnerOverride*>(answer.GetData())->choke_actor = choke_actor;
+                SendTo(peer->conn_id, answer);
+            }
+            return;
+        }
     }
 
     if (IsHosting()) {
         // The host keeps the table: the first taker holds it until it lets go
         if (active && it != owner_overrides.end() && it->second.owner != from) {
-            BroadcastOwnerOverride(cid, it->second.owner, true, (float)(it->second.max_ms / 1000.0), 0, true);  // tells the latecomer
+            BroadcastOwnerOverride(cid, it->second.owner, true, (float)(it->second.max_ms / 1000.0), 0, true, choke_actor);  // tells the latecomer
             return;
         }
         if (!active && (it == owner_overrides.end() || it->second.owner != from)) {
             return;
         }
         owner = from;
+    } else if (choke_actor != -1 && (!active || owner != online_session->local_player_id)) {
+        auto* holder = CharacterByID(GetObjectID(choke_actor));
+        if (holder && IsLocalAvatar(holder->GetID()) && holder->NetworkVitalsSupported() &&
+            holder->ASGetIntVar("tethered") == 1 && holder->ASGetIntVar("tether_id") == GetObjectID(cid)) {
+            holder->Execute("SetTetherID(-1); UnTether();");
+            handed_back_ms[cid] = OnlineClockMs();
+        }
     }
 
     if (active) {

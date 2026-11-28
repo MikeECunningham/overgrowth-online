@@ -602,7 +602,7 @@ bool CanEdit(uint32_t id, uint32_t actor) {
     auto target = players.find(id), owner = players.find(actor);
     return target != players.end() && owner != players.end() && !target->second.is_bot && target->second.connected &&
            !owner->second.is_bot && owner->second.connected &&
-           (id == actor || (target->second.peer_id == owner->second.peer_id && net->IsLobbyLeader(actor)));
+           (target->second.peer_id == owner->second.peer_id && (net->IsLobbyLeader(actor) || net->IsLobbyHost(actor)));
 }
 std::string LobbyView(uint32_t id, uint32_t actor) {
     const JsonValue& data = remote;

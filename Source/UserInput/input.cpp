@@ -564,6 +564,7 @@ void Input::HandleEvent(const SDL_Event& event) {
             JoystickMap::iterator iter = open_joysticks_.find(button->which);
             if (iter != open_joysticks_.end()) {
                 if (in_focus_ && event.type == SDL_JOYBUTTONDOWN) {
+                    controller_join_presses_.insert(button->which);
                     last_controller_button_instance_ = button->which;
                     last_controller_button_time_ = static_cast<float>(event.common.timestamp);
                 }
@@ -585,6 +586,8 @@ void Input::HandleEvent(const SDL_Event& event) {
             SDL_JoyHatEvent* hat = (SDL_JoyHatEvent*)&event.jhat;
             JoystickMap::iterator iter = open_joysticks_.find(hat->which);
             if (iter != open_joysticks_.end()) {
+                if (in_focus_ && hat->value != SDL_HAT_CENTERED)
+                    controller_join_presses_.insert(hat->which);
                 // TODO: Replace for-loop with constant-time lookup?
                 const std::vector<SDL_GameControllerButtonBind>& gamepad_bind = iter->second->gamepad_bind;
                 for (size_t i = 0; i < gamepad_bind.size(); ++i) {
@@ -1000,6 +1003,8 @@ void Input::ProcessBindings() {
             // Menu scrolling follows the physical stick independently of camera remaps and inversion.
             js->joystick.ProcessBinding(ControllerInput::R_STICK_YN, "menu_scroll_up");
             js->joystick.ProcessBinding(ControllerInput::R_STICK_YP, "menu_scroll_down");
+            js->joystick.ProcessBinding(ControllerInput::L_TRIGGER, "menu_shop_heal");
+            js->joystick.ProcessBinding(ControllerInput::R_TRIGGER, "menu_shop_ready");
             js->joystick.ProcessBinding(ControllerInput::L_TRIGGER, "menu_profile_category_prev");
             js->joystick.ProcessBinding(ControllerInput::R_TRIGGER, "menu_profile_category_next");
             js->joystick.ProcessBinding(ControllerInput::LB, "menu_profile_skin_prev");

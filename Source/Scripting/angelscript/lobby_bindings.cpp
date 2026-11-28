@@ -16,6 +16,7 @@
 #include <JSON/json.h>
 #include <SDL.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -86,6 +87,12 @@ int LeaderInputID() {
         if (player.player_id == leader) return Input::Instance()->GetLocalPlayerInputID(player.local_index);
     return Input::Instance()->GetLocalPlayerInputID(0);
 }
+int HostInputID() {
+    Online* online = Online::Instance();
+    for (const auto& player : online->GetLocalPlayerStates())
+        if (online->IsLobbyHost(player.player_id)) return Input::Instance()->GetLocalPlayerInputID(player.local_index);
+    return -1;
+}
 bool CanManageLocal() { return Online::Instance()->IsLobbyLeader(MenuPlayerID()); }
 bool Active() {
     Online* online = Online::Instance();
@@ -127,6 +134,11 @@ bool CanStart() {
     return true;
 }
 bool Start() { return CanStart() && Online::Instance()->StartLobbyGame("", "", false, MenuPlayerID()); }
+bool StartRandomMap(const std::string& path) {
+    Online* online = Online::Instance();
+    return CanStart() && online->LobbyMap().compare(0, 8, "@random:") == 0 && !path.empty() &&
+           online->StartLobbyGame(path, online->LobbyCampaign(), online->LobbyBuild(), MenuPlayerID());
+}
 bool CanLeave() {
     Online* online = Online::Instance();
     // Admission has not assigned a leader yet. The person trying to connect
@@ -315,11 +327,36 @@ std::string DeviceIdentity(SDL_Joystick* joystick) {
 struct JoinedDevice { std::string identity; int local = -1; };
 std::map<int, JoinedDevice> joined_devices;
 std::map<std::string, std::vector<int>> remembered_slots;
-std::map<int, bool> held_buttons;
+// Captured at button activation, before network connection or text-entry delays.
+int role_controller = -1;
+std::string role_controller_identity;
+bool role_device_pending = false;
+void CaptureRoleDevice(bool keep_choice, bool keyboard_submit) {
+    if (Online::Instance()->IsActive() || (keep_choice && role_device_pending)) return;
+    auto* input = Input::Instance();
+    ImGuiContext* gui = ImGui::GetCurrentContext();
+    const bool pad = !keyboard_submit && gui && gui->NavActivateId != 0 &&
+        gui->NavActivateId == gui->LastItemData.ID && gui->NavInputSource == ImGuiInputSource_Gamepad;
+    role_controller = -1;
+    role_controller_identity.clear();
+    if (pad) {
+        uint64_t newest = 0;
+        for (const auto& entry : input->GetOpenJoysticks()) {
+            const auto& joystick = entry.second.GetConst().joystick;
+            if (joystick.GetButtonDown("menu_return") > 0.5f && joystick.LastMenuPress() >= newest) {
+                newest = joystick.LastMenuPress();
+                role_controller = entry.first;
+                role_controller_identity = DeviceIdentity(entry.second.GetConst().sdl_joystick);
+            }
+        }
+    }
+    role_device_pending = true;
+    Online::Instance()->ResetLocalPartyForRole();
+    config.GetRef("controller_menu_owner") = 0;
+}
 std::set<int> joining_buttons_held;
 struct DeviceProfile { std::string name; std::map<std::string, std::string> settings; };
 std::map<std::string, DeviceProfile> removed_device_profiles;
-bool was_lobby = false;
 bool was_world = false;
 int world_primary_device = -1;
 int previous_button_instance = -1;
@@ -400,6 +437,15 @@ void UpdateLocalLobbyInput() {
     }
     // Explicit Leave must finish its transition out of this world before the
     // automatic solo fallback is allowed to create another private session.
+    if ((had_session || used_lobby_context) && !online->online_session && !world && !online->LobbyMigrationBusy()) {
+        used_lobby_context = false;
+        joined_devices.clear();
+        remembered_slots.clear();
+        joining_buttons_held.clear();
+        online->ResetLocalPartyForRole();
+        input->SetUpForXPlayers(0);
+        config.GetRef("controller_menu_owner") = 0;
+    }
     had_session = online->online_session != nullptr;
     if (world && !was_world) {
         world_primary_device = previous_button_time > input->last_keyboard_event_time &&
@@ -408,25 +454,29 @@ void UpdateLocalLobbyInput() {
     was_world = world;
     previous_button_instance = input->LastControllerButtonInstance();
     previous_button_time = input->LastControllerButtonTime();
+    const auto pad_presses = input->TakeControllerJoinPresses();
     const bool keyboard_join = input->KeyboardJoinPressed();  // consume stale menu presses too
-    if (!online->IsActive() && !world) { was_lobby = false; return; }
+    if (!online->IsActive() && !world) return;
     const unsigned local_count = online->IsActive() ? online->LocalLobbyPlayerCount() : std::max(1u, input->GetNumLocalPlayers());
     auto& joysticks = input->GetOpenJoysticks();
-    // A pad remembered from an earlier offline/local context can already be
-    // P1 when it opens Host. It still takes primary gameplay ownership here.
-    if (!was_lobby && lobby && input->LocalKeyboardPlayerIndex() == 0 &&
-        input->LastControllerButtonTime() > input->last_keyboard_event_time &&
-        input->LastControllerButtonTime() > input->last_mouse_event_time) {
-        const auto primary = joined_devices.find(input->LastControllerButtonInstance());
-        if (primary != joined_devices.end() && primary->second.local == 0) input->BindLocalKeyboard(-1);
+    const bool claim_role = role_device_pending && lobby;
+    if (claim_role) {
+        role_device_pending = false;
+        joined_devices.clear();
+        remembered_slots.clear();
+        joining_buttons_held.clear();
+        // A pad may reconnect with a new SDL instance while the address form
+        // is open. Reserve its seat even if it is still unplugged here.
+        if (role_controller >= 0 && !joysticks.count(role_controller))
+            remembered_slots[role_controller_identity].push_back(0);
+        input->BindLocalKeyboard(role_controller >= 0 ? -1 : 0);
     }
-    used_lobby_context = used_lobby_context || lobby;
+    used_lobby_context = used_lobby_context || online->IsActive();
     std::set<int> present, occupied;
     for (const auto& entry : joysticks) present.insert(entry.first);
     for (auto it = joined_devices.begin(); it != joined_devices.end();) {
         if (!present.count(it->first) || it->second.local < 0 || static_cast<unsigned>(it->second.local) >= local_count) {
             if (!present.count(it->first) && it->second.local >= 0) NotifyDevice(static_cast<unsigned>(it->second.local), false);
-            held_buttons.erase(it->first);
             joining_buttons_held.erase(it->first);
             it = joined_devices.erase(it);
         }
@@ -438,24 +488,18 @@ void UpdateLocalLobbyInput() {
         const int instance = entry.first;
         bool down = false;
         for (int button = 0; button < SDL_JoystickNumButtons(joystick); ++button) down = down || SDL_JoystickGetButton(joystick, button) != 0;
-        const bool rising = down && !held_buttons[instance];
-        held_buttons[instance] = down;
+        for (int hat = 0; hat < SDL_JoystickNumHats(joystick); ++hat) down = down || SDL_JoystickGetHat(joystick, hat) != SDL_HAT_CENTERED;
+        const bool rising = !claim_role && pad_presses.count(instance) != 0;
         auto joined = joined_devices.find(instance);
         if (joined == joined_devices.end()) {
             const std::string identity = DeviceIdentity(joystick);
-            int slot = -1;
-            for (int remembered : remembered_slots[identity]) {
-                if (!occupied.count(remembered) && static_cast<unsigned>(remembered) < local_count) { slot = remembered; break; }
-            }
-            // A controller already navigating Host/Connect owns this context's
-            // primary player. Otherwise keyboard/mouse keeps P1 and a press joins.
-            const bool navigated = !was_lobby && lobby && !occupied.count(0) &&
-                input->LastControllerButtonInstance() == instance &&
-                input->LastControllerButtonTime() > input->last_keyboard_event_time &&
-                input->LastControllerButtonTime() > input->last_mouse_event_time;
-            if (slot < 0 && navigated) {
-                slot = 0;
-                if (input->LocalKeyboardPlayerIndex() == 0) input->BindLocalKeyboard(-1);
+            int slot = claim_role && instance == role_controller ? 0 : -1;
+            // Reconnect already joined seats on the same device. Never steal the keyboard seat.
+            if (slot < 0) {
+                for (int remembered : remembered_slots[identity]) {
+                    if (!occupied.count(remembered) && remembered != input->LocalKeyboardPlayerIndex() &&
+                        static_cast<unsigned>(remembered) < local_count) { slot = remembered; break; }
+                }
             }
             if (slot < 0 && !online->IsActive() && instance == world_primary_device) {
                 const int assigned = input->LocalPlayerIndexForInputID(entry.second->player_input);
@@ -470,7 +514,7 @@ void UpdateLocalLobbyInput() {
             }
             if (slot >= 0) {
                 joined_devices[instance] = {identity, slot};
-                if (rising) joining_buttons_held.insert(instance);
+                if (down || rising) joining_buttons_held.insert(instance);
                 auto& memory = remembered_slots[identity];
                 if (std::find(memory.begin(), memory.end(), slot) == memory.end()) memory.push_back(slot);
                 occupied.insert(slot);
@@ -503,7 +547,6 @@ void UpdateLocalLobbyInput() {
             input->getKeyboard().handleKeyUp(key);
         }
     }
-    was_lobby = lobby;
 }
 
 void AttachLobby(ASContext* context) {
@@ -537,6 +580,7 @@ void AttachLobby(ASContext* context) {
     context->RegisterObjectProperty("LobbyPlayer", "string slot_uid", asOFFSET(LobbyPlayer, slot_uid));
     context->RegisterObjectProperty("LobbyPlayer", "int slot_index", asOFFSET(LobbyPlayer, slot_index));
 #define LOBBY_FN(declaration, function) context->RegisterGlobalFunction(declaration, asFUNCTION(function), asCALL_CDECL)
+    LOBBY_FN("void LobbyCaptureRoleDevice(bool keep_choice = false, bool keyboard_submit = false)", CaptureRoleDevice);
     LOBBY_FN("uint ProfileRevision()", LocalProfiles::Revision);
     LOBBY_FN("string ProfileSettingsView()", LocalProfiles::SettingsView);
     LOBBY_FN("string ProfileView(const string &in)", LocalProfiles::View);
@@ -564,7 +608,7 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("bool LobbyAddSlot()", AddBot);
     LOBBY_FN("bool LobbyGetAutoAdmission()", AutoAdmission); LOBBY_FN("bool LobbySetAutoAdmission(bool)", SetAutoAdmission);
     LOBBY_FN("bool LobbySetSlotPlayer(uint, bool)", SetSlotPlayer); LOBBY_FN("bool LobbySwapSlots(uint, uint)", SwapSlots);
-    LOBBY_FN("bool LobbyStart()", Start); LOBBY_FN("void LobbyLeave()", Leave);
+    LOBBY_FN("bool LobbyStartRandomMap(const string &in)", StartRandomMap); LOBBY_FN("bool LobbyStart()", Start); LOBBY_FN("void LobbyLeave()", Leave);
     LOBBY_FN("bool LobbyCanLeave()", CanLeave); LOBBY_FN("bool LobbyTryLeave()", TryLeave);
     LOBBY_FN("int LobbyGetCurrentInputID()", CurrentInputID);
     LOBBY_FN("void LobbyUpdate()", UpdateLocalLobbyInput); LOBBY_FN("uint LobbySnapshotRevision()", Revision);
@@ -585,6 +629,7 @@ void AttachLobby(ASContext* context) {
     LOBBY_FN("bool LobbyCanPromoteLeader(uint)", CanPromoteLeader); LOBBY_FN("bool LobbyPromoteLeader(uint)", PromoteLeader);
     LOBBY_FN("uint LobbyCurrentPlayerID()", MenuPlayerID); LOBBY_FN("int LobbyCurrentLocalPlayerIndex()", CurrentLocalPlayerIndex);
     LOBBY_FN("int LobbyGetLocalLeaderInputID()", LeaderInputID);
+    LOBBY_FN("int LobbyGetHostInputID()", HostInputID);
     LOBBY_FN("bool LobbyCurrentPlayerIsLeader()", CanManageLocal);
     LOBBY_FN("string LobbyGetMigrationStatus()", MigrationStatus); LOBBY_FN("bool LobbyMigrationBusy()", MigrationBusy);
     LOBBY_FN("int LobbyGetAssignedTeam(int)", AssignedTeam);

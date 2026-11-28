@@ -14,7 +14,7 @@ inline bool ScalingMatchSetting(const std::string& key) {
 
 inline bool CampaignMatchSetting(const std::string& key) {
     return key == "difficulty_preset" || key == "game_difficulty" ||
-           key == "global_time_scale_mult" || key == "tutorials" || key == "auto_ledge_grab" ||
+           key == "global_time_scale_mult" || key == "tutorials" ||
            ScalingMatchSetting(key) || key == "armor_localized" || key == "oo_arena_random";
 }
 

@@ -1213,6 +1213,14 @@ bool BeginShop(bool final) {
     Publish();
     return true;
 }
+static void FinishShop() {
+    if (Net()->IsSurvivalMode()) for (auto& account : run.players) account.second.reward_hands.clear();
+    run.open = false;
+    run.deadline_ms = 0;
+    spawns.clear(); // Arena reuses the same object IDs for the next match.
+    ++run.attempt;
+    Publish();
+}
 void Update() {
     if (!Net()->IsHosting() || !Net()->online_session || Net()->LobbyWaiting() || !Enabled()) return;
     FinishRemoteRestores();
@@ -1237,14 +1245,7 @@ void Update() {
             if (seat.is_bot || !seat.connected) continue;
             if (HasSurvivalChoice(seat) || (!run.ready.count(row.first) && (paid || (run.final && Net()->IsLobbyHost(row.first))))) waiting = true;
         }
-        if (!waiting || expired) {
-            if (Net()->IsSurvivalMode()) for (auto& account : run.players) account.second.reward_hands.clear();
-            run.open = false;
-            run.deadline_ms = 0;
-            spawns.clear(); // Arena reuses the same object IDs for the next match.
-            ++run.attempt;
-            Publish();
-        }
+        if (!waiting || expired) FinishShop();
     } else if (now >= next_sample && Net()->host_started_level && Engine::Instance()->IsLevelLoaded()) {
         next_sample = now + 350;
         SceneGraph* graph = Engine::Instance()->GetSceneGraph();
@@ -1322,6 +1323,7 @@ Json::Value View(ID actor, ID target) {
     v["xp_enabled"] = true;
     if (run.open) {
         v["ready"] = run.ready.count(actor) != 0;
+        v["can_force_finish"] = Net()->IsLobbyHost(actor);
         v["seconds_left"] = SecondsLeft();
         v["final"] = run.final;
         v["loop"] = run.loop;
@@ -1434,6 +1436,12 @@ bool ReceiveAction(ID actor, const Json::Value& m) {
     }
     if (!run.open || m["generation"].asUInt() != run.shop_generation || m["seq"].asUInt() <= last_action[actor]) return false;
     last_action[actor] = m["seq"].asUInt();
+    if (action == "force_finish") {
+        if (!Net()->IsLobbyHost(actor)) return false;
+        FinishRemoteRestores();
+        FinishShop();
+        return true;
+    }
     const auto* subject = Seat(target);
     const int team_id = ShopTeam(*buyer);
     const bool may_buy = !Shared() || actor == Leader(team_id);
@@ -1473,6 +1481,7 @@ bool ReceiveAction(ID actor, const Json::Value& m) {
 bool Act(ID actor, ID target, const std::string& action, const std::string& key, unsigned expected_reward_generation) {
     const auto* owner = Seat(actor);
     if (!Enabled() || Net()->LobbyWaiting() || !owner || owner->peer_id != Net()->LocalPeerID() || owner->is_bot) return false;
+    if (action == "force_finish" && !Net()->IsLobbyHost(actor)) return false;
     unsigned generation = run.shop_generation;
     if (action == "reward") {
         if (target != actor) return false;

@@ -683,9 +683,9 @@ class Online {
     void ReceiveHitResult(const OnlineMessageRef& ref, OnlineMessages::HitResult* m, PeerID from);
     int NetworkWasHit(MovementObject* target, const string& type, const string& attack_path, vec3 dir, vec3 pos,
                       ObjectID attacker, float damage_mult, float knockback_mult);
-    bool TakeOver(ObjectID id, float max_seconds);
+    bool TakeOver(ObjectID id, float max_seconds, ObjectID choke_actor = -1);
     void ReleaseTakeOver(ObjectID id);
-    void ReceiveOwnerOverride(CommonObjectID cid, PlayerID owner, bool active, float max_seconds, PeerID from);
+    void ReceiveOwnerOverride(CommonObjectID cid, PlayerID owner, bool active, float max_seconds, PeerID from, CommonObjectID choke_actor);
     void UpdateTakeOvers(SceneGraph* scenegraph);
 
     // Thrown weapons: the host flies them; hits on characters run elsewhere go to their owners
@@ -896,7 +896,7 @@ class Online {
     // for late joiners): once the level has loaded, alone or not. (While it
     // loads the scripts of every machine make their own: Online_AnnounceObject.)
     bool SharesCreatedObjects() const { return IsHosting() && (host_started_level || !loading); }
-    void BroadcastOwnerOverride(CommonObjectID cid, PlayerID owner, bool active, float max_seconds, PeerID except, bool peers_locked);
+    void BroadcastOwnerOverride(CommonObjectID cid, PlayerID owner, bool active, float max_seconds, PeerID except, bool peers_locked, CommonObjectID choke_actor = -1);
     vector<ObjectID> GetLocalAvatarIDs() const;
     PlayerState GenerateHostPlayerState() const;
 
@@ -965,6 +965,8 @@ class Online {
     void AssignLobbyBots();
     PlayerID LobbyPlayerIDForLocalIndex(unsigned index) const;
     PlayerID LocalLobbyLeaderPlayerID() const;
+    bool CanDriveLobbyMenu(int local_index) const;
+    void ResetLocalPartyForRole();
     PlayerID LobbyHostPlayerID() const { return lobby_authority_.host; }
     bool IsLobbyHost(PlayerID id) const;
     bool IsLobbyLeader(PlayerID id) const;

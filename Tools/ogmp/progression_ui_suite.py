@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from .campaign_scaling_suite import CAMPAIGN, RENDER_KEYS
-from .newcampaign_local_suite import FIRST, _join_pad, _ready, _skip
+from .newcampaign_local_suite import FIRST, _join_pad, _probe, _ready, _skip
 from .scenarios import script_errors
 
 
@@ -219,9 +219,23 @@ def progression_ui(ctx):
         time.sleep(.4)
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
         ctx.shot(host, "equipment_rarities")
-        for i in (0,1):
-            press(i,"menu_cancel")
-            press(i,"menu_return")
+        p2 = baseline[1]["actor"]
+        body = next(player["avatar_id"] for player in bridge.status()["online"]["players"] if player["id"] == p2)
+        script("permanent_health=.7f;temp_health=.7f;blood_health=.8f;", body)
+        wait(lambda: any(c["id"] == "restore_health" and c["available"] for c in
+                         bridge.call("progression", actor=p2)["view"]["cards"]), "P2 has an injury to heal")
+        bridge.call("virtual_pad", action="axis", slot=0, axis=4, value=32767)
+        wait(lambda: next(c["permanent_health"] for c in bridge.state() if c["id"] == body) >= .999,
+             "P2 left trigger heals the selected fighter")
+        bridge.call("virtual_pad", action="axis", slot=0, axis=4, value=-32768)
+        bridge.call("virtual_pad", action="axis", slot=0, axis=5, value=32767)
+        wait(lambda: bridge.call("progression", actor=p2)["view"]["ready"], "P2 right trigger readies only P2")
+        time.sleep(.35)
+        assert bridge.call("progression", actor=p2)["view"]["ready"]
+        assert not bridge.call("progression", actor=baseline[0]["actor"])["view"]["ready"]
+        bridge.call("virtual_pad", action="axis", slot=0, axis=5, value=-32768)
+        press(0,"menu_cancel")
+        press(0,"menu_return")
         wait(lambda: all(not r["shop"] for r in rows()), "ready seats leave shop")
         script("LobbyEndGame();")
         wait(lambda: bridge.status()["online"]["lobby_waiting"] and not bridge.status()["level_loaded"], "back in lobby")
@@ -229,14 +243,14 @@ def progression_ui(ctx):
         wait(lambda: host_form().get("max_scroll_y",0) > 0, "native lobby form overflows")
         script('ImGui_SetWindowFocus("Hosting options");', "menu")
         stick(30000)
-        wait(lambda: host_form().get("scroll_y",0) > 4, "right stick scrolls focused lobby form")
-        stick(-30000)
-        wait(lambda: host_form()["scroll_y"] < 1, "right stick reverses native lobby scroll")
+        time.sleep(.4)
+        assert host_form().get("scroll_y",0) < 1, "nonleader right stick moved the host lobby"
         stick(0)
         script('SetControllerPlayer(0);for(uint i=0;i<LobbyPlayers().length();++i)LobbySetPlayerTeam(LobbyPlayers()[i].id,1);'
                'LobbySetModeSetting("progression_shared",1);LobbyStart();', "menu")
         _ready(host,FIRST)
-        _skip(host)
+        dialogue_controller = int(_probe(host, "GetCampaignDialogueControllerID()"))
+        _skip(host, dialogue_controller)
         script("ProgressionBeginShop(true);")
         wait(lambda: len(rows()) == 2 and all(r["shop"] for r in rows()), "shared shop")
         assert [r["page"] for r in rows()] == ["shop","equipment"], rows()

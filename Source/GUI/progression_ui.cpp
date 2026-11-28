@@ -153,7 +153,7 @@ struct Seat {
     float drag_offset = 0;
     int old_dx = 0, old_dy = 0;
     double next_move = 0;
-    bool accept_down = false, back_down = false;
+    bool accept_down = false, back_down = false, heal_down = false, ready_down = false;
     unsigned reward_generation = 0;
     uint16_t next_reward_key = 0, next_shop_key = 0;
     uint32_t next_reward_pad = 0;
@@ -352,7 +352,7 @@ float input_depth(const PlayerInput* input, const char* key) {
     return it != input->key_down.end() && it->second.count > 0 ? it->second.depth : 0.0f;
 }
 
-enum class Action { TargetMenu, Target, PageShop, PageLoadout, PageTeam, Buy, Heal, Equip, EquipRace, Sell, Leader, Ready, Loop };
+enum class Action { TargetMenu, Target, PageShop, PageLoadout, PageTeam, Buy, Heal, Equip, EquipRace, Sell, Leader, Ready, ForceFinish, Loop };
 struct Button {
     std::string id, title, detail, badge;
     Action action;
@@ -399,11 +399,17 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     const bool paid = v["shop_enabled"].asBool();
     const bool ready = v["ready"].asBool();
     const bool loop = v["can_loop"].asBool();
-    const float footer_width = loop ? (w-gap)*0.5f : w;
+    const bool force_finish = v["can_force_finish"].asBool();
+    const int footer_count = 1 + int(loop) + int(force_finish);
+    const float footer_width = (w - gap*(footer_count-1))/footer_count;
+    const float ready_x = loop ? x+footer_width+gap : x;
     std::string ready_label = ready ? "Ready  [x]" : "Ready";
-    if (keyboard_owner) ready_label += "   [Space]";
+    ready_label += keyboard_owner ? "   [Space]" : "   [R2]";
     p.buttons.push_back({"ready",ready_label, "", "", Action::Ready,
-                         {x+w-footer_width,bottom-primary,footer_width,primary},paid || loop || !ready});
+                         {ready_x,bottom-primary,footer_width,primary},paid || loop || !ready});
+    if (force_finish)
+        p.buttons.push_back({"force_finish", "Force finish", "Close the shop for everyone and continue.", "", Action::ForceFinish,
+                             {x+w-footer_width,bottom-primary,footer_width,primary}});
     if (loop)
         p.buttons.push_back({"loop", v["loop"].asBool() ? "Loop campaign  [x]" : "Loop campaign  [ ]", "", "", Action::Loop,
                              {x,bottom-primary,footer_width,primary},!ready});
@@ -425,7 +431,7 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
         const auto& card = *recovery;
         const double spend = card["cost"].asDouble();
         const int quote = card.get("heal_quote", card["cost"]).asInt();
-        std::string text = (keyboard_owner ? std::string("Heal [H]   ") : std::string("Heal   ")) +
+        std::string text = (keyboard_owner ? std::string("Heal [H]   ") : std::string("Heal [L2]   ")) +
                            std::to_string(quote) + " / " + std::to_string(card["full_cost"].asInt()) + " XP";
         if (spend < quote)
             text += "   Spend " + number(spend, spend == std::floor(spend) ? 0 : 2) + " XP";
@@ -586,6 +592,7 @@ void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, 
         case Action::Equip: action = "equip"; key = btn.id.substr(6); break;
         case Action::EquipRace: action = "equip_race"; key = btn.id.substr(5); break;
         case Action::Ready: action = "ready"; key.clear(); break;
+        case Action::ForceFinish: action = "force_finish"; key.clear(); break;
         case Action::Loop: action = "loop"; key = v["loop"].asBool() ? "no" : "yes"; break;
         case Action::Leader: action = "leader"; target = btn.target; key.clear(); break;
         default: return;
@@ -722,6 +729,7 @@ void navigate(const Panel& p, Seat& seat, int dx, int dy) {
     const Box from = screen_box(*current,seat);
     const Button* best = nullptr;
     float best_cost = std::numeric_limits<float>::max();
+    bool best_leaves_list = false;
     for (const auto& b : p.buttons) {
         if (&b == current) continue;
         Box r = screen_box(b,seat);
@@ -732,15 +740,21 @@ void navigate(const Panel& p, Seat& seat, int dx, int dy) {
         float y = r.y+r.h/2 - (from.y+from.h/2);
         float along = dx ? dx*x : dy*y;
         float across = std::fabs(dx ? y : x);
-        if (along < 1 || across > along*3.5f) continue;
+        if (along < 1) continue;
         float cost = along + across*2.25f;
-        if (current->in_list && !b.in_list && dy) {
-            // Prefer the next/previous list row over a fixed footer/header.
-            const auto& list = p.list[current->column];
-            if ((dy > 0 && b.box.y < list.y+list.h) || (dy < 0 && b.box.y > list.y)) continue;
-            cost += 10000;
+        if (current->in_list && b.in_list) {
+            if (dy && b.column != current->column) continue;
+            if (dx && b.column == current->column && std::abs(b.box.y-current->box.y) > 1) continue;
+        } else if (current->in_list) {
+            if (dx || (dy > 0 && b.id != "ready") || (dy < 0 && b.box.y >= p.list[current->column].y)) continue;
+        } else if (across > along*3.5f) continue;
+        // Finish traversing this column before leaving it for a fixed control.
+        const bool leaves_list = current->in_list && !b.in_list;
+        if (!best || leaves_list < best_leaves_list || (leaves_list == best_leaves_list && cost < best_cost)) {
+            best = &b;
+            best_cost = cost;
+            best_leaves_list = leaves_list;
         }
-        if (cost < best_cost) { best = &b; best_cost = cost; }
     }
     if (!best) return;
     seat.focus = best->id;
@@ -877,7 +891,7 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     for (const auto& b : p.buttons) {
         if (!visible(b,p,seat)) continue;
         Box box = screen_box(b,seat);
-        if (b.action == Action::Heal || b.action == Action::Ready)
+        if (b.action == Action::Heal || b.action == Action::Ready || b.action == Action::ForceFinish)
             for (float edge : {box.x,box.y,box.x+box.w,box.y+box.h}) audit["action_rects"][b.id].append(edge);
         if (b.action == Action::EquipRace)
             for (float edge : {box.x, box.y, box.x+box.w, box.y+box.h}) audit["race_rects"][b.id].append(edge);
@@ -948,8 +962,11 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     audit["page"] = !view["shop_enabled"].asBool() ? "ready" :
                     seat.page == Page::Shop ? "shop" : seat.page == Page::Loadout ? "equipment" : "team";
     audit["stats_drawn"] = p.wallet.w > 0;
-    if (shortcut == SDL_SCANCODE_H) chosen = selected(p,"restore_health");
-    if (shortcut == SDL_SCANCODE_SPACE) chosen = selected(p,"ready");
+    const bool heal = input_depth(input,"menu_shop_heal") > .5f;
+    const bool ready = input_depth(input,"menu_shop_ready") > .5f;
+    if (shortcut == SDL_SCANCODE_H || (heal && !seat.heal_down && !typing)) chosen = selected(p,"restore_health");
+    if (shortcut == SDL_SCANCODE_SPACE || (ready && !seat.ready_down && !typing)) chosen = selected(p,"ready");
+    seat.heal_down = heal; seat.ready_down = ready;
     if (chosen) dispatch(*chosen,seat,player.player_id,view,now);
 }
 }
@@ -1084,6 +1101,8 @@ void Draw(Engine& engine) {
             seat.page = view["can_buy"].asBool() ? Page::Shop : Page::Loadout;
             seat.reset_list();
             seat.accept_down = input_depth(input,"menu_return") > 0.5f;
+            seat.heal_down = input_depth(input,"menu_shop_heal") > .5f;
+            seat.ready_down = input_depth(input,"menu_shop_ready") > .5f;
             seat.back_down = input_depth(input,"menu_cancel") > 0.5f;
         }
         seat.shopping = open;

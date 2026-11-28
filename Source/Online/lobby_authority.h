@@ -68,8 +68,10 @@ struct State {
     }
     bool CanSetTeam(const std::vector<Seat>& seats, Player actor, Player target,
                     bool host_controls, bool mode_uses_lobby_teams) const {
-        return Find(seats, actor) && Find(seats, target) &&
-            (actor == host || (!host_controls && mode_uses_lobby_teams && actor == target));
+        const Seat* a = Find(seats, actor);
+        const Seat* t = Find(seats, target);
+        return a && t && (actor == host || (!host_controls && mode_uses_lobby_teams &&
+            a->peer == t->peer && IsLeader(seats, actor)));
     }
 };
 }  // namespace LobbyAuthority

@@ -9,13 +9,17 @@ game does not run a deterministic simulation on every machine.
   AI, the world, and loose thrown weapons, and relays remote characters.
 - Characters stream compact root, bone, and gameplay snapshots at up to
   30 Hz. Receivers interpolate a delayed visual pose, with bounded
-  extrapolation when a new snapshot is late. Still characters send a
+  extrapolation when a new snapshot is late. The playback delay adapts to gaps
+  between usable packets. After a dropout, small root-position errors ease out
+  over several frames. Still characters send a
   heartbeat instead of an identical pose every tick.
 - The defender's machine resolves a melee hit against its own gameplay state
   and replies to the attacker's machine. The attacker predicts a response
   while waiting. Throws, chokes, and drags can temporarily transfer character
-  simulation ownership. This is distributed authority, rather than a fully
-  authoritative server with input replay and rollback.
+  simulation ownership. Remote characters expose their simulation owner’s
+  awareness for stealth checks. The host checks a rear choke against the
+  named holder, victim awareness, relative position, and facing. A declined
+  grab returns the victim to its owner.
 - Each network connection includes all its local players' camera interests.
   A fight beside a client's second player matters as much as one beside its
   first player. Logical lobby player IDs and network peer IDs are distinct.

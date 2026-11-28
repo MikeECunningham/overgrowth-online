@@ -666,9 +666,18 @@ void MovementObject::CaptureNetworkVitals(CharSnapshot::Vitals& v) {
     Online* online = Online::Instance();
     v.knocked_out = (uint8_t)ASGetIntVar("knocked_out");
     v.state = (uint8_t)ASGetIntVar("state");
+    int unaware = 0;
+    if (as_context->HasFunction(as_funcs.is_unaware)) {
+        ASArg result;
+        result.type = _as_int;
+        result.data = &unaware;
+        ASArglist args;
+        as_context->CallScriptFunction(as_funcs.is_unaware, &args, &result);
+    }
     v.flags = (ASGetBoolVar("on_ground") ? CharSnapshot::kVitalOnGround : 0) |
               (ASGetBoolVar("startled") ? CharSnapshot::kVitalStartled : 0) |
               (ASGetBoolVar("active_blocking") ? CharSnapshot::kVitalBlocking : 0) |
+              (unaware == 1 ? CharSnapshot::kVitalUnaware : 0) |
               (HasOngoingInjury(*this) ? CharSnapshot::kVitalHasWound : 0) |
               (net_restore_phase ? CharSnapshot::kVitalRestorePhase : 0) |
               (net_restore_succeeded ? CharSnapshot::kVitalRestoreSucceeded : 0);
@@ -704,6 +713,7 @@ void MovementObject::ApplyNetworkVitals(const CharSnapshot::Vitals& v) {
     }
 
     Online* online = Online::Instance();
+    net_unaware = (v.flags & CharSnapshot::kVitalUnaware) != 0;
     net_has_wound = (v.flags & CharSnapshot::kVitalHasWound) != 0;
     net_restore_succeeded = (v.flags & CharSnapshot::kVitalRestoreSucceeded) != 0;
     const bool phase = (v.flags & CharSnapshot::kVitalRestorePhase) != 0;
@@ -1273,12 +1283,16 @@ void MovementObject::Moved(Object::MoveType type) {
 
 namespace {
 // Overgrowth Online: sounds our characters' scripts play are shared while this lives
+thread_local MovementObject* owned_actor = nullptr;
 struct OwnedScriptScope {
     bool on;
-    explicit OwnedScriptScope(bool on) : on(on) {
+    MovementObject* previous;
+    OwnedScriptScope(MovementObject* actor, bool on) : on(on), previous(owned_actor) {
+        owned_actor = on ? actor : nullptr;
         if (on) ++Online::Instance()->owned_script_depth;
     }
     ~OwnedScriptScope() {
+        owned_actor = previous;
         if (on) --Online::Instance()->owned_script_depth;
     }
 };
@@ -1301,7 +1315,7 @@ bool MovementObject::UpdateBeforePose(float timestep) {
     SetNetworkProxy(online->IsActive() && !online->IsLocalAvatar(GetID()));
 
     // Overgrowth Online: sounds our characters' scripts play are shared
-    OwnedScriptScope owned_scope(online->IsActive() && !network_proxy);
+    OwnedScriptScope owned_scope(this, online->IsActive() && !network_proxy);
 
     while (message_queue.empty() == false) {
         ReceiveMessage(message_queue.front());
@@ -1479,7 +1493,7 @@ bool MovementObject::UpdateBeforePose(float timestep) {
 
 void MovementObject::UpdateAfterPose(float timestep) {
     Online* online = Online::Instance();
-    OwnedScriptScope owned_scope(online->IsActive() && !network_proxy);
+    OwnedScriptScope owned_scope(this, online->IsActive() && !network_proxy);
     ActiveCameras::Set(0);  // (as before the pose: other characters' updates ran in between)
     {
         PROFILER_ZONE(g_profiler_ctx, "RiggedObject Update() after pose");
@@ -1708,6 +1722,8 @@ bool MovementObject::HasFunction(const std::string& function_definition) {
 }
 
 int MovementObject::QueryIntFunction(const std::string& func) {
+    // A proxy never runs AI decisions. Use the owner's eligibility for a stealth grab.
+    if (network_proxy && func == "int IsUnaware()") return net_unaware ? 1 : 0;
     ASArglist args;
     int val;
     ASArg return_val;
@@ -4562,6 +4578,7 @@ bool MovementObject::Initialize() {
     as_funcs.update = as_context->RegisterExpectedFunction("void Update(int)", true);
     as_funcs.update_multiplayer = as_context->RegisterExpectedFunction("void UpdateMultiplayer(int frames)", false);
     as_funcs.force_applied = as_context->RegisterExpectedFunction("void ForceApplied(vec3 force)", true);
+    as_funcs.is_unaware = as_context->RegisterExpectedFunction("int IsUnaware()", false);
     as_funcs.get_temp_health = as_context->RegisterExpectedFunction("float GetTempHealth()", true);
     as_funcs.was_hit = as_context->RegisterExpectedFunction("int WasHit(string type, string attack_path, vec3 dir, vec3 pos, int attacker_id, float attack_damage_mult, float attack_knockback_mult)", true);
     as_funcs.reset = as_context->RegisterExpectedFunction("void Reset()", true);
@@ -5164,7 +5181,12 @@ void MovementObject::Execute(std::string string) {
         return;
     }
     if (network_proxy && online->IsActive() && online->owned_script_depth > 0 && string.find("SetTethered(") != std::string::npos) {
-        online->TakeOver(GetID(), 60.0f);
+        const bool choke = owned_actor && owned_actor->NetworkVitalsSupported() &&
+                           owned_actor->ASGetIntVar("tethered") == 1 && owned_actor->ASGetIntVar("tether_id") == GetID();
+        if (!online->TakeOver(GetID(), 60.0f, choke ? owned_actor->GetID() : -1)) {
+            if (choke) owned_actor->Execute("SetTetherID(-1); UnTether();");
+            return;
+        }
     }
     as_context->Execute(string);
 }

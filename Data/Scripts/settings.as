@@ -615,6 +615,7 @@ void AddGameScreen(){
     current_screen = "Game";
 
     if(!PersonalSettingsOnly()) {
+        AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab");
         AddCheckBox("Show frame rate and frame time", settings_content, "fps_label");
         array<string> locale_values = GetLocaleShortcodes();
         array<string> locale_names = GetLocaleNames();
@@ -704,7 +705,6 @@ void AddDifficultyScreen() {
     AddSlider("Game Speed", settings_content, "global_time_scale_mult", 1.0f, 100.0f, 0.5f, 50.0f);
     AddSlider("Game Difficulty", settings_content, "game_difficulty", 1.0f);
     AddCheckBox("Tutorials", settings_content, "tutorials");
-    AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab");
     array<int> armor_values = {0, 2, 1};
     array<string> armor_labels = {"Legacy", "Weighted", "Localized"};
     AddDropDown("Armor protection", settings_content, DropdownConfiguration(armor_values, armor_labels, "armor_localized"));

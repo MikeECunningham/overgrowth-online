@@ -69,6 +69,8 @@ def survival_shop(ctx):
     _code(host, "LobbyBeginHost();")
     guest.bridge.call("connect", ip="127.0.0.1:29861")
     wait(lambda: len(_rows(host)) == 2, "guest joins")
+    _code(host, 'SetConfigValueBool("auto_ledge_grab",false);SaveConfig();')
+    _code(guest, 'SetConfigValueBool("auto_ledge_grab",true);SaveConfig();')
     _code(host, f'LobbySetSelection("survival","","{SANDBOX_MAP}",false);LobbyAddBot();')
     seats = _rows(host)
     owner = next(p["id"] for p in seats if p["host"])
@@ -87,6 +89,11 @@ def survival_shop(ctx):
     wait(lambda: fighter(host, bot) and _probe(host, "species", fighter(host, bot)["id"]) == "0",
          "companion starts as a rabbit")
 
+    # Run the actual movement predicate on each owner's own avatar with Grab released.
+    for peer, seat, expected in ((host, owner, "false"), (guest, visitor, "true")):
+        actor = fighter(peer, seat)["id"]
+        assert _probe(peer, "this_mo.controlled", actor) == "true"
+        assert _probe(peer, "WantsToGrabLedge()", actor) == expected
     def opponents():
         return [c for c in host.bridge.state() if "survival_enemies" in c["teams"] and c["knocked_out"] == 0]
     wait(opponents, "first wave spawns")
@@ -98,6 +105,16 @@ def survival_shop(ctx):
     remaining = float(state("due - the_time"))
     assert 18 < remaining <= 22.01, remaining  # stock 12-second break plus ten seconds for shopping
     path = save(1)
+    wait(lambda: "force_finish" in panel().get("action_rects", {}), "host force finish button")
+    assert not guest.bridge.call("progression", actor=visitor, action="force_finish")["submitted"]
+    assert not guest.bridge.call("progression", actor=visitor)["view"]["can_force_finish"]
+    button = panel()["action_rects"]["force_finish"]
+    pos = {"x": round((button[0]+button[2])/2), "y": round((button[1]+button[3])/2)}
+    for buttons in (0, 1, 0):
+        host.bridge.call("pointer", **pos, buttons=buttons)
+        host.bridge.status()
+    wait(lambda: all(not peer.bridge.call("progression", actor=seat)["view"].get("shop_open")
+                     for peer, seat in ((host, owner), (guest, visitor))), "host closes shop for unready peer")
     record = json.loads(path.read_text())
     ledger = record["session_mods"]["og-online-progression"]["runtime"]
     team = next(t for t in ledger["teams"] if t["team"] == 1)
@@ -253,21 +270,38 @@ def campaign_race_equipment(ctx):
     wait(lambda: form().get("columns"), "both shop columns drawn")
     assert account()["races"] == [{"id":"cat", "name":"Cat"}] and account()["equipped_race"] == "cat"
     assert not bridge.call("progression", actor=seat, action="equip_race", key="rabbit")["submitted"]
-    # Old savecards stored only the most recently purchased race.
+    # Old savecards stored only the most recently purchased race and included
+    # the host's ledge assist among the saved match rules.
+    _code(host, 'SetConfigValueBool("auto_ledge_grab",true);SaveConfig();', "level")
     path = save(1)
     record = json.loads(path.read_text())
+    assert "auto_ledge_grab" not in record["rules"]["match"]
+    record["rules"]["match"]["auto_ledge_grab"] = "false"
+    record["rules"]["preset"] = "Expert"
     runtime = record["session_mods"]["og-online-progression"]["runtime"]
     row = next(p for p in runtime["players"] if p["id"] == seat)
     row["race"] = 3
     assert "first_race" not in row and "equipped_race" not in row
     path.write_text(json.dumps(record))
     load(1)
+    assert _probe(host, 'GetConfigValueBool("auto_ledge_grab")', "level") == "true"
     wait(lambda: avatar().get("char_path","").endswith("dog_soldier.xml"), "legacy purchased dog deployed")
     wait(lambda: [r["id"] for r in account()["races"]] == ["cat","dog"], "campaign actor recovers starting race")
     before = (account()["held"], account()["pooled"])
     click_race("cat")
     wait(lambda: avatar().get("char_path","").endswith("fancy_striped_cat.xml"), "original striped cat re-equipped")
     assert account()["equipped_race"] == "cat"
+    # Start on a clicked equipment row; navigation must cross its scroller
+    # and exit through Ready after traversing the upgrade cards.
+    bridge.call("key", key="Left", down=True)
+    wait(lambda: form().get("focus") in form().get("visible_cards", []), "Left enters the upgrade column")
+    bridge.call("key", key="Left", down=False)
+    bridge.call("key", key="Down", down=True)
+    try:
+        wait(lambda: form().get("focus") == "ready", "Down beyond the last upgrade reaches Ready")
+    except Exception as exc:
+        raise AssertionError({k: form().get(k) for k in ("focus","columns","scroll","visible_cards")}) from exc
+    bridge.call("key", key="Down", down=False)
     assert (account()["held"], account()["pooled"]) == before
     card = next(c for c in account()["cards"] if c["id"]=="race_upgrade")
     assert card["label"] == "Dog to Wolf" and card["cost"] == 38400

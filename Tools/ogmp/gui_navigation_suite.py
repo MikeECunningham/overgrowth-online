@@ -4,11 +4,14 @@ Run ``python3 -I Tools/ogmp.py run gui_navigation``. No desktop pointer,
 keyboard, or attached physical controller is manipulated by this scenario.
 """
 import os
+import shutil
+import tempfile
 import time
 import traceback
 import zlib
 from pathlib import Path
 
+from .instance import ROOT
 from .newcampaign_local_suite import _ready
 from .scenarios import LEVEL, script_errors, wait_loaded
 
@@ -162,23 +165,33 @@ def _native_scroll(ctx):
         g.wait(lambda: g.status()['online']['lobby_waiting'], 'controller chooses Host')
         g.code('LobbySetSelection("com-wolfire-arena", "com-wolfire-arena", "Data/Levels/arenas/Magma_Arena.xml", false);')
         g.wait(lambda: any(w['name'] == 'Mode settings' for w in g.ui()['windows']), 'full hosting form')
-        g.inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=True)
-        g.wait(lambda: g.ui()['windowing_target'], 'controller window switcher')
-        for _ in range(8):
-            if g.ui()['windowing_target'] == 'Hosting options':
-                break
-            g.pad(10)
-        g.inst.bridge.call('virtual_pad', action='button', slot=0, button=2, down=False)
-        g.wait(lambda: g.ui()['nav_window'] == 'Hosting options', 'controller chooses hosting options')
+        def move_to_form(button, form):
+            for _ in range(16):
+                if g.ui()['nav_window'].split('/')[0] == form:
+                    return
+                g.pad(button)
+            raise AssertionError(f"D-pad could not reach {form}: {g.ui()}")
+
+        move_to_form(13, 'Mode and map')
+        move_to_form(14, 'Players')
+        for _ in range(12):
+            if g.ui()['nav_window'] in ('Hosting options', 'Mode settings'): break
+            g.pad(14)
+        if g.ui()['nav_window'] == 'Mode settings':
+            move_to_form(12, 'Hosting options')
+        assert g.ui()['nav_window'] == 'Hosting options'
         visited = []
         for _ in range(16):
             visited.append(g.ui())
+            if visited[-1]['nav_id'] == zlib.crc32(b'Public game', next(w['id'] for w in visited[-1]['windows'] if w['name'] == 'Hosting options')):
+                break
             g.pad(12)
         window = next(w for w in visited[-1]['windows'] if w['name'] == 'Hosting options')
         assert window['max_scroll_y'] > 0 and window['scroll_y'] > 0, 'Down did not scroll to offscreen controls'
         assert visited[-1]['nav_id'] == zlib.crc32(b'Public game', window['id']), 'last hosting option is unreachable'
         image = g.shot('native_controller_scrolled')
         for _ in range(16):
+            if g.ui()['nav_id'] == zlib.crc32(b'Add slot', window['id']): break
             g.pad(11)
         top = next(w for w in g.ui()['windows'] if w['name'] == 'Hosting options')
         assert top['scroll_y'] < window['scroll_y'], 'Up did not scroll back toward the first option'
@@ -193,6 +206,42 @@ def _native_scroll(ctx):
         return {'bottom_scroll': window['scroll_y'], 'navigation': visited, 'screenshot': image}
     finally:
         g.close()
+
+
+def _lobby_reload(ctx):
+    # Edit only this instance's copy of the menu while it is hosting a lobby.
+    with tempfile.TemporaryDirectory() as directory:
+        mod = Path(directory) / 'session-rules'
+        shutil.copytree(Path(ROOT) / 'test/mods/session-rules', mod)
+        relative = Path('Data/Scripts/lobby_reload_check.as')
+        (mod / relative).parent.mkdir(parents=True, exist_ok=True)
+        source = (Path(ROOT) / 'Data/Scripts/multiplayer_lobby.as').read_text()
+        (mod / relative).write_text(source + '\nint ReloadGeneration() {return 1;}\n'
+                                    'class ReloadState { JSONValue data; }\nReloadState@ saved = ReloadState();\n')
+        g = GUI(ctx, 'gui_lobby_reload', mods=[str(mod)])
+        try:
+            assert g.probe('LobbyBeginHost()') == 'true'
+            g.inst.bridge.call('menu', script=relative.name)
+            g.wait(lambda: any(w['name'] == 'Players' for w in g.ui()['windows']), 'lobby roster')
+            script = Path(g.inst.writedir) / 'Data/Mods/session-rules' / relative
+            for generation in (1, 2):
+                g.code(f'saved.data["record"] = {generation * 17};')
+                script.write_text(script.read_text().replace(f'ReloadGeneration() {{return {generation};',
+                                                            f'ReloadGeneration() {{return {generation + 1};'))
+                # The engine compares modification times to whole seconds.
+                stamp = int(time.time()) + generation
+                os.utime(script, (stamp, stamp))
+                # F5 is an engine shortcut. Release Dear ImGui's keyboard
+                # navigation capture as a mouse user returning to the game would.
+                x = 8 + generation
+                g.pointer([x, 28, x, 28])
+                g.key('F5')
+                g.wait(lambda: g.probe('ReloadGeneration()') == str(generation + 1), 'changed lobby script reloaded')
+                assert g.probe('saved.data["record"].asInt()') == str(generation * 17)
+                assert g.probe('lobby_players.length()') == '1'
+            assert 'Unknown app object type:' not in g.inst.log()
+        finally:
+            g.close()
 
 
 def _check_edge_drag(g):
@@ -363,6 +412,7 @@ def gui_navigation(ctx):
         metrics['native_focus'] = _native_focus(ctx)
         metrics['native_draft'] = _native_draft(ctx)
         metrics['native_scroll'] = _native_scroll(ctx)
+        _lobby_reload(ctx)
         metrics['main_menu_focus'] = _legacy_focus(ctx)
         metrics['legacy'] = _legacy(ctx)
         return {'passed': True, 'metrics': metrics, 'notes': []}

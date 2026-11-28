@@ -69,6 +69,13 @@
 #include <cstring>
 #include <mutex>
 
+// Native value types keep their registered copy and assignment behavior
+// across a script-only recompile.
+struct SavedNativeValue {
+    asITypeInfo* type;
+    void* copy;
+};
+
 enum ASErrType {
     _ERR = 0,
     _WARN = 1,
@@ -420,40 +427,17 @@ int ASModule::CompileScript(const Path& path) {
 
             // Compile the module
             r = module_->Build();
-            if (r < 0) {
-                // There was an error! Print error, and retry
-                std::string title = "Error in \"" + filename + "\" from mod " + ModLoading::Instance().GetModName(script_file.file_path.GetModsource());
-                bool showModPollution = !config.HasKey("list_include_files_when_logging_mod_errors") ||
-                                        config["list_include_files_when_logging_mod_errors"].toBool();
-                std::string corrected_error =
-                    title + ":\n\n" +
-                    (showModPollution ? (script_file.GetModPollutionInformation() + "\n") : "") +
-                    CorrectASError(*(active_angelscript_error_string),
-                                   script_file);
-                ErrorResponse err;
-                err = DisplayError(title.c_str(),
-                                   corrected_error.c_str(),
-                                   _ok_cancel_retry);
-                if (err != _retry) {
-                    return -1;
+            if (r < 0 || !active_angelscript_error_string->empty()) {
+                const std::string title = std::string(r < 0 ? "Error" : "Warnings") + " in \"" + filename +
+                                          "\" from " + ModLoading::Instance().GetModName(script_file.file_path.GetModsource());
+                std::string details = CorrectASError(*active_angelscript_error_string, script_file);
+                if (!config.HasKey("list_include_files_when_logging_mod_errors") || config["list_include_files_when_logging_mod_errors"].toBool()) {
+                    const auto includes = script_file.GetModPollutionInformation();
+                    if (!includes.empty()) details += "\n\nIncluded mod scripts\n" + includes;
                 }
-            } else if (!active_angelscript_error_string->empty()) {
-                // There were warnings! Print warnings, and retry or continue
-                std::string title = "Warnings in \"" + filename + "\" from mod " + ModLoading::Instance().GetModName(script_file.file_path.GetModsource());
-                bool showModPollution = !config.HasKey("list_include_files_when_logging_mod_errors") ||
-                                        config["list_include_files_when_logging_mod_errors"].toBool();
-                std::string corrected_error =
-                    title + ":\n\n" +
-                    (showModPollution ? (script_file.GetModPollutionInformation() + "\n") : "") +
-                    CorrectASError(*(active_angelscript_error_string),
-                                   script_file);
-                ErrorResponse err;
-                err = DisplayError(title.c_str(),
-                                   corrected_error.c_str(),
-                                   _ok_cancel_retry);
-                if (err == _continue) {
-                    retry = false;
-                }
+                ErrorResponse response = DisplayError(title.c_str(), details.c_str(), _ok_cancel_retry);
+                if (r < 0 && response != _retry) return -1;
+                if (response == _continue) retry = false;
             } else {
                 // Compile successful!
                 retry = false;
@@ -1080,6 +1064,15 @@ void FillVar(VarStorage& new_var, const char* name, int type_id, void* ptr, std:
                         ao.type = _ao_json;
                         ao.var = new SimpleJSONWrapper();
                         *(SimpleJSONWrapper*)ao.var = *(SimpleJSONWrapper*)ptr;
+                    } else if (strcmp(type_name, "JSONValue") == 0 || strcmp(type_name, "LobbyPlayer") == 0 ||
+                               strcmp(type_name, "LobbyOption") == 0) {
+                        if (void* copy = engine->CreateScriptObjectCopy(ptr, type)) {
+                            ao.type = _ao_registered_value;
+                            ao.var = new SavedNativeValue{type, copy};
+                        }
+                    } else if (strcmp(type_name, "IMSoundOnClick") == 0 || strcmp(type_name, "IMMouseOverSound") == 0) {
+                        // Menu sound behaviors are created by their script initializers.
+                        ao.type = _ao_ignored;
                     } else if (strcmp(type_name, "FontSetup") == 0) {
                         ao.type = _ao_fontsetup;
                         ao.var = new FontSetup();
@@ -1315,16 +1308,15 @@ void FillVar(VarStorage& new_var, const char* name, int type_id, void* ptr, std:
     }
 }
 
-ASModule::~ASModule() {
-    std::list<VarStorage>::iterator iter = saved_vars_.begin();
-    for (; iter != saved_vars_.end(); ++iter) {
-        iter->destroy();
-    }
+static void ReleaseSavedVars(std::list<VarStorage>& values, std::list<ScriptObjectInstance>& handles) {
+    for (auto& value : values) value.destroy();
+    values.clear();
+    for (auto& handle : handles) handle.destroy();
+    handles.clear();
+}
 
-    std::list<ScriptObjectInstance>::iterator iterh = saved_handle_vars_.begin();
-    for (; iterh != saved_handle_vars_.end(); ++iterh) {
-        iterh->destroy();
-    }
+void ASModule::ClearSavedVars() {
+    ReleaseSavedVars(saved_vars_, saved_handle_vars_);
 }
 
 void ASModule::SetErrorStringDestination(std::string* error_string) {
@@ -1340,6 +1332,7 @@ void ASModule::PrintGlobalVars() {
         VarStorage& vs = (*iter);
         printf("%s\n", vs.GetString().c_str());
     }
+    ReleaseSavedVars(storage, handle_var_storage);
 }
 
 void ASModule::PrintAllTypes() {
@@ -1360,6 +1353,7 @@ void ASModule::LogGlobalVars() {
         VarStorage& vs = (*iter);
         LOGE.Format("%s\n", vs.GetString().c_str());
     }
+    ReleaseSavedVars(storage, handle_var_storage);
 }
 
 // Overgrowth Online: a global variable's address by its name, cached (misses too).
@@ -1414,6 +1408,7 @@ void ASModule::GetGlobalVars(std::list<VarStorage>& storage, std::list<ScriptObj
 }
 
 void ASModule::SaveGlobalVars() {
+    ClearSavedVars();
     GetGlobalVars(saved_vars_, saved_handle_vars_);
 }
 
@@ -1468,6 +1463,14 @@ void ASModule::LoadVar(ValueParent var_type, void* parent_ptr, int parent_index,
             *(mat4*)ptr = *(mat4*)ao.var;
         } else if (ao.type == _ao_json) {
             *(SimpleJSONWrapper*)ptr = *(SimpleJSONWrapper*)ao.var;
+        } else if (ao.type == _ao_registered_value) {
+            const auto* saved = static_cast<const SavedNativeValue*>(ao.var);
+            int current_type = -1;
+            if (var_type == _vp_Global) module->GetGlobalVar(parent_index, nullptr, nullptr, &current_type);
+            else if (var_type == _vp_Array) current_type = static_cast<CScriptArray*>(parent_ptr)->GetElementTypeId();
+            else current_type = static_cast<asIScriptObject*>(parent_ptr)->GetPropertyTypeId(parent_index);
+            if (ptr && current_type == saved->type->GetTypeId())
+                module->GetEngine()->AssignScriptObject(ptr, saved->copy, saved->type);
         } else if (ao.type == _ao_fontsetup) {
             *(FontSetup*)ptr = *(FontSetup*)ao.var;
         } else if (ao.type == _ao_modlevel) {
@@ -1763,6 +1766,7 @@ void ASModule::LoadGlobalVars() {
             }
         }
     }
+    ClearSavedVars();
 }
 
 void ASModule::Recompile() {
@@ -1770,16 +1774,11 @@ void ASModule::Recompile() {
     SaveGlobalVars();
     int r = CompileScript(script_path_);
     if (r < 0) {
+        ClearSavedVars();
         FatalError("Error", "Could not compile script: %s", script_path_.GetFullPath());
         return;
     }
     LoadGlobalVars();
-
-    std::list<VarStorage>::iterator iter = saved_vars_.begin();
-    for (; iter != saved_vars_.end(); ++iter) {
-        iter->destroy();
-    }
-    saved_vars_.clear();
 }
 
 void ASModule::AttachToEngine(asIScriptEngine* engine) {
@@ -1858,8 +1857,17 @@ void AppObject::destroy() {
         case _ao_mat4:
             delete (mat4*)var;
             break;
+        case _ao_registered_value: {
+            auto* saved = static_cast<SavedNativeValue*>(var);
+            saved->type->GetEngine()->ReleaseScriptObject(saved->copy, saved->type);
+            delete saved;
+            break;
+        }
         case _ao_json:
             delete (SimpleJSONWrapper*)var;
+            break;
+        case _ao_fontsetup:
+            delete static_cast<FontSetup*>(var);
             break;
         case _ao_IMUIImage:
             delete (IMUIImage*)var;
@@ -2123,6 +2131,8 @@ const char* AppObjectTypeString(enum AppObjectType aot) {
         case _ao_mat4:
             return "_ao_mat4";
             break;
+        case _ao_registered_value:
+            return "_ao_registered_value";
         case _ao_json:
             return "_ao_json";
             break;

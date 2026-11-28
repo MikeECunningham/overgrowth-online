@@ -702,6 +702,10 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
         }
 
         const bool can_edit_match = !Online::Instance()->IsActive() || Online::Instance()->IsLobbyHost(MatchSettingsActor());
+        bool ledges = config["auto_ledge_grab"].toBool();
+        ImGui::BeginDisabled(Online::Instance()->IsActive() && !Online::Instance()->IsLobbyLeader(MatchSettingsActor()));
+        if (ImGui::Checkbox("Automatic ledge grab", &ledges)) config.GetRef("auto_ledge_grab") = ledges;
+        ImGui::EndDisabled();
         if (!can_edit_match) ImGui::TextDisabled("The host controls match difficulty.");
         ImGui::BeginDisabled(!can_edit_match);
         const bool scaling_available = ModLoading::Instance().HasSessionFeature("scaling");
@@ -713,7 +717,7 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
             const auto presets = config.GetDifficultyPresets();
             std::vector<const char*> choices;
             int selected = -1;
-            const std::string current = config.GetDifficultyPreset();
+            const std::string current = config.GetDifficultyPreset(!Online::Instance()->IsActive());
             for (size_t i = 0; i < presets.size(); ++i) {
                 choices.push_back(presets[i].c_str());
                 if (current == presets[i]) selected = static_cast<int>(i);
@@ -774,8 +778,6 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
             if (ImGui::SliderFloat("Game difficulty", &difficulty, 0.0f, 1.0f)) SetMatchSetting("game_difficulty", std::to_string(difficulty));
             bool tutorials = config["tutorials"].toBool();
             if (ImGui::Checkbox("Tutorials", &tutorials)) SetMatchSetting("tutorials", tutorials ? "true" : "false");
-            bool ledges = config["auto_ledge_grab"].toBool();
-            if (ImGui::Checkbox("Automatic ledge grab", &ledges)) SetMatchSetting("auto_ledge_grab", ledges ? "true" : "false");
             ImGui::EndMenu();
         }
         if (scaling_available) {

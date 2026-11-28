@@ -332,6 +332,7 @@ binn* OwnerOverride::Serialize(void* object) {
     binn_object_set_int32(l, "o", m->owner);
     binn_object_set_bool(l, "a", m->active);
     binn_object_set_float(l, "s", m->max_seconds);
+    if (m->choke_actor != -1) binn_object_set_int32(l, "ch", m->choke_actor);
     return l;
 }
 
@@ -342,12 +343,13 @@ void OwnerOverride::Deserialize(void* object, binn* l) {
     binn_object_get_int32(l, "o", &m->owner);
     binn_object_get_bool(l, "a", &active);
     binn_object_get_float(l, "s", &m->max_seconds);
+    if (!binn_object_get_int32(l, "ch", &m->choke_actor)) m->choke_actor = -1;
     m->active = active != FALSE;
 }
 
 void OwnerOverride::Execute(const OnlineMessageRef& ref, void* object, PeerID peer) {
     OwnerOverride* m = static_cast<OwnerOverride*>(object);
-    Online::Instance()->ReceiveOwnerOverride(m->character, (PlayerID)m->owner, m->active, m->max_seconds, peer);
+    Online::Instance()->ReceiveOwnerOverride(m->character, (PlayerID)m->owner, m->active, m->max_seconds, peer, m->choke_actor);
 }
 
 void* OwnerOverride::Construct(void* mem) {

@@ -67,6 +67,7 @@ const uint8_t kVitalBlocking = 4;
 const uint8_t kVitalHasWound = 8;       // active bleeding, burning or depleted knockout shield
 const uint8_t kVitalRestorePhase = 16;  // acknowledges the last in-place heal on the simulation owner
 const uint8_t kVitalRestoreSucceeded = 32;
+const uint8_t kVitalUnaware = 64;
 
 struct Vitals {
     bool valid = false;
@@ -189,6 +190,10 @@ class Buffer {
     std::deque<double> lags_;   // arrival - src
     std::deque<double> gaps_;   // src deltas between frames
 
+    std::deque<double> bracket_offsets_;  // offset needed for the next real record to arrive before playback passes the last one
+    double target_offset_ = 0.0;
+    vec3 last_position_{0.0f}, recovery_offset_{0.0f};
+    uint32_t last_sampled_newest_ = 0;
     bool started_ = false;
     bool extrapolating_ = false;
     double play_offset_ = 0.0;  // now - shown src time

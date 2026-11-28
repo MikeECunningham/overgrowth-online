@@ -577,6 +577,9 @@ void Buffer::Clear() {
     root_history_.clear();
     lags_.clear();
     gaps_.clear();
+    bracket_offsets_.clear();
+    recovery_offset_ = vec3(0.0f);
+    last_sampled_newest_ = 0;
     started_ = false;
     extrapolating_ = false;
     play_offset_ = 0.0;
@@ -602,7 +605,13 @@ double Buffer::Target() const {
     std::sort(sorted.begin(), sorted.end());
     double base = sorted.front();
     double jitter = sorted[(size_t)((sorted.size() - 1) * 0.95)] - base;
-    return base + jitter + IntervalMs() + kMarginMs;
+    double offset = base + jitter + IntervalMs();
+    if (!bracket_offsets_.empty()) {
+        std::deque<double> sorted_brackets = bracket_offsets_;
+        std::sort(sorted_brackets.begin(), sorted_brackets.end());
+        offset = std::max(offset, sorted_brackets[(sorted_brackets.size() - 1) * 95 / 100]);
+    }
+    return offset + kMarginMs;
 }
 
 double Buffer::DelayMs() const {
@@ -630,6 +639,8 @@ void Buffer::Push(const Frame& f, double arrival_ms) {
             hold.velocity = vec3(0.0f);
             frames_.push_back(hold);
         } else {
+            bracket_offsets_.push_back(arrival_ms - last);
+            if (bracket_offsets_.size() > kLagWindow) bracket_offsets_.pop_front();
             gaps_.push_back(gap);
             if (gaps_.size() > 16) {
                 gaps_.pop_front();
@@ -650,6 +661,7 @@ void Buffer::Push(const Frame& f, double arrival_ms) {
     while ((int)lags_.size() > kLagWindow) {
         lags_.pop_front();
     }
+    target_offset_ = Target();
 }
 
 bool Buffer::SourceTimeRange(uint32_t& oldest, uint32_t& newest) const {
@@ -687,9 +699,12 @@ bool Buffer::Sample(double now_ms, Frame& out) {
         return false;
     }
 
-    double target = Target();
+    const double target = target_offset_;
+    const double dt_ms = started_ ? std::max(0.0, now_ms - last_now_) : 0.0;
+    const bool recovering = started_ && extrapolating_ && frames_.back().src_ms != last_sampled_newest_ && dt_ms < 100.0;
+    const bool rebase = !started_ || std::fabs(play_offset_ - target) > 1000.0;
 
-    if (!started_ || std::fabs(play_offset_ - target) > 1000.0) {
+    if (rebase) {
         play_offset_ = target;
         started_ = true;
     } else {
@@ -697,7 +712,7 @@ bool Buffer::Sample(double now_ms, Frame& out) {
         // (5 %: after a hitch the delay comes back within a couple of seconds);
         // a big change never as a jump (a snap forward or a rewind): later
         // by pausing until the frames cover it, sooner at 25 %
-        double dt = std::max(0.0, std::min(100.0, now_ms - last_now_));
+        double dt = std::min(100.0, dt_ms);
         double diff = target - play_offset_;
         bool big = std::fabs(diff) > 150.0;
         if (diff > 0.0) {
@@ -753,6 +768,25 @@ bool Buffer::Sample(double now_ms, Frame& out) {
         }
     }
 
+    // Following a dropout the last prediction can be on the wrong side of a
+    // stop or turn. Ease small corrections back over a few frames. Real teleports
+    // and explicit idle resumes take effect immediately; hit history is separate.
+    if (rebase || frames_.back().resumed) {
+        recovery_offset_ = vec3(0.0f);
+    } else {
+        if (recovering) {
+            const vec3 expected = last_position_ + out.velocity * static_cast<float>(dt_ms / 1000.0);
+            const vec3 error = expected - out.position;
+            recovery_offset_ = length_squared(error) < 2.25f ? error : vec3(0.0f);
+        }
+        recovery_offset_ *= static_cast<float>(std::exp(-dt_ms / 40.0));
+        if (length_squared(recovery_offset_) > 1e-8f) {
+            out.position += recovery_offset_;
+            for (Bone& bone : out.bones) bone.translation += recovery_offset_;
+        }
+    }
+    last_position_ = out.position;
+    last_sampled_newest_ = frames_.back().src_ms;
     return true;
 }
 

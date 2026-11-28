@@ -750,12 +750,21 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
                     PROFILER_ZONE(g_profiler_ctx, "ImGui_ImplSdlGL3_ProcessEvent");
                     ProcessEventImGui(&event);
                 }
+                // A non-leader keyboard may still join with Enter. Keep all
+                // other presses out of legacy shortcuts as well as ImGui.
+                if ((event.type == SDL_KEYDOWN || event.type == SDL_TEXTINPUT ||
+                     event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEWHEEL) &&
+                    Online::Instance()->IsActive() && Online::Instance()->LobbyWaiting() &&
+                    !Online::Instance()->CanDriveLobbyMenu(input->LocalKeyboardPlayerIndex())) {
+                    input->RecordKeyboardJoinEvent(event);
+                    continue;
+                }
                 // Dear ImGui captures lobby keyboard navigation, including
                 // Escape. Route an unconsumed Back through the current UI's
                 // permission check once; dropdowns and active edits keep it.
                 if (event.type == SDL_KEYDOWN && !event.key.repeat && event.key.keysym.sym == SDLK_ESCAPE &&
                     current_engine_state_.type == kEngineScriptableUIState && Online::Instance()->IsActive() &&
-                    Online::Instance()->LobbyWaiting() && input->LocalKeyboardPlayerIndex() >= 0 &&
+                    Online::Instance()->LobbyWaiting() &&
                     !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) && !ImGui::IsAnyItemActive()) {
                     config.GetRef("controller_menu_owner") = input->LocalKeyboardPlayerIndex();
                     input->RecordMenuPointerOrKey(event);
@@ -799,7 +808,7 @@ void Engine::UpdateControls(float timestep, bool loading_screen) {
         input->ignore_mouse_frame = false;
 
         UpdateLocalLobbyInput();
-        input->SetKeyboardMenuNavigationShared(!level_loaded_ || waiting_for_input_);
+        input->SetKeyboardMenuNavigationShared((!level_loaded_ || waiting_for_input_) && !Online::Instance()->LobbyWaiting());
         Input::Instance()->ProcessControllers(timestep);
         PlayerInput* controller = Input::Instance()->GetController(0);
         static const std::string kSlow = "slow";
@@ -2088,11 +2097,6 @@ void Engine::Update() {
                         scriptable_menu_->Initialize(script_path, as_data, break_on_script_change);
                         latest_menu_path_ = script_path;
 
-                        // Display popups queued while we didn't have a menu
-                        while (!popup_pueue.empty()) {
-                            scriptable_menu_->QueueBasicPopup(std::get<0>(popup_pueue.front()), std::get<1>(popup_pueue.front()));
-                            popup_pueue.pop_front();
-                        }
                         break;
                     }
                     case kEngineCampaignState:
@@ -2180,6 +2184,14 @@ void Engine::Update() {
                 if (scriptable_menu_->IsDeleteScheduled()) {
                     delete scriptable_menu_;
                     scriptable_menu_ = NULL;
+                } else if (queued_engine_state_.empty()) {
+                    std::vector<std::pair<std::string, std::string>> popups;
+                    {
+                        std::lock_guard<std::mutex> lock(popup_mutex_);
+                        popups.swap(pending_popups_);
+                    }
+                    for (const auto& popup : popups)
+                        scriptable_menu_->QueueBasicPopup(popup.first, popup.second);
                 }
             }
         }
@@ -6737,12 +6749,9 @@ void Engine::QueueState(const EngineStateAction& action) {
 }
 
 void Engine::QueueErrorMessage(const std::string& title, const std::string& message) {
-    // Send error directly to scriptable menus if possible (Main menu)
-    if (scriptable_menu_ != nullptr) {
-        scriptable_menu_->QueueBasicPopup(title, message);
-    } else {  // If we don't have a menu, queue it up instead
-        popup_pueue.push_back(std::tuple<std::string, std::string>(title, message));
-    }
+    // Transport callbacks can arrive while the main thread replaces a menu.
+    std::lock_guard<std::mutex> lock(popup_mutex_);
+    pending_popups_.emplace_back(title, message);
 }
 
 /*

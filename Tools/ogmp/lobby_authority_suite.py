@@ -7,13 +7,14 @@ import math
 import time
 from pathlib import Path
 
-from .scenarios import LEVEL
+from .campaign_scaling_suite import RENDER_KEYS
+from .mode_settings_suite import _probe
 
 
 def lobby_authority(ctx):
-    host = ctx.instance('authority_host', keys={'mp_port': '27344', 'playername': 'Keyboard Host'})
-    candidate = ctx.instance('authority_candidate', keys={'mp_port': '27345', 'playername': 'Candidate One', 'gamepad_0_look_sensitivity': '2.75', 'game_difficulty': '0.1'})
-    third = ctx.instance('authority_third', keys={'mp_port': '27346', 'playername': 'Third'})
+    host = ctx.instance('authority_host', keys={**RENDER_KEYS, 'mp_port': '27344', 'playername': 'Keyboard Host'})
+    candidate = ctx.instance('authority_candidate', keys={**RENDER_KEYS, 'mp_port': '27345', 'playername': 'Candidate One', 'gamepad_0_look_sensitivity': '2.75', 'game_difficulty': '0.1'})
+    third = ctx.instance('authority_third', keys={**RENDER_KEYS, 'mp_port': '27346', 'playername': 'Third'})
     instances = [host, candidate, third]
     metrics = {}
 
@@ -44,6 +45,10 @@ def lobby_authority(ctx):
     def find(inst, name):
         return next(p for p in rows(inst) if p['name'] == name)
 
+    def current_player(inst):
+        player_id = int(_probe(inst, 'LobbyCurrentPlayerID()'))
+        return next(p for p in rows(inst) if p['id'] == player_id)
+
     def wait_roster(n, peers=instances):
         for inst in peers:
             wait(inst, lambda i=inst: len(rows(i)) == n, f'{n} admitted seats on {inst.name}')
@@ -60,25 +65,28 @@ def lobby_authority(ctx):
     third.bridge.call('disconnect')
     wait(third, lambda: not status(third)['online']['active'], 'temporary peer leaves')
     wait(host, lambda: len(rows(host)) == 2, 'temporary peer removed')
-    for inst in [candidate, third]:
-        inst.bridge.call('connect', ip='127.0.0.1:27344')
+    candidate.bridge.call('connect', ip='127.0.0.1:27344')
+    wait(host, lambda: len(rows(host)) == 4, 'candidate is admitted before the third peer')
+    third.bridge.call('connect', ip='127.0.0.1:27344')
     wait_roster(5)
     initial = rows(host)
     hp = next(p for p in initial if p['peer_id'] == 255 and p['local_index'] == 1)
-    cp = next(p for p in rows(candidate) if p['name'] == 'Candidate One')
+    cp = current_player(candidate)
     cp2 = next(p for p in initial if p['peer_id'] == cp['peer_id'] and p['local_index'] == 1)
-    tp = next(p for p in initial if p['name'] == 'Third')
+    tp = current_player(third)
+    assert probe(third, f'LobbySetPlayerName({tp["id"]}, "Third")')
     assert probe(host, f'LobbySetPlayerName({hp["id"]}, "Pad Host")')
     assert probe(candidate, f'LobbySetPlayerName({cp2["id"]}, "Candidate Two")')
     assert probe(candidate, f'LobbySetPlayerScreen({cp2["id"]}, 1)')
-    assert probe(host, f'LobbySetSelection("sandbox", "", "Data/Levels/{LEVEL}", false)')
+    assert probe(host, 'LobbySetSelection("sandbox", "", "Data/Levels/fight_test.xml", false)')
     wait(host, lambda: find(host, 'Candidate Two')['screen'] == 1, 'client screen permutation reaches host')
     assert not probe(candidate, f'LobbySetPlayerTeam({cp2["id"]}, 2)', actual=1)
     assert probe(host, 'LobbySetHostControlsTeams(false)', actual=0)
     wait(candidate, lambda: not status(candidate)['online']['host_controls_teams'], 'team policy replicates')
-    assert probe(candidate, f'LobbySetPlayerTeam({cp2["id"]}, 2)', actual=1)
+    assert not probe(candidate, f'LobbySetPlayerTeam({cp2["id"]}, 2)', actual=1)
+    assert probe(candidate, f'LobbySetPlayerTeam({cp2["id"]}, 2)', actual=0)
     assert not probe(candidate, f'LobbySetPlayerTeam({tp["id"]}, 3)', actual=1)
-    wait(host, lambda: find(host, 'Candidate Two')['team'] == 2, 'own-team request accepted')
+    wait(host, lambda: find(host, 'Candidate Two')['team'] == 2, 'leader team assignment accepted')
     # Local roles transfer independently; neither grant moves any input device.
     assert probe(host, f'LobbyPromoteHost({hp["id"]})', actual=0)
     assert probe(host, f'LobbyPromoteLeader({hp["id"]})', actual=0)
@@ -110,6 +118,7 @@ def lobby_authority(ctx):
          'SetConfigValueBool("oo_public_game", false); SetConfigValueFloat("game_difficulty", 0.9f); '
          'SetConfigValueFloat("global_time_scale_mult", 0.8f); SetConfigValueBool("tutorials", false); '
          'SetConfigValueBool("auto_ledge_grab", false); SaveConfig();')
+    code(candidate, 'SetConfigValueBool("auto_ledge_grab",true); SaveConfig();')
     before = row_identity(host)
     assert probe(host, f'LobbyPromoteHost({cp["id"]})', actual=1)
     for inst in instances:
@@ -126,12 +135,14 @@ def lobby_authority(ctx):
     code(candidate, 'SaveConfig();')
     migrated_config = config(candidate)
     for key, expected in {'oo_arena_bots': 3, 'oo_arena_random': 0, 'oo_public_game': 0, 'game_difficulty': 0.9,
-                          'global_time_scale_mult': 0.8, 'tutorials': 0, 'auto_ledge_grab': 0}.items():
+                          'global_time_scale_mult': 0.8, 'tutorials': 0}.items():
         assert abs(float(migrated_config[key]) - expected) < 0.0001, (key, migrated_config[key])
+    assert migrated_config['auto_ledge_grab'] in ('true', '1'), 'host migration overwrote candidate ledge assist'
+    assert config(host)['auto_ledge_grab'] in ('false', '0')
     assert abs(float(migrated_config['gamepad_0_look_sensitivity']) - 2.75) < 0.0001, 'private controller settings migrated'
     metrics['migrated_match_settings'] = {key: migrated_config[key] for key in
-        ['oo_arena_bots', 'oo_arena_random', 'oo_public_game', 'game_difficulty', 'global_time_scale_mult', 'tutorials', 'auto_ledge_grab']}
-    assert probe(candidate, 'Online_GetOwnPlayerID() == 0 && Online_GetPlayerName(0) == "Candidate One"')
+        ['oo_arena_bots', 'oo_arena_random', 'oo_public_game', 'game_difficulty', 'global_time_scale_mult', 'tutorials']}
+    assert probe(candidate, 'Online_GetOwnPlayerID() == 0 && Online_GetPlayerName(0) == "' + cp['name'] + '"')
     assert probe(host, 'Online_GetOwnPlayerID() == ' + str(hp['id']))
     metrics['migrated_roster'] = rows(candidate)
     print('authority: three-node host handoff and settings PASS', flush=True)
@@ -143,7 +154,7 @@ def lobby_authority(ctx):
     late.bridge.call('connect', ip='127.0.0.1:27345')
     wait_roster(4, live + [late])
     assert find(candidate, 'Third')['id'] == tp['id']
-    late_row = find(candidate, 'Late Guest')
+    late_row = current_player(late)
     assert late_row['peer_id'] == tp['id'] and late_row['id'] != tp['id'], late_row
     metrics['late_join_collision_avoided'] = {'preserved_player': tp['id'], 'new_player': late_row['id'], 'new_peer': late_row['peer_id']}
     late.stop()
@@ -152,7 +163,7 @@ def lobby_authority(ctx):
     for inst in live:
         wait(inst, lambda i=inst: status(i)['level_loaded'] and not status(i)['waiting_for_input'],
              'match on new server after original host disconnects', 180)
-    # A personal menu's actor may edit only their own team under the shared policy.
+    # The third peer's leader can edit their own team's assignment only on their computer.
     third.bridge.call('input', controller=0, hold={'quit': 1.0}, steps=1)
     wait(third, lambda: 0 in status(third)['open_menu_players'], 'remote personal team menu')
     assert probe(third, f'LobbySetPlayerTeam({tp["id"]}, 3)', target='player_menu', local=0)
@@ -188,9 +199,11 @@ def lobby_authority(ctx):
     assert probe(candidate, 'LobbyStart()')
     for inst in live:
         wait(inst, lambda i=inst: status(i)['level_loaded'] and not status(i)['waiting_for_input'], 'natural Arena starts', 180)
-    p2avatar = next(p for p in rows(candidate) if p['id'] == cp2['id'])['avatar_id']
-    wait(candidate, lambda: any(p['id'] == p2avatar and p['teams'].startswith('arena_team_')
-                               for p in candidate.bridge.state()), 'mode assigns an Arena team')
+    def deployed_arena_fighter():
+        avatar = next(p for p in rows(candidate) if p['id'] == cp2['id'])['avatar_id']
+        return next((p for p in candidate.bridge.state() if p['id'] == avatar and
+                     p['teams'].startswith('arena_team_')), None)
+    p2avatar = wait(candidate, deployed_arena_fighter, 'mode assigns an Arena team', 90)['id']
     previous_team = int(next(p for p in candidate.bridge.state() if p['id'] == p2avatar)['teams'].rsplit('_', 1)[1])
     new_team = previous_team % 3 + 1
     third.bridge.call('input', controller=0, hold={'quit': 1.0}, steps=1)
@@ -211,32 +224,39 @@ def lobby_authority(ctx):
     for inst in live:
         wait(inst, lambda i=inst: status(i)['online']['lobby_waiting'] and not status(i)['level_loaded'], 'Arena returns migrated lobby', 60)
     print('authority: natural Arena host regrouping PASS', flush=True)
-    # Campaign teams remain natural by default, but an explicit host edit must
-    # visibly take effect rather than silently reverting the dropdown.
+    # With Force lobby teams off the host may edit the lobby plan, while
+    # participants in the campaign retain their shared story faction.
     assert probe(candidate, 'LobbySetSelection("com-wolfire-overgrowth-campaign", "com-wolfire-overgrowth-campaign", '
                  '"Data/Levels/og_story/01_Slaver_Camp_Landing.xml", false) && LobbyStart()')
     for inst in live:
         wait(inst, lambda i=inst: status(i)['level_loaded'] and not status(i)['waiting_for_input'], 'campaign on migrated server', 180)
     campaign_avatar = find(candidate, 'Candidate Two')['avatar_id']
     natural_team = next(p for p in candidate.bridge.state() if p['id'] == campaign_avatar)['teams']
-    assert probe(candidate, f'!LobbyGetForceTeams() && LobbySetPlayerTeam({cp2["id"]}, 2)', actual=0, target='level')
+    changed_team = 2 if find(candidate, 'Candidate Two')['team'] != 2 else 3
+    assert probe(candidate, f'!LobbyGetForceTeams() && LobbySetPlayerTeam({cp2["id"]}, {changed_team})', actual=0, target='level')
     for inst in live:
-        wait(inst, lambda i=inst: any(p['common_id'] == campaign_avatar and p['teams'] == 'lobby_team_2'
-                                     for p in i.bridge.state()), 'explicit campaign host team applies')
+        wait(inst, lambda i=inst: find(i, 'Candidate Two')['team'] == changed_team and
+             any(p['common_id'] == campaign_avatar and p['teams'] == natural_team for p in i.bridge.state()),
+             'campaign host assignment replicates while allies keep the story faction')
     assert not probe(third, f'LobbySetPlayerTeam({tp["id"]}, 2)', actual=0, target='level')
     assert probe(candidate, f'LobbySetPlayerTeam({cp2["id"]}, 1)', actual=0, target='level')
     for inst in live:
         wait(inst, lambda i=inst: any(p['common_id'] == campaign_avatar and p['teams'] == natural_team
                                      for p in i.bridge.state()), 'campaign Team1 restores natural faction')
-    metrics['campaign_host_override'] = {'natural': natural_team, 'changed': 'lobby_team_2', 'restored': natural_team}
+    metrics['campaign_host_assignment'] = {'natural': natural_team, 'team': changed_team}
     code(candidate, 'LobbyEndGame();', target='level')
     for inst in live:
         wait(inst, lambda i=inst: status(i)['online']['lobby_waiting'] and not status(i)['level_loaded'], 'campaign returns migrated lobby', 60)
-    print('authority: campaign host override and natural faction restore PASS', flush=True)
+    print('authority: campaign host assignment preserves natural faction PASS', flush=True)
     # A deliberate host departure must close the guest promptly, independently
     # of the transport's timeout for an unreachable machine.
+    assert not probe(third, 'HasPopup()')
     started = time.monotonic()
     candidate.stop()
     wait(third, lambda: not status(third)['online']['active'], 'known host left, guest can leave', 10)
     metrics['known_host_leave_seconds'] = time.monotonic() - started
+    wait(third, lambda: probe(third, 'HasPopup()'), 'disconnect notification reaches the guest menu', 10)
+    ctx.shot(third, 'host_left')
+    third.stop()
+    assert 'Connection closed by the host: The host has stopped hosting!' in third.log()
     return {'passed': True, 'metrics': metrics, 'notes': []}

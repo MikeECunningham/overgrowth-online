@@ -81,6 +81,7 @@ void DrawGUI() {
         ImGui_SetWindowFocus();
     }
     if(MPButton("Host\nCreate a lobby", vec2(card_width, 104.0f * scale))) {
+        LobbyCaptureRoleDevice();
         if(LobbyBeginHost()) {
             this_ui.SendCallback("multiplayer_lobby.as");
         } else {
@@ -94,6 +95,7 @@ void DrawGUI() {
     }
     ImGui_SameLine();
     if(MPButton("Connect\nJoin a host", vec2(card_width, 104.0f * scale))) {
+        LobbyCaptureRoleDevice();
         this_ui.SendCallback("multiplayer_connect.as");
     }
     if(notice != "") {

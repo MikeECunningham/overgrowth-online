@@ -166,6 +166,7 @@ class OwnerOverride : public OnlineMessageBase {
     int32_t owner = 0;  // PlayerID
     bool active = false;
     float max_seconds = 0.0f;
+    CommonObjectID choke_actor = -1;
 
     OwnerOverride();
     OwnerOverride(CommonObjectID character, int32_t owner, bool active, float max_seconds);

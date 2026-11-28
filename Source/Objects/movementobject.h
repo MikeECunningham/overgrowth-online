@@ -190,6 +190,7 @@ class MovementObject : public Object {
     bool net_restore_pending = false;
     float net_restore_fraction = 1.0f;
     bool net_has_wound = false;
+    bool net_unaware = false;
     // Overgrowth Online: become the character the owner switched to (no random colours)
     void ApplyNetworkCharacter(const std::string& path, bool refresh_outfit = false);
     std::string profile_outfit;
@@ -325,6 +326,7 @@ class MovementObject : public Object {
         ASFunctionHandle update_multiplayer;
         ASFunctionHandle force_applied;
         ASFunctionHandle get_temp_health;
+        ASFunctionHandle is_unaware;
         ASFunctionHandle was_hit;
         ASFunctionHandle was_blocked;
         ASFunctionHandle reset;

@@ -900,10 +900,17 @@ void Update(int is_paused) {
         int newest = presses.length() == 0 ? -1 : int(presses[presses.length() - 1].s_id);
         bool clicked = last_result_press != -2 && newest >= 0 && last_result_press != newest;
         last_result_press = newest;
-        if (clicked && is_paused == 0 && !PlayerMenuHasFocus(LobbyGetLocalLeaderInputID())) {
-            MouseButton button = presses[presses.length() - 1].button;
-            if (button == MouseButton::LEFT) { Online_RetrySurvivalRun(); return; }
-            if (button == MouseButton::RIGHT) { Online_EndSurvivalRun(); return; }
+        int input = LobbyGetHostInputID();
+        if (input >= 0 && is_paused == 0 && !PlayerMenuHasFocus(input)) {
+            bool keyboard = GetLocalPlayerIndexForInputID(input) == GetLocalKeyboardPlayerIndex();
+            if (keyboard && clicked) {
+                MouseButton button = presses[presses.length() - 1].button;
+                if (button == MouseButton::LEFT) { Online_RetrySurvivalRun(); return; }
+                if (button == MouseButton::RIGHT) { Online_EndSurvivalRun(); return; }
+            } else if (!keyboard) {
+                if (GetInputPressed(input, "menu_return")) { Online_RetrySurvivalRun(); return; }
+                if (GetInputPressed(input, "menu_cancel")) { Online_EndSurvivalRun(); return; }
+            }
         }
     }
     if (is_paused != 0 || the_time < next_tick) return;
@@ -1030,7 +1037,12 @@ void UpdateScoreboard() {
     }
     int others = count - int(visible.length());
     if (others > 0) next += "\n+" + others + " teams";
-    string prompt = Online_IsHosting() ? "Left click to retry   /   Right click for lobby" : "Waiting for the host";
+    string prompt = "Waiting for the host";
+    if (Online_IsHosting()) {
+        int input = LobbyGetHostInputID();
+        prompt = input >= 0 && GetLocalPlayerIndexForInputID(input) == GetLocalKeyboardPlayerIndex() ?
+                 "Left click to retry   /   Right click for lobby" : "Confirm to retry   /   Cancel for lobby";
+    }
     next += "\n" + prompt;
     if (score_text == next) return;
     score_text = next;

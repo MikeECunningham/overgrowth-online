@@ -85,6 +85,7 @@ class Input {
     uint64_t GetMenuInputSerial(int input_id) const;
     void RecordKeyboardJoinEvent(const SDL_Event& event);
     bool KeyboardJoinPressed();
+    std::set<int> TakeControllerJoinPresses() { std::set<int> presses; presses.swap(controller_join_presses_); return presses; }
     void SetKeyboardMenuNavigationShared(bool shared) { keyboard_menu_shared_ = shared; }
     unsigned GetNumLocalPlayers() const { return num_players_; }
     void SetFromConfig(const Config& config);
@@ -186,6 +187,7 @@ class Input {
     unsigned num_players_;
     int keyboard_local_player_ = 0;
     bool keyboard_join_pressed_ = false;
+    std::set<int> controller_join_presses_;
     bool keyboard_menu_shared_ = true;
     int last_controller_button_instance_ = -1;
     float last_controller_button_time_ = 0.0f;

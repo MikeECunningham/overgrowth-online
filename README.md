@@ -47,7 +47,7 @@ and the remaining Steam friends/relay checks.
   They start enabled in **Mods**. The host chooses Scaling in **Difficulty** or
   turns on **Progression** in **Mode settings** for a particular game.
   Its shop offers separate bone and flesh damage upgrades and resistance to
-  long falls. In the shop, H heals and Space toggles Ready.
+  long falls. In the shop, H or L2 heals and Space or R2 toggles Ready.
   Each mod can be disabled independently. Slots, split-screen, save cards
   and the armor protection models are engine features.
   See [campaign scaling](Docs/Markdown/Campaign%20Difficulty.md) and
@@ -146,8 +146,7 @@ reopens that lobby with its settings and slots.
 
 The wave countdown has a dark background for visibility against the sky. The
 host’s difficulty readout stays visible through battery breaks, including while
-players shop. Each lobby map picker starts with **Random map**, which draws
-from the current filtered list and shares the chosen map with the lobby.
+players shop. Each lobby map picker starts with **Random map**, which saves the current filter. The host draws a map from that list when starting the game.
 
 With Progression enabled, the host can check **XP handicap** on a human slot
 in the Players panel. A defeat earns committed XP there. **Local leaders may
@@ -155,23 +154,25 @@ set XP handicaps** lets each computer’s leader choose for its own players.
 
 The lobby has separate panels for the mode and map, the scrolling player list, and hosting options. **Sandbox Levels** offers Wolfire's sandbox maps when the level pack is active. **Freeplay** opens a standalone map for play, including maps from active mods, the sandbox pack, and levels saved by the host. **Build a level** opens the shared editor. The host chooses the mode, map, manual lobby teams, pause permissions and start time. **Force lobby teams** is off by default. Campaigns retain their cooperative teams, Arena chooses randomized team/FFA matchups from its battle setups, and Sandbox, Freeplay and Build use lobby teams. Checking it enforces the lobby's team dropdowns. Mode-assigned teams are synchronized separately, so random Arena matchups do not overwrite the saved lobby choices.
 
+The device that chooses Host controls the host seat. The device that chooses Connect controls the joining computer’s leader seat. Each computer’s local leader can change **Settings → Game → Automatic Ledge Grab** for that computer. Match difficulty, saved games and host changes preserve this preference.
+
 Press a button on another controller to add a local player. If a controller owns P1, press **Enter** to join with the keyboard and mouse as another player. Each client's **local leader** can rename or remove its local players and assign their screens; the host can also remove remote players. **Promote to leader** transfers local authority without changing device assignments. After transferring both host and leader roles away from the initial keyboard/mouse player, that seat can be removed. Removing a remote leader disconnects that client's whole group. Screens are exclusive: choosing an occupied screen swaps the two players. Remote players have no screen on your client. Each client renders only its own screens, and every player's character uses the fork's existing local simulation and compact network streams.
 
 **Promote to host** transfers lobby and match authority. Choosing a player on another computer also transfers the pregame network session, so the original hosting computer can leave after the handoff completes. Every client first checks that it can reach the new host; a failed reachability check leaves the original lobby running. Direct-IP hosts need a reachable UDP port, while Steamworks builds can use Steam P2P. Host transfer is available in the lobby; return there before handing off a running match.
 
 The lobby header shows who is operating the shared menu, the match host and the
-local leader. Each controller uses its player's permissions. Promoting another
+local leader. Only the host and each computer’s local leader can edit the lobby. Promoting another
 local player keeps this computer's host/client status; either the host or local
 leader can close or leave the lobby. Other local players see which controller
 to use. The button used to join a controller does not also activate a menu item.
 
-**Host controls teams** defaults to on. When it is off, players can change their own teams in modes that permit manual teams; the host keeps team-management authority. Mode-managed campaign/Arena teams remain governed by the selected mode unless overridden. Explicit host edits during play override that player's current team; future matches still follow the mode unless **Force lobby teams** is enabled. The pause menu's **Teams** page shows the roster and team controls. Local leaders can also swap local screen assignments there during a match.
+**Host controls teams** defaults to on. When it is off, local leaders can assign teams to their couch players in modes that permit manual teams; the host keeps team-management authority. Mode-managed campaign/Arena teams remain governed by the selected mode unless overridden. In Arena, the host can change a fighter’s team for the current match. In cooperative campaigns, the party keeps its story faction until **Force lobby teams** is enabled. The pause menu's **Teams** page shows the roster and team controls. Local leaders can also swap local screen assignments there during a match.
 
 The host's P1 starts as Turner. Other players start with their team's fur and clothing colors; the numbered team dropdowns include matching color swatches. The lobby uses the game's menu artwork and fonts, with native scrolling and controller navigation underneath.
 
 The host can choose **Add slot** in the lobby or pause menu. A new slot starts with a bot. In the lobby, switch it to a player slot to reserve an opening. The admission dropdown controls whether remote players and local controllers can create slots or must take an opening. Swapping occupants moves control to the destination unit, including its XP, upgrades and equipment.
 
-**Settings → Profiles** manages named players, their outfit for each race and their preferred weapon appearances. **Use for solo Play** assigns the chosen profile when starting a private game. In a lobby, each human chooses from the host's profiles, creates one, or stays a temporary guest. L2/R2 change cosmetic categories and L1/R1 cycle available appearances. Lobby rows use team colors, with a darker shade for bots.
+**Settings → Profiles** manages named players, their outfit for each race and their preferred weapon appearances. **Use for solo Play** assigns the chosen profile when starting a private game. In a lobby, each local leader can choose a host-local profile for each couch player, create one, or keep that seat as a temporary guest. L2/R2 change cosmetic categories and L1/R1 cycle available appearances. Lobby rows use team colors, with a darker shade for bots.
 
 **Settings → Mod settings → Friendly Progression** has independent **Cosmetic progression** and **Non-cosmetic progression** checkboxes. Each profile earns one token every 10 campaign levels cleared, 10 Arena matches won or 10 Survival batteries survived. The three counters carry over independently between sessions for named profiles. Spend a token on **Roll cosmetic** or **Roll upgrade** in **Settings → Profiles** or in the player's lobby entry. Each draw gives something the profile has yet to unlock. Players share the upgrades their profiles bring to a map at its start. Turning cosmetic progression off restores the original outfit and weapon selections.
 

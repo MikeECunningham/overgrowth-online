@@ -472,4 +472,48 @@ void charsnap::test<11>() {
     ensure("scene/reset clear removes root history", !buffer.PositionAt(1150, out));
     ensure("scene/reset clear removes timestamp range", !buffer.SourceTimeRange(oldest, newest));
 }
+template <> template <>
+void charsnap::test<12>() {
+    set_test_name("regular burst loss reserves a complete interpolation bracket");
+    Buffer buffer;
+    Frame pose;
+    int late = 0, samples = 0;
+    // One in five received packets follows three missing packets. Arrival lag
+    // itself is constant, so a jitter estimate based only on lag misses this.
+    for (int now = 0, due = 0, packet = 0; now < 5000; now += 5) {
+        if (now == due) {
+            buffer.Push(Walker(1000 + now, 3.0f), now);
+            due += ++packet % 5 == 0 ? 100 : 25;
+        }
+        buffer.Sample(now, pose);
+        if (now > 2500) {
+            ++samples;
+            if (buffer.Extrapolating()) ++late;
+        }
+    }
+    ensure("burst length covered after warmup", buffer.DelayMs() >= 100 && buffer.DelayMs() < 130);
+    ensure("normally interpolating during loss", late < samples / 20);
+}
+template <> template <>
+void charsnap::test<13>() {
+    set_test_name("small extrapolation corrections ease without moving the received hit history");
+    Buffer buffer;
+    Frame pose;
+    for (int i = 0; i <= 10; ++i) {
+        buffer.Push(Walker(1000 + 30*i, 3.0f), 30*i);
+        buffer.Sample(30*i, pose);
+    }
+    for (int now=310; now<=440; now+=10) buffer.Sample(now, pose);
+    const float predicted = pose.position.x();
+    Frame stopped = Walker(1300, 3.0f);
+    stopped.src_ms = 1450;
+    stopped.velocity = vec3(0.0f);
+    buffer.Push(stopped, 450);
+    buffer.Sample(450, pose);
+    ensure("avoids a one-frame correction", predicted - pose.position.x() < 0.15f);
+    vec3 authority;
+    ensure("hit history sees the unmodified stop", buffer.PositionAt(1450, authority) && authority == stopped.position);
+    for (int now=460; now<=750; now+=10) buffer.Sample(now, pose);
+    ensure("display converged", distance(pose.position, stopped.position) < 0.01f);
+}
 }  // namespace tut
