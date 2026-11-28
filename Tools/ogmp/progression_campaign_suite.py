@@ -46,7 +46,7 @@ def progression_campaign(ctx):
     for key in ("bone_health","armor_3","dagger"):
         act("buy", key)
     remaining = view()["held"]
-    assert remaining == held - (16+155+110), (held, remaining)
+    assert remaining == held - (16+80+110), (held, remaining)
     act("ready")
     _ready(game, SECOND)
     _skip(game)

@@ -479,15 +479,18 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
         if (p.compact_cards) columns = std::max(1, static_cast<int>((list.w-rail+gap)/(220*s+gap)));
         const float size = (list.w-rail-(columns-1)*gap)/columns;
         const float height = p.compact_cards ? std::max(42*s,std::min(68*s,list.h-25*s)) : size;
-        static const char* titles[] = {"Stats", "Armor", "Daggers", "Main-hand weapons", "Characters"};
-        std::array<std::vector<const Json::Value*>,5> groups;
+        static const char* titles[] = {"Stats", "Limb guards", "Head armor", "Torso armor", "Daggers", "Main-hand weapons", "Characters"};
+        std::array<std::vector<const Json::Value*>,7> groups;
         for (const auto& card : cards) {
             const auto id = card["id"].asString();
             if (id == "restore_health") continue;
             size_t group = 0;
-            if (card["armor_material"].asInt()) group = 1;
-            else if (const auto* weapon = WeaponCategories::Find(id)) group = weapon->offhand ? 2 : 3;
-            else if (id == "race_upgrade" || id == "recruit" || id == "ai") group = 4;
+            if (card["armor_material"].asInt()) {
+                if (id == "armor_0" || id == "armor_1") group = 3;
+                else group = id == "armor_2" ? 2 : 1;
+            }
+            else if (const auto* weapon = WeaponCategories::Find(id)) group = weapon->offhand ? 4 : 5;
+            else if (id == "race_upgrade" || id == "recruit" || id == "ai") group = 6;
             groups[group].push_back(&card);
         }
         for (size_t group = 0; group < groups.size(); ++group) {

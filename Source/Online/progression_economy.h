@@ -34,7 +34,7 @@ inline int StatPrice(int rank, double base, double linear, double quadratic) {
     return static_cast<int>(std::round(base + linear * rank + quadratic * rank * rank));
 }
 inline int ArmorPrice(unsigned region, int material) {
-    const int base[] = {300, 245, 285, 155, 155, 195, 195, 175, 175};
+    const int base[] = {300, 245, 215, 80, 80, 125, 125, 100, 100};
     static constexpr int multiplier[] = {0, 1, 2, 3, 5};
     return base[region] * multiplier[std::min(int(ArmorProtection::Grey), std::max(0, material))];
 }

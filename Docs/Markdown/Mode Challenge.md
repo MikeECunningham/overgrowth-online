@@ -54,8 +54,8 @@ ledger. Host snapshots carry the current run and retry relief to other clients.
 
 ## Host readout
 
-**Settings → Game → Show difficulty readout** controls the larger Cella/edosz
-readout in the designated host's view. It follows that player's screen
+**Settings → Game → Show difficulty scaling readout** controls the larger Cella/edosz
+readout in the designated host's view. The same checkbox appears under Difficulty in the lobby’s Mode settings. It follows that player's screen
 assignment and remains hidden in unscaled contexts, regardless of the checkbox.
 Cinematics, loading and the host's personal menu hide it too.
 
@@ -209,10 +209,10 @@ rank 20, while purchase prices continue to rise.
 | Luck | Same prices as the other stats | Increases the chance of a free choice and improves the odds of drawing higher-priced upgrades |
 | Restore health | Up to 8 + 2 per completed campaign level, Arena round or Survival wave | The card shows current price / maximum XP. The most depleted of permanent, temporary, blood and block health determines the price, rounded to the nearest XP. Any injury costs at least 1 XP. A healthy fighter shows 0 XP. If your balance is smaller than the quote, you can spend it all to repair that fraction of each health pool and reduce ongoing bleeding. A free choice heals in full. |
 | Race upgrade | 1,200 / 2,400 / 9,600 / 38,400 | Mouse → Rabbit → Cat → Dog → Wolf. Shared upgrades rotate among humans at the lowest race. Select a companion to upgrade it individually. Companions start as rabbits. |
-| Wood | 155–195 | First shoulder, forearm or thigh guard |
-| Chitin | 310–600 | Second limb guard or first chest, back or head piece |
-| Dog armor | 465–900 | Upgrades any Chitin slot |
-| Therium grey | 775–1,500 | Upgrades any Dog armor slot |
+| Wood | 80–125 | First shoulder, forearm or thigh guard |
+| Chitin | 160–600 | Second limb guard or first chest, back or head piece |
+| Dog armor | 240–900 | Upgrades any Chitin slot |
+| Therium grey | 400–1,500 | Upgrades any Dog armor slot |
 | Daggers and throwing knives | 350 | Separate offhand toggle |
 | Sticks and scabbards, tools and torches, staves, machetes and hatchets | 450, 475, 500, 600 | Select one main-hand category |
 | Spears and glaives, swords, hammers, broadswords | 1,000, 1,200, 1,320, 1,480 | Select one main-hand category |

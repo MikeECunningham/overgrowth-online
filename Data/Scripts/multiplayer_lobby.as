@@ -576,6 +576,8 @@ void DrawModeSettingsForm(const vec2 &in position, const vec2 &in size, float sc
         lobby_difficulty_focus = true;
     }
     LobbyHint(ModSessionFeature("scaling") ? "Choose the starting preset and configure optional enemy scaling." : "Choose the starting difficulty preset.");
+    bool show_readout = GetConfigValueBool("show_difficulty_readout");
+    if(MPCheckbox("Show difficulty scaling readout", show_readout)) { SetConfigValueBool("show_difficulty_readout", show_readout); SaveConfig(); }
     DrawModLobbyOptions();
     if(LobbyModeIsArena()) {
         ImGui_BeginDisabled(!LobbyIsHost() || LobbyMigrationBusy());

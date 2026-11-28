@@ -42,10 +42,10 @@ template<> template<> void xp_test::test<2>() {
     ensure_equals(ArmorProtection::RestoredShopMaterial(3, 2), int(ArmorProtection::Wood));
     ensure_equals(ArmorProtection::RestoredShopMaterial(2, 1), int(ArmorProtection::Dog));
     ensure_equals(ArmorProtection::RestoredShopMaterial(3, 2, false), int(ArmorProtection::Chitin));
-    ensure_equals(ArmorPrice(3, ArmorProtection::Wood), 155);
-    ensure_equals(ArmorPrice(3, ArmorProtection::Chitin), 310);
-    ensure_equals(ArmorPrice(3, ArmorProtection::Dog), 465);
-    ensure_equals(ArmorPrice(3, ArmorProtection::Grey), 775);
+    ensure_equals(ArmorPrice(3, ArmorProtection::Wood), 80);
+    ensure_equals(ArmorPrice(3, ArmorProtection::Chitin), 160);
+    ensure_equals(ArmorPrice(3, ArmorProtection::Dog), 240);
+    ensure_equals(ArmorPrice(3, ArmorProtection::Grey), 400);
     ensure("recruit prices more than double for this team", RecruitPrice(2,2400,2.25) > 2 * RecruitPrice(1,2400,2.25));
     ensure("stat marginal price accelerates", StatPrice(5,16,5,2)-StatPrice(4,16,5,2) > StatPrice(1,16,5,2)-StatPrice(0,16,5,2));
 }

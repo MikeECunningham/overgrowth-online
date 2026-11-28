@@ -702,6 +702,8 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
         }
 
         const bool can_edit_match = !Online::Instance()->IsActive() || Online::Instance()->IsLobbyHost(MatchSettingsActor());
+        bool difficulty_hud = config["show_difficulty_readout"].toBool();
+        if (ImGui::Checkbox("Show difficulty scaling readout", &difficulty_hud)) config.GetRef("show_difficulty_readout") = difficulty_hud;
         bool stats_hud = config["show_stats_readout"].toBool();
         if (ImGui::Checkbox("Show progression stats", &stats_hud)) config.GetRef("show_stats_readout") = stats_hud;
         bool ledges = config["auto_ledge_grab"].toBool();
@@ -781,11 +783,6 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
             bool tutorials = config["tutorials"].toBool();
             if (ImGui::Checkbox("Tutorials", &tutorials)) SetMatchSetting("tutorials", tutorials ? "true" : "false");
             ImGui::EndMenu();
-        }
-        if (scaling_available) {
-            checkbox_val = config["show_difficulty_readout"].toBool();
-            if (ImGui::Checkbox("Show difficulty readout", &checkbox_val)) config.GetRef("show_difficulty_readout") = checkbox_val;
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Show encounter difficulty on the host screen during scaled play.");
         }
         ImGui::EndDisabled();
 

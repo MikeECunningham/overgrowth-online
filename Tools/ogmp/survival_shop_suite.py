@@ -127,7 +127,10 @@ def survival_shop(ctx):
         layout = panel()
         return layout if layout.get("sections") and layout.get("action_rects") else None
     layout = wait(visible_shop, "leader can see grouped upgrades and shop hit targets")
-    assert layout["sections"] == ["Stats", "Armor", "Daggers", "Main-hand weapons", "Characters"]
+    assert layout["sections"] == ["Stats", "Limb guards", "Head armor", "Torso armor", "Daggers", "Main-hand weapons", "Characters"]
+    armor = [c for c in view()["cards"] if c["id"].startswith("armor_")]
+    assert [c["id"] for c in armor] == [f"armor_{slot}" for slot in (3, 4, 7, 8, 5, 6, 2, 1, 0)]
+    assert [c["cost"] for c in armor] == [80, 80, 100, 100, 125, 125, 430, 490, 600]
     for box in layout["action_rects"].values():
         assert box[3] - box[1] >= 30
     hero = fighter(host, owner)["id"]

@@ -613,7 +613,7 @@ std::vector<Offer> Catalog(const PlayerState& buyer, const PlayerState& target, 
         offers.back().next_race = lowest + 1;
     }
     const auto armor_choices = shared ? Rotation(team_id, true) : std::vector<ID>{target.player_id};
-    for (unsigned i = 0; i < 9; ++i) {
+    for (unsigned i : {3u, 4u, 7u, 8u, 5u, 6u, 2u, 1u, 0u}) {
         int shared_material = ArmorProtection::Grey + 1;
         if (shared) for (ID id : armor_choices) {
             const int next = ArmorProtection::NextShopMaterial(i, run.players[id].build.armor[i]);

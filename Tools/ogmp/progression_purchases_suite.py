@@ -115,8 +115,8 @@ def progression_purchases(ctx):
     available = cards(p1, first)
     assert available["armor_0"]["label"] == "Chitin / Chest" and available["armor_0"]["cost"] == 600
     assert available["armor_3"]["label"] == "Wood / Left forearm" and available["armor_3"]["armor_material"] == 1
-    assert buy(p1, "armor_3", first) == 155
-    for region, price in enumerate((155, 155, 195, 195, 175, 175), 3):
+    assert buy(p1, "armor_3", first) == 80
+    for region, price in enumerate((80, 80, 125, 125, 100, 100), 3):
         assert buy(p2, f"armor_{region}") == price
     assert buy(p1, "dagger") == 350
     assert buy(p1, "sword") == 1200 and buy(p1, "spear") == 1000
@@ -158,14 +158,14 @@ def progression_purchases(ctx):
     assert min(ranks) > 0 and max(ranks) - min(ranks) <= 1, ranks
     assert all(build(second)[k] == 0 for k in ("bone_health", "damage", "flesh_health", "speed", "fall_resistance"))
     assert cards(p1, first)["armor_3"]["label"] == "Chitin / Left forearm"
-    assert buy(p1, "armor_3", first) == 310
+    assert buy(p1, "armor_3", first) == 160
     act(p1, "equip", "spear")
     leave()
     ratings.append(reaches(2))
     assert "large_wood_plate.xml" not in armor_files(first) and "armchunk.xml" in armor_files(first)
     portrait(first,"chitin_guard")
     shop()
-    assert buy(p1, "armor_3", first) == 465
+    assert buy(p1, "armor_3", first) == 240
     leave()
     ratings.append(reaches(3))
     assert "armchunk.xml" not in armor_files(first) and "dog_armor_lower_arm.xml" in armor_files(first)
@@ -176,7 +176,7 @@ def progression_purchases(ctx):
     assert "dogsword.xml" not in equipment(p1)
     shop()
     assert cards(p1, first)["armor_3"]["label"] == "Therium grey / Left forearm"
-    assert buy(p1, "armor_3", first) == 775 and "armor_3" not in cards(p1, first)
+    assert buy(p1, "armor_3", first) == 400 and "armor_3" not in cards(p1, first)
     assert buy(p1, "armor_0", first) == 600
     for slot in range(9):
         assert cards(p2)[f"armor_{slot}"]["armor_material"] == 2

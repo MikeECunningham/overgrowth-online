@@ -6928,6 +6928,7 @@ bool CanEditClientSetting(const std::string& key) {
         return online->IsLobbyHost(ScriptSettingsActor());
     const PlayerMenuUI::Context* menu = PlayerMenuUI::Current();
     if (!menu || !SettingsChanges::SharedClientSetting(key)) return true;
+    if (key == "show_difficulty_readout" && online->IsLobbyHost(ScriptSettingsActor())) return true;
     return online->IsLobbyLeader(online->LobbyPlayerIDForLocalIndex(menu->local_index));
 }
 

@@ -614,6 +614,7 @@ void AddAudioScreen(){
 void AddGameScreen(){
     current_screen = "Game";
 
+    AddCheckBox("Show difficulty scaling readout", settings_content, "show_difficulty_readout");
     if(!PersonalSettingsOnly()) {
         AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab");
         AddCheckBox("Show progression stats", settings_content, "show_stats_readout");
@@ -624,10 +625,6 @@ void AddGameScreen(){
     }
     if(CanEditCampaignSettings()) {
         AddBasicButton("Difficulty", "open_difficulty_settings", 500, settings_content);
-        if(ModSessionFeature("scaling")) {
-            AddCheckBox("Show difficulty readout", settings_content, "show_difficulty_readout");
-            AddNote("Host view; visible only during scaled play.", settings_content);
-        }
     } else {
         settings_content.append(IMText("The host controls match difficulty.", button_font_small));
         settings_content.append(IMText("Difficulty: " + GetConfigValueString("difficulty_preset"), button_font_small));
