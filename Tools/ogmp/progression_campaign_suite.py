@@ -43,7 +43,7 @@ def progression_campaign(ctx):
               'ProgressionCheckpoint();ProgressionResetAttempt();')
     win()
     held = view()["held"]
-    for key in ("health","armor_3","dagger"):
+    for key in ("bone_health","armor_3","dagger"):
         act("buy", key)
     remaining = view()["held"]
     assert remaining == held - (16+155+110), (held, remaining)

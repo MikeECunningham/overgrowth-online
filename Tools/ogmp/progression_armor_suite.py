@@ -16,9 +16,8 @@ def progression_shared_armor(ctx):
     _ready(game, FIRST)
     _skip(game)
     members = sorted(p["id"] for p in _rows(game))
-    humans = [p["id"] for p in _rows(game) if not p["bot"]]
     bot = next(p["id"] for p in _rows(game) if p["bot"])
-    buyer = min(humans)
+    buyer = next(p["id"] for p in _rows(game) if p["host"])
 
     def data(target=buyer, **kw):
         return bridge.call("progression", actor=buyer, target=target, **kw)
@@ -71,8 +70,7 @@ def progression_shared_armor(ctx):
         buy(0,2)
     assert cards()["armor_0"]["armor_material"] == 3
     ctx.shot(game,"all_material_cards")
-    for id in humans:
-        assert bridge.call("progression",actor=id,action="ready")["submitted"]
+    assert bridge.call("progression",actor=buyer,action="ready")["submitted"]
     bridge.wait(lambda: not data()["view"].get("shop_open"),15,what="shared armor issued")
     def issued():
         avatars = {p["avatar_id"] for p in _rows(game)}

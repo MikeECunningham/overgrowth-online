@@ -88,7 +88,8 @@ campaign_ai_scaling_rate: 2
 campaign_armor_scaling: true
 campaign_weapon_scaling: true
 armor_localized:        true
-show_difficulty_readout: true
+show_difficulty_readout: false
+show_stats_readout: false
 tutorials:              true
 difficulty_set:         false
 volume_shadows:         false

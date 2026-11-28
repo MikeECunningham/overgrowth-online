@@ -26,15 +26,15 @@ Examples at four main-team humans, before progression:
 
 | Opponent | Durability | Damage |
 | --- | --- | --- |
-| Ordinary rat | 1.627× | 1.261× |
-| Ordinary rabbit | 1.748× | 1.261× |
-| Ordinary cat/dog | 1.870× | 1.261× |
-| Cat/dog boss | 3.820× | 1.418× |
-| Wolf boss | 4.377× | 1.418× |
+| Ordinary rat | 1.627× | 1.061× |
+| Ordinary rabbit | 1.748× | 1.061× |
+| Ordinary cat/dog | 1.870× | 1.061× |
+| Cat/dog boss | 3.820× | 1.102× |
+| Wolf boss | 4.377× | 1.102× |
 
 Durability changes incoming damage while preserving normalized health,
 injuries, knockout shields and story health thresholds. Regular party
-scaling caps at 3× durability and 1.6× damage; bosses at 6× and 1.9×.
+scaling caps at 3× durability and 1.15× damage. Bosses cap at 6× durability and 1.225× damage. A second human adds 2.1% regular enemy damage or 3.5% boss damage.
 Combined progression caps are 6× durability and 2× damage. Forced-50 can
 reduce modifiers on subsequent attempts of a lost encounter.
 

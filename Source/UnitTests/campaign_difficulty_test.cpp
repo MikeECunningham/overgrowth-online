@@ -47,7 +47,7 @@ template<> template<> void campaign_test::test<3>() {
             ensure("damage never falls with another human", current.damage >= previous.damage);
             ensure("armor is physical, not a multiplier", current.armor == 1.0f);
             ensure("AI never falls with another human", current.ai >= previous.ai);
-            ensure("boss durability and damage have hard caps", current.vitality <= 6.0f && current.damage <= 1.9f);
+            ensure("boss durability and damage have hard caps", current.vitality <= 6.0f && current.damage <= 1.225f);
             ensure("armor and AI have hard caps", current.armor <= 1.9f && current.ai <= 0.03f);
             const int adds = CampaignDifficulty::ExtraEnemiesForParty(humans, 0, 30, false, rank);
             ensure("regular encounter additions have a hard cap", adds >= previous_adds && adds <= CampaignDifficulty::kRegularExtraCap);
@@ -114,6 +114,10 @@ template<> template<> void campaign_test::test<6>() {
 
 template<> template<> void campaign_test::test<7>() {
     const auto humans = CampaignDifficulty::ForParty(4, 0, false, CampaignDifficulty::Rabbit, true, false);
+    ensure("one human ally adds 2.1 percent regular damage",
+           std::fabs(CampaignDifficulty::ForParty(2, 0, false, CampaignDifficulty::Rabbit, true, false).damage - 1.021f) < .00001f);
+    ensure("one human ally adds 3.5 percent boss damage",
+           std::fabs(CampaignDifficulty::ForParty(2, 0, true, CampaignDifficulty::Wolf, true, false).damage - 1.035f) < .00001f);
     const auto bots = CampaignDifficulty::ForParty(1, 3, false, CampaignDifficulty::Rabbit, true, false);
     ensure("four humans receive more scaling than the previous unweighted curve", std::fabs(humans.vitality - 1.7484426f) < 0.00001f);
     ensure("three friendly bots provide only modest additional scaling", std::fabs(bots.vitality - 1.1918875f) < 0.00001f);
@@ -182,7 +186,7 @@ template<> template<> void campaign_test::test<9>() {
         for (int humans = 1; humans <= 128; ++humans) {
             const auto current = CampaignDifficulty::ForParty(humans, humans, true, rank, true, true, 5);
             ensure("mixed party durability is monotonic and capped", current.vitality >= previous.vitality && current.vitality <= 6.0f);
-            ensure("mixed party damage is monotonic and capped", current.damage >= previous.damage && current.damage <= 1.9f);
+            ensure("mixed party damage is monotonic and capped", current.damage >= previous.damage && current.damage <= 1.225f);
             ensure("mixed parties do not gain an artificial armor multiplier", current.armor == 1.0f);
             ensure("AI retains its human-only cap", current.ai <= 0.03f);
             previous = current;

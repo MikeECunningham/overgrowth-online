@@ -83,7 +83,7 @@ inline Factors ForExtraPlayers(float extra, int ai_humans, bool boss, int streng
     if (stats) {
         const float vitality_step = (boss ? 0.65f + 0.08f * rank : 0.18f + 0.035f * rank) * 0.85f;
         out.vitality = std::min(boss ? 6.0f : 3.0f, 1.0f + vitality_step * extra);
-        out.damage = std::min(boss ? 1.9f : 1.6f, 1.0f + (boss ? 0.12f : 0.075f) * 0.85f * extra);
+        out.damage = std::min(boss ? 1.225f : 1.15f, 1.0f + (boss ? 0.025f : 0.015f) * extra);
         // Armor is supplied as real pieces, not a passive-block multiplier.
     }
     if (ai_enabled && TweakForUnit(shared_id) != NoTweak) out.ai = HumanAIAmount(ai_humans);

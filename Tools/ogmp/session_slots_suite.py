@@ -109,7 +109,7 @@ def session_slots(ctx):
     _code(host, f'for(int n=0;n<100;++n){{ProgressionReportHit({victim},{hero},0,true);'
           'ProgressionCheckpoint();ProgressionResetAttempt();}ProgressionBeginShop(false);')
     wait(lambda: host.bridge.call("progression", actor=couch)["view"].get("shop_open"), "slot upgrade shop")
-    assert host.bridge.call("progression", actor=couch, action="buy", key="health")["submitted"]
+    assert host.bridge.call("progression", actor=couch, action="buy", key="bone_health")["submitted"]
     for peer in (host, guest):
         for p in _rows(peer):
             if p["peer_id"] == (255 if peer is host else next(r["peer_id"] for r in _rows(host) if r["id"] == bot)):
@@ -119,7 +119,7 @@ def session_slots(ctx):
          "return to slot lobby")
 
     def rank(slot, peer=host):
-        return next(p["health"] for p in peer.bridge.call("progression", actor=slot)["ledger"]["players"] if p["id"] == slot)
+        return next(p["bone_health"] for p in peer.bridge.call("progression", actor=slot)["ledger"]["players"] if p["id"] == slot)
 
     assert rank(couch) == 1
     before = {id: (slot["uid"], slot["order"], slot["team"]) for id, slot in slots().items()}

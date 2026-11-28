@@ -702,6 +702,8 @@ void DrawSettingsImGui(SceneGraph* scenegraph, ImGuiSettingsType type) {
         }
 
         const bool can_edit_match = !Online::Instance()->IsActive() || Online::Instance()->IsLobbyHost(MatchSettingsActor());
+        bool stats_hud = config["show_stats_readout"].toBool();
+        if (ImGui::Checkbox("Show progression stats", &stats_hud)) config.GetRef("show_stats_readout") = stats_hud;
         bool ledges = config["auto_ledge_grab"].toBool();
         ImGui::BeginDisabled(Online::Instance()->IsActive() && !Online::Instance()->IsLobbyLeader(MatchSettingsActor()));
         if (ImGui::Checkbox("Automatic ledge grab", &ledges)) config.GetRef("auto_ledge_grab") = ledges;

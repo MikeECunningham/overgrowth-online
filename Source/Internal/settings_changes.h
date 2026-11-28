@@ -32,7 +32,7 @@ inline bool NeedsGraphicsReload(const std::string& key) {
         "temporal_aa_sharpness", "dlss_sharpness", "fsr_sharpness",
         "difficulty_preset", "difficulty_preset_value", "game_difficulty", "global_time_scale_mult", "tutorials",
         "campaign_mp_scaling", "campaign_mp_nightmare", "difficulty_scaling", "campaign_ai_scaling", "campaign_ai_scaling_rate", "campaign_armor_scaling", "campaign_weapon_scaling", "armor_localized",
-        "auto_ledge_grab", "auto_camera", "fps_label", "show_difficulty_readout", "language", "custom_resolution", "last_ip"
+        "auto_ledge_grab", "auto_camera", "fps_label", "show_difficulty_readout", "show_stats_readout", "language", "custom_resolution", "last_ip"
     };
     for (const char* value : runtime) if (key == value) return false;
     // Preserve the full reload for unknown/custom settings.

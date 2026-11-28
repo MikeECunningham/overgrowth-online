@@ -13,7 +13,7 @@ def profile_map_pool(ctx):
     host = ctx.instance("pool_host", width=1280, height=720, keys={**RENDER_KEYS, "mp_port": "29682"})
     guest = ctx.instance("pool_guest", width=800, height=450, keys={**RENDER_KEYS, "mp_port": "29683"})
     initial = {"Turner": {"health", "armor_3:1", "armor_3:2"},
-               "Raider": {"damage", "dog_knife", "ai:2"}, "Bystander": {"speed", "recruit"},
+               "Raider": {"bone_damage", "dog_knife", "ai:2"}, "Bystander": {"speed", "recruit"},
                "Healer": {"restore_health"}}
     for name in initial:
         assert _probe(host, f'ProfileEdit("create","{name}","","")') == "true"
@@ -66,21 +66,19 @@ def profile_map_pool(ctx):
     wait(lambda: any(p["name"] == "Raider" for p in _rows(host)), "host applied guest selection")
     _code(host, f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
           'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",0);'
-          'LobbySetModeSetting("progression_timer",0);LobbySetModeSetting("progression_free_buffs",1);'
+          'LobbySetModeSetting("progression_shop_heal",1);LobbySetModeSetting("progression_timer",0);LobbySetModeSetting("progression_free_buffs",1);'
           'LobbySetModeSetting("progression_gain_checkpoint",1);LobbyAddBot();')
     bot = next(p["id"] for p in _rows(host) if p["bot"])
     start()
     _skip(host)
-    # Raider predates the split between blunt trauma and flesh damage. Its one old
-    # unlock grants both categories, and the host writes the migrated collection.
-    shared = initial["Turner"] | (initial["Raider"] - {"damage"}) | {"bone_damage", "flesh_damage"}
+    shared = (initial["Turner"] - {"health"}) | (initial["Raider"] - {"bone_damage"}) | {"bone_health", "flesh_health", "damage"}
     migrated_owned = json.loads(archive.read_text())["profiles"]["Raider"]["mods"][bundle]["upgrades"]["owned"]
-    assert "damage" not in migrated_owned and migrated_owned["bone_damage"] and migrated_owned["flesh_damage"]
+    assert "bone_damage" not in migrated_owned and migrated_owned["damage"]
     for peer, player in ((host, owner), (guest, visitor)):
         wait(lambda: set(data(peer, player)["ledger"].get("map_upgrades", [])) == shared, "shared starting pool")
     # Enough ordinary checkpoint XP to prove that an unavailable purchase is refused for eligibility.
     _code(host, "for(int i=1;i<=70;++i) ProgressionCheckpoint(i,483);ProgressionBeginShop(false);", "level")
-    expected = {"health", "bone_damage", "flesh_damage", "armor_3", "dog_knife"}
+    expected = {"bone_health", "flesh_health", "damage", "armor_3", "dog_knife"}
     for peer, player in ((host, owner), (guest, visitor)):
         wait(lambda: card_keys(peer, player) == expected, "both shops expose the union")
         view = data(peer, player)["view"]
@@ -111,10 +109,10 @@ def profile_map_pool(ctx):
     old_section = before_split["session_mods"][bundle]
     old_section["version"] = "7"
     old_runtime = old_section["runtime"]
-    old_runtime["map_upgrades"] = sorted((shared - {"bone_damage", "flesh_damage"}) | {"damage"})
+    old_runtime["map_upgrades"] = sorted((shared - {"bone_health", "flesh_health"}) | {"health"})
     for row in old_runtime["players"] + old_runtime["teams"]:
-        row["damage"] = row.pop("bone_damage")
-        del row["flesh_damage"], row["fall_resistance"]
+        row["health"] = row.pop("bone_health")
+        del row["flesh_health"], row["fall_resistance"]
     card.write_text(json.dumps(before_split))
     restore(1)
     wait(lambda: card_keys(host, owner) == expected - {"armor_3"} and card_keys(guest, visitor) == expected,
@@ -125,12 +123,13 @@ def profile_map_pool(ctx):
     old["version"] = "6"
     for row in old["runtime"]["players"] + old["runtime"]["teams"]:
         row["damage"] = 3 if row.get("id") == owner else 0
-        del row["bone_damage"], row["flesh_damage"], row["fall_resistance"]
+        row["health"] = row.pop("bone_health")
+        del row["flesh_health"], row["fall_resistance"]
     card.write_text(json.dumps(saved))
     restore(1)
     wait(lambda: {"speed", "recruit", "dagger"} <= card_keys(host, owner), "unrestricted legacy shop")
     stats = data(host, owner)["view"]["stats"]
-    assert stats["bone_damage_rank"] == stats["flesh_damage_rank"] == 3 and stats["fall_resistance_rank"] == 0
+    assert stats["damage_rank"] == 3 and stats["fall_resistance_rank"] == 0
     _code(host, "LobbyEndGame();", "level")
     lobby()
     assert _probe(host, f'ProfileSetModSetting("{bundle}","upgrade_progression",1)') == "true"
@@ -156,16 +155,11 @@ def profile_map_pool(ctx):
     start()
     _skip(host)
     _code(host, "ProgressionBeginShop(false);", "level")
-    for peer, seat in ((host, owner), (guest, visitor)):
-        wait(lambda: data(peer, seat)["view"].get("shop_open") and panel(peer, seat).get("shop"), "shared shop")
-    leader = data(host, owner)["view"]["team_leader"]
-    for peer, seat in ((host, owner), (guest, visitor)):
-        if seat == leader:
-            wait(lambda: "Use Heal above" in panel(peer, seat).get("empty_upgrades", ""), "heal-only upgrade display")
-            assert "Roll upgrade" in panel(peer, seat)["empty_upgrades"]
-            assert card_keys(peer, seat) == {"restore_health"} and "restore_health" in panel(peer, seat)["action_rects"]
-        else:
-            assert not data(peer, seat)["view"]["can_buy"] and not panel(peer, seat).get("empty_upgrades")
+    wait(lambda: panel(host,owner).get("shop"), "host opens shared shop")
+    assert not data(guest,visitor)["view"]["shop_open"] and not panel(guest,visitor).get("shop")
+    wait(lambda: "Use Heal above" in panel(host,owner).get("empty_upgrades", ""), "heal-only upgrade display")
+    assert "Roll upgrade" in panel(host,owner)["empty_upgrades"]
+    assert card_keys(host,owner) == {"restore_health"} and "restore_health" in panel(host,owner)["action_rects"]
     assert not script_errors(host) and not script_errors(guest)
     return {"passed": True, "metrics": {"pooled_unlocks": len(shared), "armor_tiers_bought": 2,
                                         "legacy_shop_restored": True, "empty_guest_pool": True,

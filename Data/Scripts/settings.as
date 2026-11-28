@@ -616,6 +616,7 @@ void AddGameScreen(){
 
     if(!PersonalSettingsOnly()) {
         AddCheckBox("Automatic Ledge Grab", settings_content, "auto_ledge_grab");
+        AddCheckBox("Show progression stats", settings_content, "show_stats_readout");
         AddCheckBox("Show frame rate and frame time", settings_content, "fps_label");
         array<string> locale_values = GetLocaleShortcodes();
         array<string> locale_names = GetLocaleNames();

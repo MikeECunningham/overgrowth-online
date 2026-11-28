@@ -46,8 +46,8 @@ and the remaining Steam friends/relay checks.
 - Three bundled gameplay mods, **Difficulty Scaling**, **Friendly Progression** and **Survival**.
   They start enabled in **Mods**. The host chooses Scaling in **Difficulty** or
   turns on **Progression** in **Mode settings** for a particular game.
-  Its shop offers separate bone and flesh damage upgrades and resistance to
-  long falls. In the shop, H or L2 heals and Space or R2 toggles Ready.
+  Its shop offers bone health, flesh health, attack damage and fall resistance.
+  With shop healing enabled, H or L2 heals. Space or R2 toggles Ready.
   Each mod can be disabled independently. Slots, split-screen, save cards
   and the armor protection models are engine features.
   See [campaign scaling](Docs/Markdown/Campaign%20Difficulty.md) and

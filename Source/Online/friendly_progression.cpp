@@ -59,7 +59,7 @@ struct Account {
 };
 struct Team : StatRanks {
     Wallet wallet;
-    ID leader = invalid, last_recipient = invalid;
+    ID last_recipient = invalid;
     int recruits = 0;
 };
 struct Run {
@@ -180,23 +180,15 @@ std::vector<ID> Members(int team, bool include_bots = false) {
     std::sort(result.begin(), result.end());
     return result;
 }
-ID Leader(int team) {
-    const auto people = Members(team);
-    auto& elected = run.teams[team].leader;
-    if (std::find(people.begin(), people.end(), elected) != people.end()) return elected;
-    const ID candidate = people.empty() ? invalid : people.front();
-    if (Net()->IsHosting()) elected = candidate;
-    return candidate;
-}
 bool Alive(const PlayerState& p) {
     auto* actor = Actor(p.object_id);
     return actor && actor->enabled_ && actor->as_context && actor->ASHasVar("knocked_out") && actor->ASGetIntVar("knocked_out") == 0;
 }
 Wallet& Balance(const PlayerState& p) {
-    return Shared() && !p.is_bot ? run.teams[ShopTeam(p)].wallet : run.players[p.player_id].wallet;
+    return Shared() ? run.teams[ShopTeam(p)].wallet : run.players[p.player_id].wallet;
 }
 double Spendable(const PlayerState& buyer) {
-    const int team = Shared() && !buyer.is_bot ? ShopTeam(buyer) : 0;
+    const int team = Shared() ? ShopTeam(buyer) : 0;
     double xp = Balance(buyer).held;
     for (const auto& entry : pending_restores) {
         const auto& restore = entry.second;
@@ -320,8 +312,8 @@ Json::Value PlayerStats(const PlayerState& player) {
     const auto build = GetBuild(player.player_id);
     stats["player"] = player.player_id;
     stats["name"] = player.playername;
-    stats["health_rank"] = build.health; stats["speed_rank"] = build.speed;
-    stats["bone_damage_rank"] = build.bone_damage; stats["flesh_damage_rank"] = build.flesh_damage;
+    stats["damage_rank"] = build.damage; stats["speed_rank"] = build.speed;
+    stats["bone_health_rank"] = build.bone_health; stats["flesh_health_rank"] = build.flesh_health;
     stats["fall_resistance_rank"] = build.fall_resistance;
     stats["fall_resistance"] = 1.0f - FallDamageMultiplier(build.fall_resistance);
     stats["stealth_passive_rank"] = build.stealth_passive; stats["stealth_active_rank"] = build.stealth_active;
@@ -336,9 +328,9 @@ Json::Value PlayerStats(const PlayerState& player) {
         return actor && actor->ASHasVar(key) ? double(actor->ASGetFloatVar(key)) : fallback;
     };
     stats["durability"] = 1.0 / std::max(.00001, value("p_damage_multiplier", 1));
-    const double attack = value("p_attack_damage_mult", 1);
-    stats["bone_damage"] = attack * DamageMultiplier(build.bone_damage);
-    stats["flesh_damage"] = attack * DamageMultiplier(build.flesh_damage);
+    stats["damage"] = value("p_attack_damage_mult", 1);
+    stats["bone_health"] = stats["durability"].asDouble() * DurabilityMultiplier(build.bone_health);
+    stats["flesh_health"] = stats["durability"].asDouble() * DurabilityMultiplier(build.flesh_health);
     stats["movement"] = value("p_speed_mult", 1) * SpeedMultiplier(build.speed);
     auto armor = Net()->WornArmorCoverage(player.object_id);
     if (run.open) for (unsigned region = 0; region < armor.size(); ++region)
@@ -517,9 +509,9 @@ struct ShopStat {
     int StatRanks::*rank;
 };
 constexpr ShopStat shop_stats[] = {
-    {"health", "Durability", kDurabilityGain, "+", "% of base durability", &StatRanks::health},
-    {"bone_damage", "Bone damage", kDamageGain, "+", "% to blunt impacts, throws and chokes", &StatRanks::bone_damage},
-    {"flesh_damage", "Flesh damage", kDamageGain, "+", "% to cuts and bleeding", &StatRanks::flesh_damage},
+    {"bone_health", "Bone health", kDurabilityGain, "+", "% resilience to blunt damage", &StatRanks::bone_health},
+    {"flesh_health", "Flesh health", kDurabilityGain, "+", "% resilience to blood loss", &StatRanks::flesh_health},
+    {"damage", "Damage", kDamageGain, "+", "% attack damage", &StatRanks::damage},
     {"speed", "Movement speed", kSpeedGain, "+", "% of base movement speed", &StatRanks::speed},
     {"fall_resistance", "Fall resistance", kDamageGain, "Hard landings deal ", "% less damage", &StatRanks::fall_resistance},
     {"stealth_passive", "Passive stealth", kStealthGain, "Standing sight and hearing ranges shrink by ", "% of base range", &StatRanks::stealth_passive},
@@ -532,7 +524,9 @@ const ShopStat* Stat(const std::string& key) {
     return nullptr;
 }
 bool CanTarget(const PlayerState& buyer, const PlayerState* subject) {
-    return subject && ShopTeam(buyer) == ShopTeam(*subject) && (subject->is_bot || buyer.player_id == subject->player_id);
+    if (!subject || (!subject->connected && !subject->is_bot)) return false;
+    if (Shared() && Net()->IsLobbyHost(buyer.player_id)) return true;
+    return ShopTeam(buyer) == ShopTeam(*subject) && (subject->is_bot || buyer.player_id == subject->player_id);
 }
 std::vector<ID> Rotation(int team, bool include_bots = false) {
     auto list = Members(team, include_bots);
@@ -585,7 +579,7 @@ std::vector<Offer> Catalog(const PlayerState& buyer, const PlayerState& target, 
         }
         if (!free_choice && !heal_recipient) heal_recipient = seat;
     }
-    if (heal_recipient) {
+    if (heal_recipient && Net()->ModeSetting("progression_shop_heal")) {
         // Free draws use the item's base value for weighting. Only purchases are priced by injury.
         offer("restore_health", "Restore health", "Heal all injuries and stop bleeding for " + heal_recipient->playername + ".",
               free_choice ? full_cost : heal_cost, 0, heal_recipient->player_id);
@@ -706,14 +700,9 @@ bool GrantOffer(const PlayerState& buyer, const PlayerState& target, const Offer
     auto& team = run.teams[team_id];
     auto& account = run.players[offer.recipient];
     const auto* stat = Stat(key);
-    if (stat || key == "damage") {
+    if (stat) {
         StatRanks& ranks = Shared() ? static_cast<StatRanks&>(team) : static_cast<StatRanks&>(account.build);
-        if (stat) ++(ranks.*stat->rank);
-        else {
-            // A pending reward drawn by an earlier build promised both effects.
-            ++ranks.bone_damage;
-            ++ranks.flesh_damage;
-        }
+        ++(ranks.*stat->rank);
         stats_cache.clear();
         return true;
     }
@@ -809,16 +798,8 @@ std::vector<Offer> RewardCards(const PlayerState& buyer, unsigned& generation) {
     };
     for (const auto& hand : hands) {
         for (const auto& key : hand.second) {
-            if (key == "damage") {
-                const auto bone = find("bone_damage"), flesh = find("flesh_damage");
-                if (bone != pool.end() && flesh != pool.end()) {
-                    cards.push_back({"damage", "Bone and flesh damage", "Gain one rank in both damage stats.", 0, 0, buyer.player_id});
-                } else if (bone != pool.end()) cards.push_back(*bone);
-                else if (flesh != pool.end()) cards.push_back(*flesh);
-            } else {
-                const auto item = find(key);
-                if (item != pool.end()) cards.push_back(*item);
-            }
+            const auto item = find(key);
+            if (item != pool.end()) cards.push_back(*item);
             if (cards.size() == 4) break;
         }
         if (!cards.empty()) {
@@ -1009,7 +990,7 @@ float AttackMultiplier(int attacker, bool flesh) {
     PlayerState seat;
     if (!Net()->TryGetPlayerState(seat, attacker)) return 1.0f;
     const auto build = GetBuild(seat.player_id);
-    return DamageMultiplier(flesh ? build.flesh_damage : build.bone_damage);
+    return DamageMultiplier(build.damage);
 }
 void SetSavedProfileRun(const std::string& run_id) {
     run.profile_run_id = run_id;
@@ -1041,8 +1022,6 @@ void ForgetPlayer(ID id) {
     stats_cache.erase(id);
     run.ready.erase(id);
     last_action.erase(id);
-    for (auto& team : run.teams)
-        if (team.second.leader == id) team.second.leader = invalid;
     for (auto& player : run.players)
         if (player.second.build.owner == id) player.second.build.owner = invalid;
     dirty = true;
@@ -1182,6 +1161,8 @@ bool BeginShop(bool final) {
     if (!Arena() && !Net()->IsSurvivalMode() && Net()->IsCampaignPlayMode()) run.CompleteRound();
     if (!Net()->IsSurvivalMode()) Checkpoint();
     if (SceneGraph* graph = Engine::Instance()->GetSceneGraph()) SampleXPScales(graph);
+    if (!Net()->ModeSetting("progression_shop_heal"))
+        for (const auto& seat : Net()->GetPlayerStates()) Net()->ProgressionRestoreHealth(seat.player_id, 1.0f);
     if (PaidShop()) TrainBots();
     ++run.shop_generation;
     run.open = PaidShop() || final;
@@ -1197,15 +1178,12 @@ bool BeginShop(bool final) {
         return false;
     }
     int humans = 0;
-    std::set<int> teams;
     for (const auto& entry : Net()->online_session->player_states) {
         if (!entry.second.is_bot && entry.second.connected) {
             ++humans;
             if (!PaidShop() && !Net()->IsLobbyHost(entry.first)) run.ready.insert(entry.first);
-            teams.insert(ShopTeam(entry.second));
         }
     }
-    for (int team : teams) Leader(team);
     int index = Net()->ModeSetting("progression_timer");
     // Survival's director counts in gameplay time and closes the shop at deployment.
     int seconds = !Net()->IsSurvivalMode() && humans > 1 && index >= 0 && index < 6 ? timers[index] : 0;
@@ -1214,7 +1192,12 @@ bool BeginShop(bool final) {
     return true;
 }
 static void FinishShop() {
-    if (Net()->IsSurvivalMode()) for (auto& account : run.players) account.second.reward_hands.clear();
+    if (Net()->IsSurvivalMode()) {
+        for (auto& account : run.players) {
+            // The full-screen host shop can cover a couch guest's free choice.
+            if (!Shared() || !PaidShop() || Net()->IsLobbyHost(account.first)) account.second.reward_hands.clear();
+        }
+    }
     run.open = false;
     run.deadline_ms = 0;
     spawns.clear(); // Arena reuses the same object IDs for the next match.
@@ -1242,7 +1225,8 @@ void Update() {
         const bool expired = !Net()->IsSurvivalMode() && run.deadline_ms > 0 && now >= run.deadline_ms;
         for (const auto& row : Net()->online_session->player_states) {
             const auto& seat = row.second;
-            if (seat.is_bot || !seat.connected) continue;
+            if (seat.is_bot || !seat.connected || (Shared() && paid && !Net()->IsLobbyHost(row.first))) continue;
+            if ((!Shared() || !paid) && Net()->IsSurvivalMode() && !Alive(seat)) continue;
             if (HasSurvivalChoice(seat) || (!run.ready.count(row.first) && (paid || (run.final && Net()->IsLobbyHost(row.first))))) waiting = true;
         }
         if (!waiting || expired) FinishShop();
@@ -1318,7 +1302,7 @@ Json::Value View(ID actor, ID target) {
     const auto* buyer = Seat(actor);
     v["enabled"] = Enabled() && buyer && !Net()->LobbyWaiting();
     if (!v["enabled"].asBool()) return v;
-    v["shop_open"] = run.open;
+    v["shop_open"] = run.open && (!PaidShop() || !Shared() || Net()->IsLobbyHost(actor));
     v["shop_enabled"] = PaidShop();
     v["xp_enabled"] = true;
     if (run.open) {
@@ -1329,15 +1313,16 @@ Json::Value View(ID actor, ID target) {
         v["loop"] = run.loop;
         v["can_loop"] = run.final && Net()->IsLobbyHost(actor);
     }
-    auto& w = Balance(*buyer);
+    const auto* subject = run.open ? Seat(target) : buyer;
+    if (!CanTarget(*buyer,subject)) subject = buyer;
+    const auto& payer = Shared() ? *subject : *buyer;
+    auto& w = Balance(payer);
     v["held"] = w.held;
     v["pooled"] = w.pooled;
     v["commit_amount"] = w.commit_amount;
     v["commit_serial"] = w.commit_serial;
     const auto scale = run.xp_scales.find(actor);
     if (scale != run.xp_scales.end()) v["xp_scale"] = scale->second;
-    const auto* subject = run.open ? Seat(target) : buyer;
-    if (!CanTarget(*buyer,subject)) subject = buyer;
     v["stats"] = PlayerStats(*subject);
     auto card_view = [&](const Offer& offer, bool free) {
         Json::Value card;
@@ -1350,7 +1335,7 @@ Json::Value View(ID actor, ID target) {
             card["heal_fraction"] = offer.heal_quote ? offer.cost / offer.heal_quote : 0.0;
         }
         card["available"] = free || ((!offer.full_cost || offer.cost > 0) &&
-                                     !run.ready.count(actor) && Spendable(*buyer) >= offer.cost);
+                                     Spendable(payer) >= offer.cost);
         return card;
     };
     unsigned hand = 0;
@@ -1359,20 +1344,16 @@ Json::Value View(ID actor, ID target) {
     v["reward_pending"] = hand != 0;
     v["reward_generation"] = hand;
     if (!run.open) return v;
-    const int team = ShopTeam(*buyer);
-    const ID leader = Leader(team);
     v["shared"] = Shared();
-    v["team_leader"] = leader;
-    v["can_buy"] = PaidShop() && (!Shared() || actor == leader);
+    v["can_buy"] = PaidShop() && (!Shared() || Net()->IsLobbyHost(actor));
     if (run.restrict_upgrades) v["map_unlock_count"] = static_cast<Json::UInt>(run.map_upgrades.size());
     v["targets"] = Json::Value(Json::arrayValue);
-    v["teammates"] = Json::Value(Json::arrayValue);
-    for (ID id : Members(team,true)) {
-        const auto& p = *Seat(id);
+    for (const auto& entry : Net()->online_session->player_states) {
+        const auto id = entry.first;
+        const auto& p = entry.second;
         Json::Value row;
         row["id"] = id; row["name"] = p.playername; row["bot"] = p.is_bot;
         if (CanTarget(*buyer,&p)) v["targets"].append(row);
-        if (!p.is_bot) v["teammates"].append(row);
     }
     const auto& account = run.players[subject->player_id];
     v["equip_target"] = subject->player_id;
@@ -1394,7 +1375,7 @@ Json::Value View(ID actor, ID target) {
     v["dagger_variant"] = std::max(0, WeaponCategories::ToLegacy(account.build.offhand_weapon));
     v["big_weapon"] = std::max(0, WeaponCategories::ToLegacy(account.build.main_weapon));
     v["dagger"] = !account.build.offhand_weapon.empty();
-    v["can_equip"] = subject == buyer || (subject->is_bot && v["can_buy"].asBool());
+    v["can_equip"] = subject == buyer || ((subject->is_bot || Shared()) && v["can_buy"].asBool());
     static const char* const slots[] = {"Left hand", "Right hand", "Left belt", "Right belt"};
     v["inventory"] = Json::Value(Json::arrayValue);
     for (int slot = 0; slot < 4; ++slot) {
@@ -1413,7 +1394,7 @@ Json::Value View(ID actor, ID target) {
         v["inventory"].append(row);
     }
     v["cards"] = Json::Value(Json::arrayValue);
-    if (v["can_buy"].asBool()) for (const auto& offer : Catalog(*buyer,*subject))
+    if (v["can_buy"].asBool()) for (const auto& offer : Catalog(payer,*subject))
         v["cards"].append(card_view(offer, false));
     return v;
 }
@@ -1431,10 +1412,12 @@ bool ReceiveAction(ID actor, const Json::Value& m) {
         if (!hand || m["generation"].asUInt() != hand) return false;
         const auto offer = std::find_if(rewards.begin(), rewards.end(), [&](const Offer& o) { return o.id == key; });
         if (offer == rewards.end() || !ClaimReward(*buyer, *offer, hand)) return false;
+        if (PaidShop()) run.ready.erase(actor);
         Publish();
         return true;
     }
     if (!run.open || m["generation"].asUInt() != run.shop_generation || m["seq"].asUInt() <= last_action[actor]) return false;
+    if (Shared() && !Net()->IsLobbyHost(actor)) return false;
     last_action[actor] = m["seq"].asUInt();
     if (action == "force_finish") {
         if (!Net()->IsLobbyHost(actor)) return false;
@@ -1443,21 +1426,18 @@ bool ReceiveAction(ID actor, const Json::Value& m) {
         return true;
     }
     const auto* subject = Seat(target);
-    const int team_id = ShopTeam(*buyer);
-    const bool may_buy = !Shared() || actor == Leader(team_id);
+    const bool may_buy = !Shared() || Net()->IsLobbyHost(actor);
     if (action == "ready") {
         if (run.ready.count(actor)) run.ready.erase(actor); else run.ready.insert(actor);
-    } else if (run.ready.count(actor)) return false;
+    }
     else if (action == "loop" && run.final && Net()->IsLobbyHost(actor) && (key == "yes" || key == "no")) run.loop = key == "yes";
     else if (!PaidShop()) return false;
-    else if (action == "leader" && actor == Leader(team_id) && subject && !subject->is_bot && subject->connected && team_id == ShopTeam(*subject))
-        run.teams[team_id].leader = target;
     else if (!CanTarget(*buyer,subject)) return false;
     else if (action == "buy" && may_buy) {
-        if (!Buy(*buyer,*subject,key)) return false;
+        if (!Buy(Shared() ? *subject : *buyer,*subject,key)) return false;
     } else if (action == "sell" && may_buy) {
-        if (!Sell(*buyer, *subject, key)) return false;
-    } else if (action == "equip_race" && (target == actor || (subject->is_bot && may_buy))) {
+        if (!Sell(Shared() ? *subject : *buyer, *subject, key)) return false;
+    } else if (action == "equip_race" && (target == actor || ((subject->is_bot || Shared()) && may_buy))) {
         auto& account = run.players[target];
         const int highest = HighestRace(*subject);
         const int first = account.first_race < 0 ? highest : account.first_race;
@@ -1465,7 +1445,7 @@ bool ReceiveAction(ID actor, const Json::Value& m) {
         while (tier >= 0 && tier <= highest && key != races[tier].species) ++tier;
         if (tier < 0 || tier > highest) return false;
         account.equipped_race = tier == highest ? -1 : tier;
-    } else if (action == "equip" && (target == actor || (subject->is_bot && may_buy))) {
+    } else if (action == "equip" && (target == actor || ((subject->is_bot || Shared()) && may_buy))) {
         auto& acc = run.players[target];
         if (key == "none") acc.build.main_weapon.clear();
         else {
@@ -1475,6 +1455,7 @@ bool ReceiveAction(ID actor, const Json::Value& m) {
             else (weapon->offhand ? acc.build.offhand_weapon : acc.build.main_weapon) = key;
         }
     } else return false;
+    if (action != "ready") run.ready.erase(actor);
     Publish();
     return true;
 }
@@ -1490,7 +1471,7 @@ bool Act(ID actor, ID target, const std::string& action, const std::string& key,
             RewardCards(*owner, generation);
             if (!generation) return false;
         }
-    } else if (!run.open) return false;
+    } else if (!run.open || (Shared() && !Net()->IsLobbyHost(actor))) return false;
     Json::Value m;
     m["action"] = "progress_action"; m["command"] = action; m["key"] = key;
     m["actor"] = actor; m["target"] = target; m["generation"] = generation;
@@ -1524,17 +1505,23 @@ bool ReadRewardOrder(const Json::Value& order, std::vector<std::string>& keys) {
     for (const auto& key : order) {
         if (!key.isString() || key.asString().empty() || key.asString().size() > 96 ||
             !unique.insert(key.asString()).second) return false;
-        const std::string category = WeaponCategories::OldPurchase(key.asString());
+        std::string category = WeaponCategories::OldPurchase(key.asString());
+        if (category == "bone_damage" || category == "flesh_damage") category = "damage";
+        if (category == "health") category = "bone_health";
         if (categories.insert(category).second) keys.push_back(category);
     }
     return true;
 }
-bool ReadDamageRanks(const Json::Value& row, StatRanks& ranks) {
-    if (row.isMember("bone_damage") || row.isMember("flesh_damage"))
-        return ReadInt(row["bone_damage"], 0, kMaxRank, ranks.bone_damage) &&
-               ReadInt(row["flesh_damage"], 0, kMaxRank, ranks.flesh_damage);
-    if (!ReadInt(row["damage"], 0, kMaxRank, ranks.bone_damage)) return false;
-    ranks.flesh_damage = ranks.bone_damage;
+bool ReadCombatRanks(const Json::Value& row, StatRanks& ranks) {
+    if (row.isMember("bone_health"))
+        return ReadInt(row["bone_health"],0,kMaxRank,ranks.bone_health) && ReadInt(row["flesh_health"],0,kMaxRank,ranks.flesh_health) &&
+               ReadInt(row["damage"],0,kMaxRank,ranks.damage);
+    if (!ReadInt(row["health"],0,kMaxRank,ranks.bone_health)) return false;
+    ranks.flesh_health = ranks.bone_health;
+    if (!row.isMember("bone_damage")) return ReadInt(row["damage"],0,kMaxRank,ranks.damage);
+    int bone, flesh;
+    if (!ReadInt(row["bone_damage"],0,kMaxRank,bone) || !ReadInt(row["flesh_damage"],0,kMaxRank,flesh)) return false;
+    ranks.damage = std::max(bone,flesh);
     return true;
 }
 }
@@ -1599,7 +1586,7 @@ Json::Value Snapshot() {
             for (const auto& key : hand.second) saved["order"].append(key);
             r["reward_hands"].append(saved);
         }
-        r["health"] = b.health; r["bone_damage"] = b.bone_damage; r["flesh_damage"] = b.flesh_damage; r["speed"] = b.speed;
+        r["bone_health"] = b.bone_health; r["flesh_health"] = b.flesh_health; r["damage"] = b.damage; r["speed"] = b.speed;
         r["fall_resistance"] = b.fall_resistance;
         r["stealth_passive"] = b.stealth_passive; r["stealth_active"] = b.stealth_active;
         r["luck"] = b.luck;
@@ -1622,9 +1609,9 @@ Json::Value Snapshot() {
     for (const auto& row : run.teams) {
         const auto& t = row.second;
         Json::Value r;
-        r["team"] = row.first; r["w"] = WriteWallet(t.wallet); r["leader"] = t.leader;
+        r["team"] = row.first; r["w"] = WriteWallet(t.wallet);
         r["recipient"] = t.last_recipient; r["recruits"] = t.recruits;
-        r["health"] = t.health; r["bone_damage"] = t.bone_damage; r["flesh_damage"] = t.flesh_damage; r["speed"] = t.speed;
+        r["bone_health"] = t.bone_health; r["flesh_health"] = t.flesh_health; r["damage"] = t.damage; r["speed"] = t.speed;
         r["fall_resistance"] = t.fall_resistance;
         r["stealth_passive"] = t.stealth_passive; r["stealth_active"] = t.stealth_active;
         r["luck"] = t.luck;
@@ -1648,9 +1635,11 @@ bool Restore(const Json::Value& j, bool validate_only) {
                 !next.map_upgrades.insert(id).second) return false;
         }
         next.restrict_upgrades = true;
-        if (next.map_upgrades.erase("damage")) {
-            next.map_upgrades.insert("bone_damage");
-            next.map_upgrades.insert("flesh_damage");
+        if (next.map_upgrades.erase("bone_damage")) next.map_upgrades.insert("damage");
+        if (next.map_upgrades.erase("flesh_damage")) next.map_upgrades.insert("damage");
+        if (next.map_upgrades.erase("health")) {
+            next.map_upgrades.insert("bone_health");
+            next.map_upgrades.insert("flesh_health");
         }
     }
     if (j.isMember("profile_run")) {
@@ -1740,8 +1729,7 @@ bool Restore(const Json::Value& j, bool validate_only) {
             }
         }
         int old_main, old_offhand;
-        if (!ReadWallet(r["w"],a.wallet) || !ReadInt(r["health"],0,kMaxRank,b.health) ||
-            !ReadDamageRanks(r,b) || !ReadInt(r["speed"],0,kMaxRank,b.speed) ||
+        if (!ReadWallet(r["w"],a.wallet) || !ReadCombatRanks(r,b) || !ReadInt(r["speed"],0,kMaxRank,b.speed) ||
             !ReadInt(r.get("fall_resistance",0),0,kMaxRank,b.fall_resistance) ||
             !ReadInt(r.get("stealth_passive",0),0,kMaxRank,b.stealth_passive) ||
             !ReadInt(r.get("stealth_active",0),0,kMaxRank,b.stealth_active) ||
@@ -1775,16 +1763,16 @@ bool Restore(const Json::Value& j, bool validate_only) {
     }
     for (const auto& r : j["teams"]) {
         if (!r.isObject() || !r["team"].isInt() || r["team"].asInt() < 1 ||
-            !r["leader"].isUInt() || !r["recipient"].isUInt()) return false;
+            !r["recipient"].isUInt()) return false;
         auto& t = next.teams[r["team"].asInt()];
         if (!ReadWallet(r["w"],t.wallet) || !ReadInt(r["recruits"],0,100000,t.recruits) ||
-            !ReadInt(r["health"],0,kMaxRank,t.health) || !ReadDamageRanks(r,t) ||
+            !ReadCombatRanks(r,t) ||
             !ReadInt(r["speed"],0,kMaxRank,t.speed) ||
             !ReadInt(r.get("fall_resistance",0),0,kMaxRank,t.fall_resistance)) return false;
         if (!ReadInt(r.get("stealth_passive",0),0,kMaxRank,t.stealth_passive) ||
             !ReadInt(r.get("stealth_active",0),0,kMaxRank,t.stealth_active) ||
             !ReadInt(r.get("luck",0),0,kMaxRank,t.luck)) return false;
-        t.leader = r["leader"].asUInt(); t.last_recipient = r["recipient"].asUInt();
+        t.last_recipient = r["recipient"].asUInt();
     }
     if (j.isMember("sold_map_weapons")) {
         const auto& sales = j["sold_map_weapons"];

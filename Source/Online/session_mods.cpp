@@ -255,8 +255,8 @@ void MigrateSave(Json::Value& save) {
     // Numeric weapon unlocks in earlier saves map to their categories during
     // restore. Pending hands keep their first eligible category in draw order.
     if (mods[id]["version"] == "2" || mods[id]["version"] == "3" || mods[id]["version"] == "4" ||
-        mods[id]["version"] == "5" || mods[id]["version"] == "6" || mods[id]["version"] == "7") {
-        mods[id]["version"] = "8";
+        mods[id]["version"] == "5" || mods[id]["version"] == "6" || mods[id]["version"] == "7" || mods[id]["version"] == "8") {
+        mods[id]["version"] = "9";
         return;
     }
     if (mods[id]["version"] != "1") return;
@@ -276,7 +276,7 @@ void MigrateSave(Json::Value& save) {
         }
         prefs.removeMember("progression_combat");
     }
-    mods[id]["version"] = "8";
+    mods[id]["version"] = "9";
 }
 
 void KeepLobbyEdits(Json::Value& mods) {

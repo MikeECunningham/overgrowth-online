@@ -34,7 +34,7 @@ def ice_cliffs_retries(ctx):
           'ProgressionCheckpoint();ProgressionResetAttempt();} SendGlobalMessage("levelwin");')
     bridge.wait(lambda: bridge.call("progression", actor=player)["view"].get("shop_open"),
                 15, what="ship victory opens shop")
-    for upgrade in ("dagger", "health", "armor_3"):
+    for upgrade in ("dagger", "bone_health", "armor_3"):
         assert bridge.call("progression", actor=player, action="buy", key=upgrade)["submitted"], upgrade
     assert bridge.call("progression", actor=player, action="ready")["submitted"]
     _ready(game, LEVEL)

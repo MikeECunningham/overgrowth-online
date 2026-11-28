@@ -61,7 +61,7 @@ def progression_free_buff_ui(ctx):
     script(f'SetControllerPlayer(0);LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
            'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shop",1);'
            'LobbySetModeSetting("progression_free_buffs",1);LobbySetModeSetting("progression_shared",0);'
-           'LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
+           'LobbySetModeSetting("progression_shop_heal",1);LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
     _ready(host, FIRST)
     _skip(host)
     wait(lambda: len(panels()) == 2, "two local players")
@@ -170,7 +170,7 @@ def progression_ui(ctx):
         script('SetControllerPlayer(0);LobbyAddBot();'
                f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);'
                'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",0);'
-               'LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
+               'LobbySetModeSetting("progression_shop_heal",1);LobbySetModeSetting("progression_timer",0);LobbyStart();', "menu")
         _ready(host, FIRST)
         _skip(host)
         wait(lambda: len(rows()) == 2, "both seat XP readouts")
@@ -195,7 +195,7 @@ def progression_ui(ctx):
         baseline = rows()
         assert all(not row["columns"] and "restore_health" in row["visible_cards"] for row in baseline)
         before = baseline[1]["display_held"]
-        assert baseline[0]["focus"] == baseline[1]["focus"] == "health", baseline
+        assert baseline[0]["focus"] == baseline[1]["focus"] == "bone_health", baseline
         # Test the actual SDL right-stick map, independent of the camera binding.
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=29000)
         wait(lambda: rows()[1]["scroll"] > 3, "P2 right stick scrolls their own shop")
@@ -203,9 +203,12 @@ def progression_ui(ctx):
         wait(lambda: rows()[1]["scroll"] < 1, "P2 reverse scroll reaches top")
         bridge.call("virtual_pad", action="axis", slot=0, axis=3, value=0)
         assert rows()[0]["scroll"] == 0
-        pad(14)
-        wait(lambda: rows()[1]["focus"] == "bone_damage", "P2 browses independently")
-        assert rows()[0]["focus"] == "health"
+        bridge.call("virtual_pad", action="axis", slot=0, axis=0, value=30000)
+        wait(lambda: rows()[1]["focus"] == "flesh_health", "P2 moves one card right")
+        time.sleep(.9)
+        assert rows()[1]["focus"] == "flesh_health", "one held tilt moved multiple cards"
+        bridge.call("virtual_pad", action="axis", slot=0, axis=0, value=0)
+        assert rows()[0]["focus"] == "bone_health"
         pad(0)
         wait(lambda: rows()[1]["display_held"] < before, "controller purchase debits only P2")
         assert rows()[0]["display_held"] >= before
@@ -252,9 +255,9 @@ def progression_ui(ctx):
         dialogue_controller = int(_probe(host, "GetCampaignDialogueControllerID()"))
         _skip(host, dialogue_controller)
         script("ProgressionBeginShop(true);")
-        wait(lambda: len(rows()) == 2 and all(r["shop"] for r in rows()), "shared shop")
-        assert [r["page"] for r in rows()] == ["shop","equipment"], rows()
-        ctx.shot(host, "team_leader_and_personal_equipment")
+        wait(lambda: len(rows()) == 1 and rows()[0]["shop"], "shared shop")
+        assert [r["page"] for r in rows()] == ["shop"], rows()
+        ctx.shot(host, "host_shared_shop")
         assert not script_errors(host), script_errors(host)
         return {"passed": True, "metrics": {"independent": baseline, "shared": rows()}, "notes": []}
     finally:

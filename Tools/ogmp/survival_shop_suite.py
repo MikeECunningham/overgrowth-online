@@ -79,7 +79,7 @@ def survival_shop(ctx):
     for seat in seats:
         _code(host, f'LobbySetPlayerTeam({seat["id"]},1);')
     for key, value in {"survival_starting_race": 0, "progression": 1, "progression_shared": 1,
-                       "progression_shop": 1, "progression_free_buffs": 0, "progression_timer": 1}.items():
+                       "progression_shop_heal": 1, "progression_shop": 1, "progression_free_buffs": 0, "progression_timer": 1}.items():
         assert _probe(host, f'LobbySetModeSetting("{key}",{value})') == "true"
     _code(host, "LobbyStart();")
     for peer in peers:
@@ -118,7 +118,6 @@ def survival_shop(ctx):
     record = json.loads(path.read_text())
     ledger = record["session_mods"]["og-online-progression"]["runtime"]
     team = next(t for t in ledger["teams"] if t["team"] == 1)
-    team["leader"] = owner
     team["w"]["held"] = 57602.5
     path.write_text(json.dumps(record))
     load(1)
@@ -151,7 +150,7 @@ def survival_shop(ctx):
         buy("race_upgrade", owner, 1200)
     expect_races({owner: "/turner.xml", visitor: "/turner.xml"})
     assert wear(host, owner, owner, "rat")
-    assert not wear(host, owner, visitor, "rat")
+    assert not wear(guest, visitor, visitor, "rat")
     expect_races({owner: "/rat.xml", visitor: "/turner.xml"})
     # The Mouse-wearing owner already bought Rabbit. The group's next two
     # purchases therefore rotate Cat at 2,400 XP each.
@@ -190,12 +189,7 @@ def survival_shop(ctx):
     wait(lambda: all(math.isclose(fighter(p, visitor)["permanent_health"], .45, abs_tol=.005)
                      for p in peers), "only the purchased fraction heals on both peers")
     assert not card("restore_health")["available"]
-    host.bridge.call("key", key="Space")
-    wait(lambda: view()["ready"], "Space readies the keyboard seat after healing")
-    assert not guest.bridge.call("progression", actor=visitor)["view"]["ready"]
-    host.bridge.call("key", key="Space")
-    wait(lambda: not view()["ready"], "Space toggles only this seat back")
-    assert wear(guest, visitor, visitor, "rat") and wear(host, owner, bot, "cat")
+    assert wear(host, owner, visitor, "rat") and wear(host, owner, bot, "cat")
     chosen = {owner: "/male_cat.xml", visitor: "/rat.xml", bot: "/male_cat.xml"}
     expect_races(chosen)
     save(2)
@@ -313,3 +307,41 @@ def campaign_race_equipment(ctx):
     assert not script_errors(host), script_errors(host)
     return {"passed": True, "metrics": {"starting_race":"cat","legacy_owned":"dog","selected":"cat",
                                         "next_upgrade_xp":card["cost"]}, "notes":[]}
+
+
+def survival_downed_host(ctx):
+    """A surviving guest alone can ready the independent shop and redeploy the host."""
+    host = ctx.instance("downed_host", keys={**RENDER_KEYS, "mp_port":"29891"})
+    guest = ctx.instance("surviving_guest", keys={**RENDER_KEYS, "mp_port":"29892"})
+    wait = host.bridge.wait
+    _code(host, "LobbyBeginHost();")
+    guest.bridge.call("connect", ip="127.0.0.1:29891")
+    wait(lambda: len(_rows(host)) == 2, 40, what="two seats")
+    owner = next(p["id"] for p in _rows(host) if p["host"])
+    visitor = next(p["id"] for p in _rows(host) if not p["host"])
+    _code(host, f'LobbySetSelection("survival","","{SANDBOX_MAP}",false);'
+          f'LobbySetPlayerTeam({owner},1);LobbySetPlayerTeam({visitor},1);'
+          'LobbySetModeSetting("progression",1);LobbySetModeSetting("progression_shared",0);'
+          'LobbySetModeSetting("progression_timer",0);LobbyStart();')
+    for peer in (host, guest):
+        _ready(peer, SANDBOX_MAP)
+    def enemies():
+        return [p for p in host.bridge.state() if "survival_enemies" in p["teams"] and p["knocked_out"] == 0]
+    wait(enemies, 40, what="wave starts")
+    hero = next(p["avatar_id"] for p in _rows(host) if p["host"])
+    ally = next(p["avatar_id"] for p in _rows(guest) if p["id"] == visitor)
+    _code(host, "SetKnockedOut(_dead);Ragdoll(_RGDL_LIMP);", hero)
+    _code(guest, "permanent_health=temp_health=blood_health=.7f;", ally)
+    for enemy in enemies():
+        _code(host, "SetKnockedOut(_dead);Ragdoll(_RGDL_LIMP);", enemy["id"])
+    def shop():
+        return guest.bridge.call("progression",actor=visitor)["view"]
+    wait(lambda: shop().get("shop_open"), 45, what="guest reaches intermission")
+    assert all(card["id"] != "restore_health" for card in shop()["cards"])
+    wait(lambda: float(_probe(guest, "permanent_health", ally)) > .99, 15, what="free recovery")
+    assert guest.bridge.call("progression", actor=visitor, action="ready")["submitted"]
+    wait(lambda: not shop().get("shop_open"), 15, what="dead host does not block shop")
+    wait(lambda: _probe(host, "battery", "level", "level_specific") == "2" and enemies(), 60, what="second battery fighting")
+    wait(lambda: _probe(host, "knocked_out", hero) == "0", 15, what="host redeployed")
+    assert not any(script_errors(p) for p in (host, guest))
+    return {"passed":True, "metrics":{"battery":2}, "notes":[]}

@@ -64,12 +64,11 @@ void Ensure() {
         bool migrated = false;
         for (auto& profile : parsed["profiles"]) {
             const auto& old = static_cast<const JsonValue&>(profile)["mods"][progression]["upgrades"]["owned"];
-            if (!old.isObject() || !old.isMember("damage")) continue;
+            if (!old.isObject() || (!old.isMember("health") && !old.isMember("bone_damage") && !old.isMember("flesh_damage"))) continue;
             auto& owned = profile["mods"][progression]["upgrades"]["owned"];
-            if (owned.removeMember("damage") == true) {
-                owned["bone_damage"] = true;
-                owned["flesh_damage"] = true;
-            }
+            if (owned.removeMember("health") == true) owned["bone_health"] = owned["flesh_health"] = true;
+            auto bone = owned.removeMember("bone_damage"), flesh = owned.removeMember("flesh_damage");
+            if (bone == true || flesh == true) owned["damage"] = true;
             migrated = true;
         }
         archive.swap(parsed);

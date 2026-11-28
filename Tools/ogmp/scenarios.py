@@ -1749,3 +1749,11 @@ def _remote_choke(ctx):
 
 
 SCENARIOS["remote_choke"] = _remote_choke
+
+
+def _survival_downed_host(ctx):
+    from .survival_shop_suite import survival_downed_host
+    return survival_downed_host(ctx)
+
+
+SCENARIOS["survival_downed_host"] = _survival_downed_host

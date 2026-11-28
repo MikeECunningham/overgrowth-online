@@ -55,18 +55,17 @@ def stealth_stats(ctx):
     _code(host, f'for(int n=0;n<6;++n){{ProgressionReportHit({near},{hero},0,true);'
           'ProgressionCheckpoint();ProgressionResetAttempt();}ProgressionBeginShop(false);')
     wait(lambda: data(guest,owner)["view"].get("shop_open"), "shared shop replicated")
-    leader = data(host,owner)["view"]["team_leader"]
-    buyer = host if leader == owner else guest
+    leader, buyer = owner, host
     cards = {c["id"]: c for c in data(buyer,leader)["view"]["cards"]}
-    common_stats = {"health","bone_damage","flesh_damage","fall_resistance","speed","stealth_passive","stealth_active","luck"}
+    common_stats = {"bone_health","damage","flesh_health","fall_resistance","speed","stealth_passive","stealth_active","luck"}
     assert common_stats <= cards.keys(), data(buyer,leader)
     assert all(cards[key]["rarity"] == 0 for key in common_stats)
-    assert cards["luck"]["cost"] == cards["health"]["cost"]
-    assert "+16% of base durability" in cards["health"]["description"]
+    assert cards["luck"]["cost"] == cards["bone_health"]["cost"]
+    assert "+16% resilience to blunt damage" in cards["bone_health"]["description"]
     assert "7% of base range" in cards["stealth_active"]["description"]
     assert "+4 percentage points" in cards["luck"]["description"]
     untrained_speed = float(probe("", "run_speed/_base_run_speed", hero))
-    for key in ("stealth_passive","stealth_active","luck","speed","bone_damage"):
+    for key in ("stealth_passive","stealth_active","luck","speed","damage"):
         assert data(buyer,leader,action="buy",key=key)["submitted"]
     def installed():
         return all(stats(p,r["avatar_id"]).get("progression_stealth_passive") == 1 and
@@ -88,9 +87,7 @@ def stealth_stats(ctx):
     next_cards = {c["id"]: c for c in data(buyer,leader)["view"]["cards"]}
     assert "6.64% of base range" in next_cards["stealth_active"]["description"]
     assert next_cards["stealth_active"]["cost"] > cards["stealth_active"]["cost"]
-    for p in peers:
-        local = next(r["id"] for r in _rows(p) if (r["peer_id"] == 255) == (p is host))
-        assert data(p,local,action="ready",key="")["submitted"]
+    assert data(host,owner,action="ready")["submitted"]
     wait(lambda: not data(host,owner)["view"].get("shop_open"), "shared shop closes")
 
     # Exercise the actual FOV hull and line-of-sight query above the map, with

@@ -240,7 +240,7 @@ float p_ear_size;
 // Campaign scaling stays separate from authored stats. Health remains in its
 // normal 0..1 range; vitality changes damage received without healing an actor
 // when another player joins, or when difficulty is changed during a fight.
-int progression_health = 0, progression_fall_resistance = 0, progression_speed = 0;
+int progression_health = 0, progression_flesh_health = 0, progression_damage = 0, progression_fall_resistance = 0, progression_speed = 0;
 int progression_stealth_passive = 0, progression_stealth_active = 0;
 int progression_ai = -1;
 int progression_armor_regions = 0;
@@ -1298,16 +1298,16 @@ void ResolveItemImpact(string material, vec3 point, int id, int type) {
     if(species != _dog || io.GetLabel() == "spear" || io.GetLabel() == "big_sword") {
         if(type == 2) {
             if(IsAggro() == 0 || io.GetLabel() != "knife") {
-                TakeBloodDamage(2.0f * ProgressionAttackMultiplier(item_attacker, true));
+                TakeBloodDamage(2.0f);
             } else {
-                TakeBloodDamage(RangedRandomFloat(0.6, 1.4) * ProgressionAttackMultiplier(item_attacker, true));
+                TakeBloodDamage(RangedRandomFloat(0.6, 1.4));
                 ko_shield = max(0, ko_shield - 2);
             }
         } else {
-            TakeDamage(force_len / 30.0f * ProgressionAttackMultiplier(item_attacker, false));
+            TakeDamage(force_len / 30.0f);
 
             if(type == 1) {
-                TakeBloodDamage(force_len / 50.0f * ProgressionAttackMultiplier(item_attacker, true));
+                TakeBloodDamage(force_len / 50.0f);
             }
         }
 
@@ -4301,7 +4301,7 @@ void HandleTethering(const Timestep &in ts) {
             // attack damage supplies the opposing side of the choke contest.
             float choke_rate = mix(0.7f, 0.3f, game_difficulty) + (species == _rat ? 0.4f : 0.0f);
             float strength = char.HasVar("p_attack_damage_mult") ? char.GetFloatVar("p_attack_damage_mult") : 1.0f;
-            TakeDamage(ts.step() * choke_rate * strength * ProgressionAttackMultiplier(tether_id, false));
+            TakeDamage(ts.step() * choke_rate * strength);
 
             if(knocked_out != _awake) {
                 this_mo.MaterialEvent("choke_fall", this_mo.position);
@@ -5341,7 +5341,7 @@ int WasGrabbed(const vec3 &in dir, const vec3 &in pos, int attacker_id) {
     SetState(_hit_reaction_state);
     hit_reaction_anim_set = true;
     hit_reaction_thrown = true;
-    queue_impact_damage += 0.25f * ProgressionAttackMultiplier(attacker_id, false);
+    queue_impact_damage += 0.25f;
     flip_info.EndFlip();
 
     if(tethered == _TETHERED_REARCHOKED) {
@@ -5701,7 +5701,7 @@ void TakeSharpDamage(float sharp_damage, vec3 pos, int attacker_id, bool allow_h
 
     this_mo.rigged_object().anim_client().AddLayer("Data/Animations/r_painflinch.anm", 8.0f, 0);
     int old_knocked_out = knocked_out;
-    TakeBloodDamage(sharp_damage * ProgressionAttackMultiplier(attacker_id, true));
+    TakeBloodDamage(sharp_damage);
 
     if(attack_getter2.HasCutPlane()) {
         vec3 cut_plane_local = attack_getter2.GetCutPlane();
@@ -5985,7 +5985,7 @@ int ResolveAttackImpact(const vec3 &in dir, const vec3 &in pos, int attacker_id,
     }
 
     // Apply damage to passive block health
-    const float blunt_mult = attack_damage_mult * ProgressionAttackMultiplier(attacker_id, false);
+    const float blunt_mult = attack_damage_mult;
     float block_damage = attack_getter2.GetBlockDamage() * max(1.0, p_damage_multiplier) * max(1.0, blunt_mult);
     block_health -= block_damage;
 
@@ -6987,7 +6987,7 @@ void TakeDamage(float how_much) {
     const float _permananent_damage_mult = 0.4f;
 
     if(invincible == false) {
-        how_much *= p_damage_multiplier * equipped_damage_factor;
+        how_much *= p_damage_multiplier * equipped_damage_factor / ProgressionDurabilityMultiplier(progression_health);
 
         if(ko_shield > 0) {
             how_much = 0.0;
@@ -7029,7 +7029,7 @@ void TakeBloodDamage(float how_much) {
     }
 
     HandleAIEvent(_damaged);
-    how_much *= p_damage_multiplier * equipped_damage_factor;
+    how_much *= p_damage_multiplier * equipped_damage_factor / ProgressionDurabilityMultiplier(progression_flesh_health);
 
     if(invincible == false) {
         float effective_damage = min(max(0.0f, blood_health), max(0.0f, how_much));
@@ -7053,8 +7053,7 @@ void TakeBloodDamage(float how_much) {
 void TakeDelayedBloodDamage(float how_much) {
     // Scale the wound at impact. Later ticks keep the same damage and owner
     // even if the attacker leaves or the victim is struck by someone else.
-    how_much *= ProgressionAttackMultiplier(attacked_by_id, true);
-    how_much *= p_damage_multiplier * equipped_damage_factor;
+    how_much *= p_damage_multiplier * equipped_damage_factor / ProgressionDurabilityMultiplier(progression_flesh_health);
     blood_damage += how_much;
     if(how_much > 0.0f && ProgressionEnabled()) {
         uint count = progression_wounds.size();
@@ -7209,10 +7208,10 @@ void WeaponRemovedFromBody(int weapon_id, int remover_id) {
 
     if(knocked_out != _dead) {
         if((species == _wolf || species == _dog) && ko_shield > 1) {
-            TakeBloodDamage(0.1f * ProgressionAttackMultiplier(remover_id, true));
+            TakeBloodDamage(0.1f);
             ko_shield = max(0, ko_shield - 1);
         } else {
-            TakeBloodDamage(100.0f * ProgressionAttackMultiplier(remover_id, true));
+            TakeBloodDamage(100.0f);
             ko_shield = 0;
 
             if(remover_id != -1 && ObjectExists(remover_id) && ReadCharacterID(remover_id).controlled) {
@@ -15747,8 +15746,8 @@ void CampaignRememberAuthoredParameters() {
 
 void CampaignApplyAuthoredScaling() {
     if(!campaign_authored_valid) CampaignRememberAuthoredParameters();
-    p_damage_multiplier = campaign_authored_resistance / (campaign_vitality_mult * ProgressionDurabilityMultiplier(progression_health));
-    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult;
+    p_damage_multiplier = campaign_authored_resistance / campaign_vitality_mult;
+    p_attack_damage_mult = campaign_authored_damage * campaign_damage_mult * ProgressionDamageMultiplier(progression_damage);
     float movement_multiplier = p_speed_mult * ProgressionSpeedMultiplier(progression_speed);
     run_speed = _base_run_speed * movement_multiplier;
     true_max_speed = _base_true_max_speed * movement_multiplier;

@@ -71,10 +71,10 @@ def session_saves(ctx):
         lambda: host.bridge.call("progression", actor=host_slot)["view"].get("shop_open"),
         "campaign shop open",
     )
-    assert host.bridge.call("progression", actor=host_slot, action="buy", key="health")["submitted"]
+    assert host.bridge.call("progression", actor=host_slot, action="buy", key="bone_health")["submitted"]
     wait(
         host,
-        lambda: host.bridge.call("progression", actor=host_slot)["view"]["stats"]["health_rank"] == 1,
+        lambda: host.bridge.call("progression", actor=host_slot)["view"]["stats"]["bone_health_rank"] == 1,
         "host slot buys durability",
     )
     for peer, slot in [(host, host_slot), (guest, guest_slot)]:
@@ -141,7 +141,7 @@ def session_saves(ctx):
     saved_player = next(p for p in record["session_mods"]["og-online-progression"]["runtime"]["players"] if p["id"] == owner)
     view = cold.bridge.call("progression", actor=owner)["view"]
     assert view["held"] == saved_player["w"]["held"] and view["held"] > 0, (view, saved_player)
-    assert view["stats"]["health_rank"] == 1 and saved_player["health"] == 1
+    assert view["stats"]["bone_health_rank"] == 1 and saved_player["bone_health"] == 1
     time.sleep(1.4)
     assert not cold.bridge.status()["dialogue_camera_control"]
     assert (
@@ -179,8 +179,8 @@ def session_saves(ctx):
     wait(cold, lambda: cold.bridge.call("progression", actor=owner)["view"]["held"] > large_held,
          "earn XP above the old ceiling")
     shop = cold.bridge.call("progression", actor=owner)["view"]
-    cost = next(card["cost"] for card in shop["cards"] if card["id"] == "bone_damage")
-    assert cold.bridge.call("progression", actor=owner, action="buy", key="bone_damage")["submitted"]
+    cost = next(card["cost"] for card in shop["cards"] if card["id"] == "damage")
+    assert cold.bridge.call("progression", actor=owner, action="buy", key="damage")["submitted"]
     remaining = shop["held"] - cost
     wait(cold, lambda: any(row["display_held"] == remaining for row in cold.bridge.status()["progression_ui"]),
          "HUD shows full balance after purchase")
@@ -195,7 +195,7 @@ def session_saves(ctx):
             "thumbnail": [256, 144],
             "saved_slots": len(record["slots"]["slots"]),
             "restored_xp": view["held"],
-            "restored_durability_rank": view["stats"]["health_rank"],
+            "restored_durability_rank": view["stats"]["bone_health_rank"],
             "restored_large_balance": large_held,
             "large_balance_after_purchase": remaining,
         },

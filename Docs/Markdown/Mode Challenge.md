@@ -182,19 +182,16 @@ restores the saved cosmetic collection.
 
 **Independent upgrades** give each player a wallet and an individual shop on
 their screen. Use the target selector for self or friendly bots. **Shared
-upgrades** give each team a wallet. Its first connected human by seat ID leads
-by default and can hand shopping authority to another teammate. The leader
-buys stats for all human teammates. Gear and recruits bought for the team
+upgrades** give each team a wallet. The host manages every slot from one full-screen shop and readies for the whole lobby. Stats bought for a team apply to its human members. Gear and recruits bought for the team
 normally rotate between eligible humans. Armor rotates through everyone on
 the team, including bots. Each slot advances to its next material after every
-teammate owns the current tier for that slot. Individuals keep their own
-loadout choices.
+teammate owns the current tier for that slot. The host can change a player’s loadout using the target selector.
 Bots can receive gear and AI training. The multiplayer upgrade timer can
 advance everyone after 10, 15, 30, 60 or 120 seconds.
-Infinite waits for everyone. Solo Campaign and Arena shops wait for the player.
+Independent Survival shops wait for the surviving players. Solo Campaign and Arena shops wait for the player.
 The host can select **Force finish** beside Ready to close the shop for every seat.
 
-In the shop, **H** or **L2** buys the displayed heal for the selected target.
+Fighters recover at each new level, match or battery by default. With **Shop healing** enabled, **H** or **L2** buys the displayed heal for the selected target.
 **Space** or **R2** toggles Ready. Chat suppresses both keyboard shortcuts.
 **E** or the controller’s confirm button activates the focused control. Stats, armor,
 daggers, main-hand weapons and character upgrades each start their own row.
@@ -206,7 +203,7 @@ rank 20, while purchase prices continue to rise.
 
 | Purchase | XP | Effect |
 | --- | ---: | --- |
-| Durability, bone damage, flesh damage, speed | 16, 23, 34 for the first three ranks of each stat | Durability starts at +16%, either damage stat at +12%, and speed at +6%. From rank 20 the respective gains are +4%, +3% and +1.5%. |
+| Bone health, flesh health, damage, speed | 16, 23, 34 for the first three ranks of each stat | Either health stat starts at +16%, damage at +12%, and speed at +6%. From rank 20 the respective gains are +4%, +3% and +1.5%. |
 | Fall resistance | Same prices as the other stats | The first rank reduces damage from a high-speed landing by about 10.7%. It also protects ragdolls during long descents. The character's authored fall multiplier still applies, and level death volumes enforce their map boundaries. |
 | Passive or active stealth | Same prices as the other stats | Sight and hearing ranges shrink by 7% of their original range at rank 1 and by 0.25% per rank from rank 20 onward. |
 | Luck | Same prices as the other stats | Increases the chance of a free choice and improves the odds of drawing higher-priced upgrades |
@@ -236,14 +233,11 @@ An equipped large weapon replaces the campaign or Arena's supplied large
 weapon. An equipped dagger adds to one supplied dagger when no large weapon
 is selected. Selecting both a large weapon and a dagger gives exactly that pair.
 
-The stats column shows each player’s armor. The green bar shows banked XP as a share of the projected final balance, which includes the estimated reward from remaining enemies. The purple bar shows pending XP against the estimated reward for the current encounter. Both bars display the actual balance for the player or shared team.
+Both HUD readouts start disabled. Turn them on in Settings → Game. The stats column shows each player’s armor. The green bar shows banked XP as a share of the projected final balance, which includes the estimated reward from remaining enemies. The purple bar shows pending XP against the estimated reward for the current encounter. Both bars display the actual balance for the player or shared team.
 
 All eight stat cards keep their neutral Common appearance at every rank.
 Active stealth reduces detection range while crouched and passive stealth
-applies otherwise. Bone damage increases blunt impacts and the knockout speed
-of unarmed or staff rear chokes. Flesh damage increases cuts and the bleeding
-they cause. An attack that does both applies each multiplier to its own portion.
-The defender's durability also extends the time they can resist a choke.
+applies otherwise. Bone health reduces blunt damage and extends resistance to a choke. Flesh health reduces blood loss from hits and bleeding. Damage improves the fighter’s attack multiplier, including choke strength.
 
 ### Weapon categories and skins
 

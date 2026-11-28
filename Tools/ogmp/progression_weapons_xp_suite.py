@@ -13,14 +13,14 @@ from .scenarios import script_errors
 
 def progression_weapons_xp(ctx):
     host = ctx.instance("progression_weapons_host", width=1280, height=720, keys={
-        **RENDER_KEYS, "mp_port": "28581", "difficulty_scaling": "true", "game_difficulty": "0.5",
+        **RENDER_KEYS, "show_stats_readout":"true", "mp_port": "28581", "difficulty_scaling": "true", "game_difficulty": "0.5",
         "campaign_mp_scaling": "false", "campaign_armor_scaling": "false",
         "campaign_weapon_scaling": "false", "campaign_ai_scaling": "false",
         "player_invincible": "true", "armor_localized": "2", "tutorials": "false",
         "oo_arena_bots": "0", "oo_arena_random": "false",
     })
     guest = ctx.instance("progression_weapons_guest", width=800, height=600,
-                         keys={**RENDER_KEYS, "mp_port": "28582"})
+                         keys={**RENDER_KEYS, "show_stats_readout":"true", "mp_port": "28582"})
     peers = host, guest
 
     def wait(predicate, label, seconds=40):
@@ -202,17 +202,17 @@ def progression_weapons_xp(ctx):
     wait(lambda: not machete(guest) and view(guest,guest_player)["held"] == before + item["price"], "remote full-price sale")
     action(guest,guest_player,"sell",item["sell_key"])
     assert not view(host,guest_player)["owned_rat_machete"]
-    for key in ("staff", "broadsword", "dog_knife", "health", "armor_3"):
+    for key in ("staff", "broadsword", "dog_knife", "bone_health", "armor_3"):
         action(host, host_player, "buy", key)
-    action(guest, guest_player, "buy", "flesh_damage")
-    wait(lambda: view(host, host_player)["stats"]["health_rank"] == 1 and
-         view(guest, guest_player)["stats"]["flesh_damage_rank"] == 1, "each readout shows its own upgrades")
+    action(guest, guest_player, "buy", "flesh_health")
+    wait(lambda: view(host, host_player)["stats"]["bone_health_rank"] == 1 and
+         view(guest, guest_player)["stats"]["flesh_health_rank"] == 1, "each readout shows its own upgrades")
     wait(lambda: view(host, host_player)["stats"]["armor"][3] == 1,
          "shop column previews the selected wooden forearm guard")
     assert view(host, host_player)["stats"]["player"] == host_player
     assert view(guest, guest_player)["stats"]["player"] == guest_player
-    assert view(host, host_player)["stats"]["flesh_damage_rank"] == 0
-    assert view(guest, guest_player)["stats"]["health_rank"] == 0
+    assert view(host, host_player)["stats"]["flesh_health_rank"] == 0
+    assert view(guest, guest_player)["stats"]["bone_health_rank"] == 0
     assert view(host, host_player)["owned_staff"] and view(host, host_player)["owned_broadsword"]
     ctx.shot(host, "purchased_stats_and_armor")
     ready()

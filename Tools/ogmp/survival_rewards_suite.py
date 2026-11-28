@@ -76,7 +76,7 @@ def survival_rewards(ctx):
     first, second = [p["id"] for p in seats]
     assert _probe(host, f'LobbySetSelection("survival","","{SANDBOX_MAP}",false)') == "true"
     assert _probe(host, f"LobbySetPlayerTeam({second},2)") == "true"
-    for key, value in {"progression": 1, "progression_shop": 1, "progression_free_buffs": 1,
+    for key, value in {"progression": 1, "progression_shop": 1, "progression_shop_heal": 1, "progression_free_buffs": 1,
                        "progression_shared": 1, "progression_gain_damage": 1, "progression_gain_kill": 0,
                        "progression_loss_damage": 1, "progression_gain_round": 1, "progression_gain_match": 1,
                        "challenge_time": 0, "challenge_round": 2, "challenge_performance": 1}.items():
@@ -165,7 +165,7 @@ def survival_rewards(ctx):
     wait(lambda: data(first)["view"]["shop_open"] and math.isclose(pressure(), .2), "three waves and one battery clear")
     assert balance(first) == (175 + first_pool, 0) and balance(second) == (175 + second_pool, 0)
     assert all(data(seat)["view"]["xp_scale"]["world_remaining"] == 0 for seat in (first, second)), "rival players counted as wave XP"
-    wait(lambda: len(panels()) == 2 and all(p.get("page") == "reward" for p in panels()), "free hands at battery intermission")
+    wait(lambda: len(panels()) == 1 and panels()[0].get("page") == "reward", "host reward before full-screen shop")
     ledger = data(first)["ledger"]
     assert ledger["reward_generation"] == 1 and ledger["completed_rounds"] == 3
     hand = next(account for account in ledger["players"] if account["id"] == second)["reward_hands"][0]
@@ -182,16 +182,16 @@ def survival_rewards(ctx):
         assert fully_healed(heroes[2])
     for health, price in ((1.0, 1), (.4, 8), (.01, 14)):
         injure(heroes[2], health)
-        recovery = next(c for c in data(second)["view"]["cards"] if c["id"] == "restore_health")
+        recovery = next(c for c in bridge.call("progression", actor=first, target=second)["view"]["cards"] if c["id"] == "restore_health")
         assert (recovery["cost"], recovery["full_cost"]) == (price, 14)
         held = balance(second)[0]
-        assert bridge.call("progression", actor=second, action="buy", key="restore_health")["submitted"]
+        assert bridge.call("progression", actor=first, target=second, action="buy", key="restore_health")["submitted"]
         assert fully_healed(heroes[2]) and balance(second) == (held - price, 0)
-        healthy = next(c for c in data(second)["view"]["cards"] if c["id"] == "restore_health")
+        healthy = next(c for c in bridge.call("progression", actor=first, target=second)["view"]["cards"] if c["id"] == "restore_health")
         assert (healthy["cost"], healthy["full_cost"], healthy["available"]) == (0, 14, False)
-        assert not bridge.call("progression", actor=second, action="buy", key="restore_health")["submitted"]
+        assert not bridge.call("progression", actor=first, target=second, action="buy", key="restore_health")["submitted"]
 
-    assert bridge.call("progression", actor=second, action="ready")["submitted"]
+    assert not bridge.call("progression", actor=second, action="ready")["submitted"]
     assert data(first)["view"]["shop_open"]
     assert bridge.call("progression", actor=first, action="ready")["submitted"]
     wait(lambda: not data(first)["view"]["shop_open"], "both seats finish their battery intermission")

@@ -2242,12 +2242,16 @@ void Online::ApplyProgressionEquipment(SceneGraph* graph) {
         const auto build = FriendlyProgression::GetBuild(member.player_id);
         const int ai = member.is_bot && build.trained ? build.ai : -1;
         const bool has_fall_rank = actor->ASHasVar("progression_fall_resistance");
-        if (actor->ASGetIntVar("progression_health") != build.health ||
+        if (actor->ASGetIntVar("progression_health") != build.bone_health ||
+            (actor->ASHasVar("progression_flesh_health") && actor->ASGetIntVar("progression_flesh_health") != build.flesh_health) ||
+            (actor->ASHasVar("progression_damage") && actor->ASGetIntVar("progression_damage") != build.damage) ||
             (has_fall_rank && actor->ASGetIntVar("progression_fall_resistance") != build.fall_resistance) ||
             actor->ASGetIntVar("progression_speed") != build.speed || actor->ASGetIntVar("progression_ai") != ai ||
             actor->ASGetIntVar("progression_stealth_passive") != build.stealth_passive ||
             actor->ASGetIntVar("progression_stealth_active") != build.stealth_active) {
-            actor->ASSetIntVar("progression_health", build.health);
+            actor->ASSetIntVar("progression_health", build.bone_health);
+            if (actor->ASHasVar("progression_flesh_health")) actor->ASSetIntVar("progression_flesh_health", build.flesh_health);
+            if (actor->ASHasVar("progression_damage")) actor->ASSetIntVar("progression_damage", build.damage);
             if (has_fall_rank) actor->ASSetIntVar("progression_fall_resistance", build.fall_resistance);
             actor->ASSetIntVar("progression_speed", build.speed);
             actor->ASSetIntVar("progression_stealth_passive", build.stealth_passive);

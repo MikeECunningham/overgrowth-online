@@ -1,8 +1,8 @@
-"""Measure physical blunt hits, cuts and delayed bleeding for each attacker on both owners."""
+"""Verify independent defensive purchases and the original attack multiplier on both peers."""
 import math
 
 from .campaign_scaling_suite import RENDER_KEYS
-from .mode_settings_suite import _code
+from .mode_settings_suite import _code, _probe
 from .newcampaign_local_suite import CAMPAIGN, FIRST, _ready, _rows, _skip
 from .scenarios import script_errors
 
@@ -26,44 +26,31 @@ def progression_damage(ctx):
     for peer in peers:
         _ready(peer, FIRST)
     _skip(host)
-    _code(host, "ProgressionCheckpoint(1,912);ProgressionBeginShop(false);", "level")
+    _code(host, "ProgressionCheckpoint(1,912);ProgressionCheckpoint(2,912);ProgressionBeginShop(false);", "level")
     wait(lambda: all(peer.bridge.call("progression",actor=seat)["view"].get("shop_open")
                      for peer,seat in zip(peers,(owner,visitor))), "both shops")
-    assert host.bridge.call("progression", actor=owner, action="buy", key="bone_damage")["submitted"]
-    assert guest.bridge.call("progression", actor=visitor, action="buy", key="flesh_damage")["submitted"]
+    def action(peer, seat, command, key=""):
+        return peer.bridge.call("progression", actor=seat, action=command, key=key)["submitted"]
 
-    def synced(peer):
-        rows = peer.bridge.call("progression", actor=visitor)["ledger"]["players"]
-        return {r["id"]:(r["bone_damage"],r["flesh_damage"]) for r in rows} == {owner:(1,0),visitor:(0,1)}
-    wait(lambda: all(synced(p) for p in peers), "both owners see the independent purchases")
-
-    for peer, victim_seat in zip(peers,(owner,visitor)):
-        bodies = {row["id"]:row["avatar_id"] for row in _rows(peer)}
-        victim = bodies[victim_seat]
-        plain = next(c["id"] for c in peer.bridge.state() if c["id"] not in bodies.values())
-        peer.bridge.call("level_messages",prefix="damage_sample ")
-        # A glancing thrown blade (type 1) inflicts blunt trauma and blood loss
-        # on the same contact. Freeze velocity, shields and attribution per hit.
-        _code(peer, 'int knife=CreateObject("Data/Items/rabbit_weapons/rabbit_knife.xml",true);'
-              'ReadObjectFromID(knife).SetTranslation(this_mo.position+vec3(0,25,0));'
-              f'array<int> sources={{{plain},{bodies[owner]},{bodies[visitor]}}};'
-              'attack_getter2.Load("Data/Attacks/frontkick.xml");'
-              'for(uint n=0;n<sources.size();++n){int source=sources[n];'
-              'invincible=false;ko_shield=0;temp_health=0.5f;permanent_health=blood_health=1.0f;'
-              'this_mo.velocity=vec3(0);ReadItemID(knife).last_held_char_id_=source;'
-              'ReadItemID(knife).SetLinearVelocity(vec3(2,0,0));'
-              'ResolveItemImpact("metal",this_mo.position,knife,1);'
-              'float blunt=0.5f-temp_health, blood=1.0f-blood_health;'
-              'float before=blood_health;TakeSharpDamage(0.1f,this_mo.position,source,false);'
-              'blood_damage=0;attacked_by_id=source;TakeDelayedBloodDamage(0.1f);'
-              'level.SendMessage("damage_sample "+blunt+" "+blood+" "+(before-blood_health)+" "+blood_damage);}'
-              'Recover();QueueDeleteObjectID(knife);', victim)
-        lines = peer.bridge.call("level_messages",prefix="damage_sample ")["messages"]
-        assert len(lines)==3, lines
-        base, bone, flesh = [[float(s) for s in line.split()[1:]] for line in lines]
-        assert all(value > 0 for value in base), base
-        for choice, multipliers in ((bone,(1.12,1,1,1)), (flesh,(1,1.12,1.12,1.12))):
-            assert all(math.isclose(value, ref*scale, rel_tol=.002, abs_tol=.00001)
-                       for value,ref,scale in zip(choice,base,multipliers)), (base,bone,flesh)
+    assert action(host, owner, "ready")
+    assert action(host, owner, "buy", "bone_health")
+    assert not host.bridge.call("progression", actor=owner)["view"]["ready"]
+    assert action(guest, visitor, "buy", "flesh_health")
+    for peer, seat, ranks in ((host, owner, (1, 0)), (guest, visitor, (0, 1))):
+        victim = next(row["avatar_id"] for row in _rows(peer) if row["id"] == seat)
+        wait(lambda: _probe(peer, 'progression_health+" "+progression_flesh_health', victim)
+             == f"{ranks[0]} {ranks[1]}", "defensive ranks applied on simulating owner")
+        _code(peer, 'invincible=false;ko_shield=0;temp_health=blood_health=permanent_health=1;'
+              'blood_damage=0;TakeDamage(.1f);TakeBloodDamage(.1f);TakeDelayedBloodDamage(.1f);'
+              'float base=.1f*p_damage_multiplier*equipped_damage_factor;'
+              'level.SendMessage("damage_sample "+((1-temp_health)/base)+" "+((1-blood_health)/base)+" "+(blood_damage/base));', victim)
+        values = [float(v) for v in peer.bridge.call("level_messages",prefix="damage_sample ")["messages"][-1].split()[1:]]
+        for value, rank in zip(values, (ranks[0], ranks[1], ranks[1])):
+            assert math.isclose(value, 1/(1+.16*rank), abs_tol=.0001), (values, ranks)
+    attacker = next(row["avatar_id"] for row in _rows(host) if row["id"] == owner)
+    before = float(_probe(host, "p_attack_damage_mult", attacker))
+    assert action(host, owner, "buy", "damage")
+    wait(lambda: math.isclose(float(_probe(host, "p_attack_damage_mult", attacker)), before*1.12, rel_tol=.0001),
+         "common Damage rank increases the authored attack multiplier")
     assert not any(script_errors(peer) for peer in peers)
-    return {"passed":True, "metrics":{"bone_ratio":1.12,"flesh_ratio":1.12,"tested_simulating_owners":2}, "notes":[]}
+    return {"passed":True, "metrics":{"tested_simulating_owners":2}, "notes":[]}

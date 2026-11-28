@@ -11,6 +11,7 @@
 #include <Graphics/graphics.h>
 #include <Graphics/textures.h>
 #include <Internal/filesystem.h>
+#include <Internal/config.h>
 #include <Graphics/local_viewport.h>
 #include <Game/level.h>
 #include <Main/engine.h>
@@ -140,7 +141,7 @@ struct Wallet {
     }
 };
 
-enum class Page { Shop, Loadout, Team };
+enum class Page { Shop, Loadout };
 struct Seat {
     Wallet wallet;
     bool shopping = false, dropdown = false;
@@ -152,6 +153,7 @@ struct Seat {
     int drag_column = -1;
     float drag_offset = 0;
     int old_dx = 0, old_dy = 0;
+    bool stick_latched = false;
     double next_move = 0;
     bool accept_down = false, back_down = false, heal_down = false, ready_down = false;
     unsigned reward_generation = 0;
@@ -174,9 +176,9 @@ struct Artwork {
 Artwork card_art(const std::string& id, int material) {
     if (id == "health") return {nullptr, "VIT"};
     if (id == "restore_health") return {nullptr, "HEAL"};
-    if (id == "damage") return {nullptr, "DMG"}; // A pending reward from an older save.
-    if (id == "bone_damage") return {nullptr, "BONE"};
-    if (id == "flesh_damage") return {nullptr, "FLESH"};
+    if (id == "damage") return {nullptr, "DMG"};
+    if (id == "bone_health") return {nullptr, "BONE"};
+    if (id == "flesh_health") return {nullptr, "FLESH"};
     if (id == "fall_resistance") return {nullptr, "FALL"};
     if (id == "speed") return {nullptr, "SPD"};
     if (id == "stealth_passive") return {nullptr, "STL"};
@@ -318,9 +320,9 @@ void stats_column(ImDrawList* draw, Box box, const Json::Value& stats, float sca
         label(draw,{box.x+box.w-pad-value_width,y,value_width+1,line},value,size,color);
         y += line;
     };
-    row("Durability", "x"+number(stats["durability"].asDouble()));
-    row("Bone damage", "x"+number(stats["bone_damage"].asDouble()));
-    row("Flesh damage", "x"+number(stats["flesh_damage"].asDouble()));
+    row("Damage", "x"+number(stats["damage"].asDouble()));
+    row("Bone health", "x"+number(stats["bone_health"].asDouble()));
+    row("Flesh health", "x"+number(stats["flesh_health"].asDouble()));
     row("Fall resistance", number(stats["fall_resistance"].asDouble()*100,1)+"%");
     row("Movement", "x"+number(stats["movement"].asDouble()));
     row("Passive stealth", number((1-stats["passive_range"].asDouble())*100)+"%");
@@ -352,7 +354,7 @@ float input_depth(const PlayerInput* input, const char* key) {
     return it != input->key_down.end() && it->second.count > 0 ? it->second.depth : 0.0f;
 }
 
-enum class Action { TargetMenu, Target, PageShop, PageLoadout, PageTeam, Buy, Heal, Equip, EquipRace, Sell, Leader, Ready, ForceFinish, Loop };
+enum class Action { TargetMenu, Target, PageShop, PageLoadout, Buy, Heal, Equip, EquipRace, Sell, Ready, ForceFinish, Loop };
 struct Button {
     std::string id, title, detail, badge;
     Action action;
@@ -412,12 +414,11 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
                              {x+w-footer_width,bottom-primary,footer_width,primary}});
     if (loop)
         p.buttons.push_back({"loop", v["loop"].asBool() ? "Loop campaign  [x]" : "Loop campaign  [ ]", "", "", Action::Loop,
-                             {x,bottom-primary,footer_width,primary},!ready});
+                             {x,bottom-primary,footer_width,primary},true});
     const float note_height = (area.h < 430 ? 24 : 35)*s;
     p.note = {x,bottom-primary-gap-note_height,w,note_height};
     if (!paid) return p;
     const bool can_buy = v["can_buy"].asBool();
-    const bool shared = v["shared"].asBool();
     if (!can_buy && seat.page == Page::Shop) seat.page = Page::Loadout;
     const auto& targets = v["targets"];
     const std::string name = target_name(targets, seat.target, player.playername);
@@ -441,7 +442,7 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
     y += (recovery ? primary : line)+gap;
     p.columns = w >= 615*s && area.h >= 450 && !seat.dropdown;
     if (!p.columns && !seat.dropdown) {
-        const int tabs = int(can_buy) + 1 + int(shared);
+        const int tabs = int(can_buy) + 1;
         const float tw = (w-gap*(tabs-1))/tabs;
         float tx = x;
         auto tab = [&](Action action, const char* key, const char* title, Page page) {
@@ -450,7 +451,6 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
         };
         if (can_buy) tab(Action::PageShop, "shop", "Upgrades", Page::Shop);
         tab(Action::PageLoadout, "loadout", "Equipment", Page::Loadout);
-        if (shared) tab(Action::PageTeam, "team", "Team", Page::Team);
         y += line+gap;
     } else if (p.columns) y += 23*s;
     const float lh = std::max(1.0f,p.note.y-gap-y);
@@ -542,12 +542,12 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
             title += item.get("label","Empty").asString();
             if (item.isMember("price")) title += "    Sell " + std::to_string(item["price"].asInt()) + " XP";
             row(c,Action::Sell,item.get("sell_key","empty_"+item["slot"].asString()).asString(),title,
-                !ready && can_buy && item.isMember("sell_key"),UINT32_MAX,
+                can_buy && item.isMember("sell_key"),UINT32_MAX,
                 item.isMember("price") ? "Sell this carried item for its full shop price." : "");
         }
         p.total[c] += gap;
         const std::string equipped = v["main_category"].asString();
-        const bool edit = !ready && v["can_equip"].asBool();
+        const bool edit = v["can_equip"].asBool();
         for (const auto& race : v["races"]) {
             const auto id = race["id"].asString();
             const bool selected = id == v["equipped_race"].asString();
@@ -563,16 +563,6 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
             row(c,Action::Equip,std::string("equip_")+weapon.id,mark+weapon.label,edit);
         }
     }
-    if (shared && (p.columns || seat.page == Page::Team)) {
-        if (p.columns) p.total[c] += gap;
-        for (const auto& member : v["teammates"]) {
-            const uint32_t id = member["id"].asUInt();
-            bool leader = id == v["team_leader"].asUInt();
-            row(c,Action::Leader,"leader_"+std::to_string(id),member["name"].asString()+(leader ? "   (Team leader)" : ""),
-                !ready && !leader && player.player_id == v["team_leader"].asUInt(), id,
-                leader ? "" : "Choose this player as team leader.");
-        }
-    }
     return p;
 }
 
@@ -580,8 +570,8 @@ void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, 
     if (!btn.active) return;
     if (btn.action == Action::TargetMenu) { s.dropdown = !s.dropdown; s.scroll = {}; s.focus = s.dropdown ? "target_"+std::to_string(s.target) : "target"; return; }
     if (btn.action == Action::Target) { s.target = btn.target; s.reset_list(); s.focus = "target"; return; }
-    if (btn.action == Action::PageShop || btn.action == Action::PageLoadout || btn.action == Action::PageTeam) {
-        s.page = btn.action == Action::PageShop ? Page::Shop : btn.action == Action::PageTeam ? Page::Team : Page::Loadout;
+    if (btn.action == Action::PageShop || btn.action == Action::PageLoadout) {
+        s.page = btn.action == Action::PageShop ? Page::Shop : Page::Loadout;
         s.reset_list(); s.focus = btn.id; return;
     }
     std::string action, key = btn.id;
@@ -594,7 +584,6 @@ void dispatch(const Button& btn, Seat& s, uint32_t actor, const Json::Value& v, 
         case Action::Ready: action = "ready"; key.clear(); break;
         case Action::ForceFinish: action = "force_finish"; key.clear(); break;
         case Action::Loop: action = "loop"; key = v["loop"].asBool() ? "no" : "yes"; break;
-        case Action::Leader: action = "leader"; target = btn.target; key.clear(); break;
         default: return;
     }
     if (!FriendlyProgression::Act(actor,target,action,key)) {
@@ -659,7 +648,7 @@ void checkpoint_reward(ImDrawList* draw, const Box& viewport, const Box& wallet,
     const float scale = std::max(.55f,std::min({1.16f,viewport.w/560.f,viewport.h/390.f}));
     const float gap = 4*scale, pad = 6*scale, heading = 25*scale;
     const float right = wallet.x + wallet.w;
-    const float width = std::min(440*scale, std::max(1.f, right - (stats.x+stats.w+gap)));
+    const float width = std::min(440*scale, std::max(1.f, right - ((config["show_stats_readout"].toBool() ? stats.x+stats.w : viewport.x)+gap)));
     const int cols = width >= 310*scale ? 2 : 1;
     const int rows = (static_cast<int>(cards.size())+cols-1)/cols;
     const float cell_w = (width-(cols-1)*gap)/cols;
@@ -818,13 +807,22 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
             if (d < distance) { distance = d; seat.focus = b.id; }
         }
     }
-    auto held = [&](const char* nav, const char* stick) { return std::max(input_depth(input,nav),input_depth(input,stick)) > 0.5f; };
-    int dx = int(held("menu_right","right"))-int(held("menu_left","left"));
-    int dy = int(held("menu_down","down"))-int(held("menu_up","up"));
+    const float stick_x = input_depth(input,"right") - input_depth(input,"left");
+    const float stick_y = input_depth(input,"down") - input_depth(input,"up");
+    const float tilt = std::max(std::abs(stick_x), std::abs(stick_y));
+    if (tilt < .3f) seat.stick_latched = false;
+    int dx = int(input_depth(input,"menu_right") > .5f) - int(input_depth(input,"menu_left") > .5f);
+    int dy = int(input_depth(input,"menu_down") > .5f) - int(input_depth(input,"menu_up") > .5f);
     if (dy) dx = 0;
-    if ((dx || dy) && (seat.old_dx != dx || seat.old_dy != dy || now >= seat.next_move)) {
-        navigate(p,seat,dx,dy);
-        seat.next_move = now+(seat.old_dx == dx && seat.old_dy == dy ? 0.115 : 0.32);
+    if (dx || dy) {
+        if ((!seat.old_dx && !seat.old_dy) || now >= seat.next_move) {
+            navigate(p,seat,dx,dy);
+            seat.next_move = now + (seat.old_dx == dx && seat.old_dy == dy ? .28 : .65);
+        }
+    } else if (tilt >= .6f && !seat.stick_latched) {
+        if (std::abs(stick_x) > std::abs(stick_y)) navigate(p,seat,stick_x > 0 ? 1 : -1,0);
+        else navigate(p,seat,0,stick_y > 0 ? 1 : -1);
+        seat.stick_latched = true;
     }
     seat.old_dx = dx; seat.old_dy = dy;
     const bool accept = input_depth(input,"menu_return") > 0.5f;
@@ -845,7 +843,6 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
     draw->AddLine(area.min(), {area.x+area.w,area.y}, gold, std::max(1.f,s));
     std::string title = "Upgrade shop";
     if (!view["shop_enabled"].asBool()) title = view["can_loop"].asBool() ? "Campaign complete" : "Waiting for players";
-    else if (view["shared"].asBool() && view["team_leader"].asUInt() != player.player_id) title = "Outfit";
     paint_heading(draw,p.heading);
     const int seconds = view["seconds_left"].asInt();
     const std::string clock = seconds >= 0 ? std::to_string(seconds)+"s" : "";
@@ -986,10 +983,10 @@ vec2 LayoutArenaScore(float left, float top, float width, float height) {
     const float margin = 12.0f * ui_scale;
     Box score{left * units.x, top * units.y, width * units.x, height * units.y};
     float scale = std::min({1.0f, (area.w - margin - score.x) / score.w,
-                            (stats.y - margin - score.y) / score.h});
+                            ((config["show_stats_readout"].toBool() ? stats.y : gameplay_wallet(area, ui_scale).y) - margin - score.y) / score.h});
     // In a very short split viewport, put a tall roster alongside the stats
     // before shrinking its 36px type below 13px. Keep the upper-left anchor otherwise.
-    if (scale < 0.36f) {
+    if (config["show_stats_readout"].toBool() && scale < 0.36f) {
         const float beside = stats.x + stats.w + margin;
         const float beside_scale = std::min({1.0f, (area.w - margin - beside) / score.w,
                                              (gameplay_wallet(area, ui_scale).y - margin - score.y) / score.h});
@@ -1021,7 +1018,7 @@ vec2 LayoutArenaAnnouncement(float top, float width, float height) {
     for (unsigned i = 0; i < screens; ++i) {
         const Box area = gameplay_viewport(i, screens, display);
         const float scale = gameplay_scale(area);
-        reserve(gameplay_stats(area, scale), 6 * scale);
+        if (config["show_stats_readout"].toBool()) reserve(gameplay_stats(area, scale), 6 * scale);
         reserve(gameplay_wallet(area, scale), 6 * scale);
     }
     // Fit the measured lines into the nearest free vertical interval. Prefer
@@ -1071,6 +1068,8 @@ void Draw(Engine& engine) {
     std::set<uint32_t> present;
     for (const auto& player : online->GetLocalPlayerStates()) {
         if (player.is_bot) continue;
+        if (online->IsHosting() && FriendlyProgression::ShopOpen() && online->ModeSetting("progression_shared") &&
+            online->ModeSetting("progression_shop") && !online->IsLobbyHost(player.player_id)) continue;
         present.insert(player.player_id);
         Seat& seat = seats[player.player_id];
         if (seat.target == UINT32_MAX) seat.target = player.player_id;
@@ -1079,10 +1078,11 @@ void Draw(Engine& engine) {
         // A Survival battery's reward hand is the first part of that seat's intermission.
         const bool battery_reward = view["shop_open"].asBool() && online->IsSurvivalMode() && view["reward_pending"].asBool();
         bool open = view["shop_open"].asBool() && !battery_reward;
-        Box area = gameplay_viewport(std::max(0,player.screen-1),count,display);
+        const bool full_shop = open && view["shared"].asBool() && view["shop_enabled"].asBool();
+        Box area = full_shop ? Box{0,0,display.x,display.y} : gameplay_viewport(std::max(0,player.screen-1),count,display);
         const vec2 inset = DifficultyHUD::ShopInset(player.player_id);
-        area.w -= inset.x();
-        area.h -= inset.y();
+        if (!full_shop) area.w -= inset.x();
+        if (!full_shop) area.h -= inset.y();
         if (area.w < 1 || area.h < 1) continue;
         const int actual = devices->GetLocalPlayerInputID(player.local_index);
         const PlayerInput* input = devices->GetController(actual);
@@ -1129,7 +1129,7 @@ void Draw(Engine& engine) {
             const Box wallet = gameplay_wallet(area,s);
             balance(draw,seat.wallet,wallet,now,s);
             const Box stats = gameplay_stats(area, s, view["stats"].isMember("luck_rank"));
-            stats_column(draw,stats,view["stats"],s,false);
+            if (config["show_stats_readout"].toBool()) stats_column(draw,stats,view["stats"],s,false);
             if (display_reward) checkpoint_reward(draw,area,wallet,stats,player,seat,view,keyboard_owner,audit);
             for (float value : {stats.x, stats.y, stats.x+stats.w, stats.y+stats.h}) audit["stats_rect"].append(value);
             if (arena_score_frame == ImGui::GetFrameCount())
@@ -1138,7 +1138,7 @@ void Draw(Engine& engine) {
             if (arena_announcement_frame == ImGui::GetFrameCount())
                 for (float value : {arena_announcement.x, arena_announcement.y, arena_announcement.x+arena_announcement.w, arena_announcement.y+arena_announcement.h})
                     audit["arena_announcement_rect"].append(value);
-            audit["stats_drawn"] = true;
+            audit["stats_drawn"] = config["show_stats_readout"].toBool();
         }
         draw->PopClipRect();
         layout.append(audit);

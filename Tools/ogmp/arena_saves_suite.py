@@ -148,7 +148,7 @@ def arena_saves(ctx):
     reissued = save(host, 3)
     assert reissued["world"]["arena"]["spots"] == ongoing["world"]["arena"]["spots"]
     prefs = reissued["rules"]["mode_settings"][ARENA]
-    assert "progression_combat" not in prefs and reissued["session_mods"]["og-online-progression"]["version"] == "8"
+    assert "progression_combat" not in prefs and reissued["session_mods"]["og-online-progression"]["version"] == "9"
     assert (prefs["progression_gain_damage"], prefs["progression_loss_damage"], prefs["progression_gain_kill"]) == (1, 1, 0)
     # A fresh process receives only disk cards, no old session or object IDs.
     cold = ctx.instance("arena_save_cold", width=640, height=360, keys={**keys, "mp_port": "28693"})

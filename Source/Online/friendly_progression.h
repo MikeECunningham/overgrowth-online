@@ -9,7 +9,7 @@
 class MovementObject;
 namespace FriendlyProgression {
 struct StatRanks {
-    int health = 0, bone_damage = 0, flesh_damage = 0, speed = 0, fall_resistance = 0;
+    int bone_health = 0, flesh_health = 0, damage = 0, speed = 0, fall_resistance = 0;
     int stealth_passive = 0, stealth_active = 0, luck = 0;
 };
 struct Build : StatRanks {

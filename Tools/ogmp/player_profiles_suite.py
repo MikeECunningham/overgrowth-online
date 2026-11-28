@@ -369,6 +369,6 @@ def profile_intermission(ctx):
         assert _probe(host, f'ProfileEdit("{action}","{name}","","")') == "false"
         assert record()["collection"]["tokens"] == balance - spent > 0
         results[layer] = spent
-    assert {"health", "bone_damage", "flesh_damage", "fall_resistance", "recruit", "dagger"} <= record()["upgrades"]["owned"].keys()
+    assert {"bone_health", "damage", "flesh_health", "fall_resistance", "recruit", "dagger"} <= record()["upgrades"]["owned"].keys()
     assert all(not script_errors(p) for p in (host, guest))
     return {"passed": True, "metrics": results, "notes": []}

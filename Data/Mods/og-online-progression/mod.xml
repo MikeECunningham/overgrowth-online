@@ -3,10 +3,10 @@
     <Id>og-online-progression</Id>
     <Name>Friendly Progression</Name>
     <Author>Overgrowth Online</Author>
-    <Description>Spend XP between campaign levels, Arena matches or Survival batteries. Injured fighters can buy a full recovery. Its price depends on the severity of their injuries. The maximum rises with completed levels, rounds or waves. The host can also enable free upgrades, including recovery, at checkpoints, Arena round ends and Survival battery clears. Each player's Luck affects their chance to get a choice and the value of the four upgrades offered. The host can give individual players committed XP on defeat and let local leaders choose that handicap for their own players. Saves keep handicaps, balances, equipment, Luck and pending choices with their lobby slots. Optional profile progression awards one token for every ten campaign levels cleared, ten Arena matches won or ten Survival batteries survived. Spend tokens on cosmetic or gameplay unlocks from Profiles or a lobby player entry. Gameplay unlocks contributed by the lobby are shared from map start.</Description>
+    <Description>Spend XP between campaign levels, Arena matches or Survival batteries. Fighters recover between stages by default. With shop healing enabled, injured fighters can buy recovery instead. Its price depends on the severity of their injuries. The maximum rises with completed levels, rounds or waves. The host can also enable free upgrades, including recovery, at checkpoints, Arena round ends and Survival battery clears. Each player's Luck affects their chance to get a choice and the value of the four upgrades offered. The host can give individual players committed XP on defeat and let local leaders choose that handicap for their own players. Saves keep handicaps, balances, equipment, Luck and pending choices with their lobby slots. Optional profile progression awards one token for every ten campaign levels cleared, ten Arena matches won or ten Survival batteries survived. Spend tokens on cosmetic or gameplay unlocks from Profiles or a lobby player entry. Gameplay unlocks contributed by the lobby are shared from map start.</Description>
     <Category>Gameplay</Category>
     <Thumbnail>Data/Images/og-online-progression.jpg</Thumbnail>
-    <Version>1.10.0</Version>
+    <Version>1.11.0</Version>
     <SupportedVersion>0.41.36</SupportedVersion>
     <EnabledByDefault>true</EnabledByDefault>
     <SupportsOnline>true</SupportsOnline>
@@ -19,7 +19,7 @@
         <SubProfile id="collection" active_when="meta_progression"/>
         <SubProfile id="upgrades"/>
     </ProfileLayers>
-    <Session feature="progression" network_version="12" save_version="8">
+    <Session feature="progression" network_version="13" save_version="9">
         <Rule key="stat_base" value="16"/>
         <Rule key="stat_linear" value="5"/>
         <Rule key="stat_quadratic" value="2"/>
@@ -58,11 +58,15 @@
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
+        <LobbySetting key="progression_shop_heal" label="Shop healing" description="Offer recovery for purchase. When off, fighters recover at level, match and battery transitions." default="0" modes="campaign,arena,survival" depends_on="progression">
+            <Choice>Off</Choice>
+            <Choice>On</Choice>
+        </LobbySetting>
         <LobbySetting key="progression_free_buffs" label="Free upgrade choice" description="At each new campaign checkpoint, Arena round end or Survival battery clear, each player has a chance to pick one of four free upgrades. Luck improves that chance and the odds of drawing expensive upgrades." default="0" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Off</Choice>
             <Choice>On</Choice>
         </LobbySetting>
-        <LobbySetting key="progression_shared" label="Upgrades" description="Buy upgrades independently or share them across a team." default="0" modes="campaign,arena,survival" depends_on="progression">
+        <LobbySetting key="progression_shared" label="Upgrades" description="Shop individually or let the host manage all slots in one full-screen shop. Shared purchases use the selected team’s XP." default="0" modes="campaign,arena,survival" depends_on="progression">
             <Choice>Independent</Choice>
             <Choice>Shared by team</Choice>
         </LobbySetting>

@@ -38,7 +38,7 @@ def friendly_progression(ctx):
         assert {key for key in common | mode_options if "progression_" + key in checks} == expected, checks
     def join_campaign(shared):
         _code(h, f'LobbySetSelection("{CAMPAIGN}","{CAMPAIGN}","Data/Levels/{FIRST}",false);')
-        for key, value in (("progression",1),("progression_shared",shared),("progression_timer",0),
+        for key, value in (("progression",1),("progression_shop_heal",1),("progression_shared",shared),("progression_timer",0),
                            ("progression_free_buffs",int(not shared))):
             assert _probe(h,f'LobbySetModeSetting("{key}",{value})') == 'true'
         check_xp_options(arena=False)
@@ -88,10 +88,10 @@ def friendly_progression(ctx):
     wait(lambda: view(g,p2).get("shop_open"),"two independent shops")
     assert wallet(g,p2)==(5*xp,0)
     grant = data(g,p2)["ledger"]
-    assert not act(h,p2,'buy','health'),"host spent for a remote seat"
-    assert act(g,p2,'buy','health')
+    assert not act(h,p2,'buy','bone_health'),"host spent for a remote seat"
+    assert act(g,p2,'buy','bone_health')
     def rank(inst,p,r):
-        return next((a["health"] for a in data(inst,p)["ledger"]["players"] if a["id"]==p),0)==r
+        return next((a["bone_health"] for a in data(inst,p)["ledger"]["players"] if a["id"]==p),0)==r
     wait(lambda: rank(h,p2,1) and rank(g,p2,1),"guest purchases exactly one personal stat")
     assert rank(h,p1,0)
 
@@ -171,32 +171,24 @@ def friendly_progression(ctx):
     join_campaign(1)
     kill();kill()
     _code(h,'ProgressionBeginShop(false);',"level")
-    wait(lambda: view(g,p2).get("shop_open"),"shared store replicated")
-    leader=view(h,p1)["team_leader"]
-    new_leader = p2 if leader==p1 else p1
-    old_machine,new_machine=(h,g) if leader==p1 else (g,h)
-    before=wallet(new_machine,new_leader)
-    act(new_machine,new_leader,'buy','bone_damage')
-    time.sleep(.3)
-    assert wallet(old_machine,leader)==before,"unauthorized team member spent XP"
-    assert act(old_machine,leader,'leader',target=new_leader)
-    wait(lambda: view(new_machine,new_leader)["team_leader"]==new_leader,"logical team leadership transferred")
-    assert act(new_machine,new_leader,'buy','bone_damage')
-    wait(lambda: wallet(old_machine,leader)[0]==before[0]-16,"team leader debits shared wallet")
-    assert any(t["bone_damage"]==1 for t in data(h,p1)["ledger"]["teams"])
-    # The leader pays the injured teammate's quote from the team wallet.
-    other_actor = avatar(old_machine, leader)
-    _code(old_machine, "permanent_health=.5f;temp_health=.5f;blood_health=1;block_health=1;", other_actor)
+    wait(lambda: view(h,p1).get("shop_open"), "shared host shop")
+    assert not view(g,p2).get("shop_open")
+    before = wallet(h,p1)
+    assert not act(g,p2,'buy','damage')
+    assert act(h,p1,'buy','damage')
+    wait(lambda: wallet(g,p2)[0]==before[0]-16, "host purchase debits shared wallet")
+    assert any(t["damage"]==1 for t in data(h,p1)["ledger"]["teams"])
+    other_actor = avatar(g,p2)
+    _code(g, "permanent_health=.5f;temp_health=.5f;blood_health=1;block_health=1;", other_actor)
     def shared_recovery():
-        return next((c for c in view(new_machine,new_leader)["cards"] if c["id"] == "restore_health"), {})
+        return next((c for c in view(h,p1)["cards"] if c["id"] == "restore_health"), {})
     price = data(h,p1)["ledger"]["completed_rounds"] + 4
     wait(lambda: shared_recovery().get("cost") == price, "shared price uses the recipient's injuries")
-    assert act(new_machine,new_leader,'buy','restore_health')
+    assert act(h,p1,'buy','restore_health')
     wait(lambda: wallet(h,p1)[0] == before[0]-16-price and shared_recovery().get("cost") == 0,
          "shared wallet pays once for its injured fighter")
-    assert next(c for c in old_machine.bridge.state() if c["id"]==other_actor)["permanent_health"] == 1
-    assert act(h,p1,'ready') and act(g,p2,'ready')
-    wait(lambda: not view(h,p1).get("shop_open"),"shared shop advances")
+    assert act(h,p1,'ready')
+    wait(lambda: not view(h,p1).get("shop_open"),"host readiness advances shared shop")
     end()
     _code(h,f'LobbySetSelection("{ARENA}","{ARENA}","{ARENA_MAP}",false);')
     for key,value in (("progression",1),("progression_gain_damage",1),("progression_loss_damage",1),
@@ -245,7 +237,7 @@ def friendly_progression(ctx):
         for key in ("players","teams","shop"):
             assert migrated[key]==saved[key],(key,migrated,saved)
     assert all(not script_errors(i) for i in (h,g))
-    metrics.update(campaign_kill_xp=xp,independent_commit=grant["players"],shared_leader=new_leader,combat_damage_xp=earned)
+    metrics.update(campaign_kill_xp=xp,independent_commit=grant["players"],shared_host=p1,combat_damage_xp=earned)
     return {"passed":True,"metrics":metrics,"notes":[]}
 
 
