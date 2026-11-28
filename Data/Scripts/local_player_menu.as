@@ -121,6 +121,8 @@ void BuildPlayerPauseMenu() {
         AddButton("Load game", buttons,"null",button_background_diamond,false,650,30,mouseover_scale_button,IMMessage("open_load_cards"));
     }
     if(host && !Online_IsClient()) {
+        AddButton("Debug: Kill all bots", buttons, "null", button_background_diamond, false, 650.0f,
+                  30.0f, mouseover_scale_button, IMMessage("debug_kill_bots"));
         AddButton("Retry", buttons, "null", button_background_diamond, false, 650.0f,
                   30.0f, mouseover_scale_button, IMMessage("Retry"));
     }
@@ -512,6 +514,8 @@ void Update() {
             BuildPlayerPauseMenu();
         } else if(message.name == "toggle_world_pause") {
             this_ui.SendCallback("toggle_pause");
+        } else if(message.name == "debug_kill_bots") {
+            this_ui.SendCallback("debug_kill_bots");
         } else if(message.name == "Retry") {
             this_ui.SendCallback("retry");
         } else if(message.name == "end_game_to_lobby") {

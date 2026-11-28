@@ -181,6 +181,9 @@ void LocalPlayerMenus::ApplyCommands() {
         } else if (leader && action == "media_mode") {
             Graphics::Instance()->SetMediaMode(true);
             Close(local);
+        } else if (host && action == "debug_kill_bots" && !online->IsClient()) {
+            Level* level = engine_.GetSceneGraph()->level;
+            if (level->HasFunction("void DebugKillAllBots()")) level->Execute("DebugKillAllBots();");
         } else if (host && action == "retry" && !online->IsClient()) {
             Clear();
             // Retry is the host starting a new attempt. Continue deliberately

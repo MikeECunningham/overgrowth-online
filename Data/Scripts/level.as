@@ -43,6 +43,20 @@ bool allow_retry = true;
 // guests follow a level change; a reset here would leave their scripts, and
 // an arena's score and bots, behind). A campaign level by its id: the
 // campaign still knows what comes next
+void DebugKillAllBots() {
+    if(Online_IsClient()) return;
+    array<PlayerState>@ seats = GetPlayerStates();
+    array<int> humans;
+    for(uint i = 0; i < seats.length(); ++i)
+        if(!seats[i].is_bot) humans.insertLast(seats[i].avatar_id);
+    for(int i = 0; i < GetNumCharacters(); ++i) {
+        MovementObject@ actor = ReadCharacter(i);
+        if(humans.find(actor.GetID()) >= 0 || (!Online_IsActive() && actor.controlled) ||
+           !ReadObjectFromID(actor.GetID()).GetEnabled() || !actor.HasFunction("void SetKnockedOut(int)")) continue;
+        actor.Execute("if(knocked_out != _dead) { SetKnockedOut(_dead); Ragdoll(_RGDL_LIMP); }");
+    }
+}
+
 void OnlineRetry() {
     if (LobbyGetMode() == "survival") {
         Online_RetrySurvivalRun();
@@ -598,6 +612,7 @@ void Update(int paused) {
                 SwitchSettingsScreen(current_screen);
             }
         }
+        else if(message.name == "Debug: Kill all bots" && !Online_IsClient()) { DebugKillAllBots(); }
         else if( message.name == "Retry")
         {
             toggle_gui = true;
@@ -891,6 +906,7 @@ void AddPauseMenu(){
         bool local_p1 = GetConfigValueInt("controller_menu_owner") == 0;
         if (local_p1 && !Online_IsClient()) {
             AddButton("Retry", buttons_holder, 30, retry_icon);
+            AddButton("Debug: Kill all bots", buttons_holder, 30, retry_icon);
         }
         AddButton("Settings", buttons_holder, 30, settings_icon);
 

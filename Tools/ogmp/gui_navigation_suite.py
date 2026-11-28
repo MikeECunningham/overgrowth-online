@@ -406,9 +406,33 @@ def _legacy(ctx):
         g.close()
 
 
+def _controller_host_join(ctx):
+    gui = GUI(ctx, 'controller_host_join')
+    try:
+        gui.inst.bridge.call('menu', script='multiplayer_menu.as')
+        gui.inst.bridge.call('virtual_pad', action='attach', slot=0)
+        gui.wait(lambda: gui.ui()['nav_window'] == 'Multiplayer', 'role menu')
+        gui.pad(0)
+        gui.wait(lambda: gui.status()['online']['lobby_waiting'], 'controller opens host lobby')
+        guest = ctx.instance('controller_host_guest', keys={'mp_port': '26983'})
+        try:
+            guest.bridge.call('connect', ip='127.0.0.1:26982')
+            gui.wait(lambda: len(gui.status()['online']['players']) == 2, 'network guest joins')
+            selected = set()
+            for _ in range(4):
+                gui.pad(12)
+                selected.add(gui.ui()['nav_id'])
+            assert len(selected) > 1 and 0 not in selected, selected
+        finally:
+            guest.stop()
+    finally:
+        gui.close()
+
+
 def gui_navigation(ctx):
     metrics = {}
     try:
+        _controller_host_join(ctx)
         metrics['native_focus'] = _native_focus(ctx)
         metrics['native_draft'] = _native_draft(ctx)
         metrics['native_scroll'] = _native_scroll(ctx)

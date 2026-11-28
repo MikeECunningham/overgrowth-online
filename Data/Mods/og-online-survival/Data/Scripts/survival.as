@@ -31,6 +31,7 @@ array<int> teams, eliminated, winning_slots;
 class TeamScore {
     int team, waves, kills;
     int peak_members = 0;
+    float last_contact = 0;
 }
 array<TeamScore@> scores;
 TeamScore@ ScoreFor(int team) {
@@ -73,6 +74,7 @@ float hud_due = 0;
 
 class NeutralMarker {
     int screen, actor;
+    bool locator;
 }
 array<NeutralMarker> neutral_markers;
 
@@ -90,17 +92,21 @@ float MarkerSize() {
 
 void UpdateNeutralMarkers() {
     neutral_markers.resize(0);
-    if (hud_state["phase"].asInt() != fighting || hud_state["teams"].size() < 2) return;
+    if (hud_state["phase"].asInt() != fighting) return;
+    array<int> searching = ReadNumbers(hud_state["searching"]);
     array<LobbyPlayer>@ roster = LobbyPlayers();
     for (int i = 0; i < GetNumCharacters(); ++i) {
         MovementObject@ actor = ReadCharacter(i);
         if (!actor.OnTeam("survival_enemies") || !Up(actor.GetID())) continue;
         vec3 point = MarkerPoint(actor);
         for (uint j = 0; j < roster.length(); ++j) {
-            if (!roster[j].local || !IsNeutralWaveEnemy(actor, roster[j].team)) continue;
+            if (!roster[j].local || roster[j].bot) continue;
+            bool neutral = IsNeutralWaveEnemy(actor, roster[j].team);
+            if (!neutral && searching.find(roster[j].team) < 0) continue;
             vec2 pixel;
-            if (!ProjectToLocalScreen(roster[j].screen, point, MarkerSize() * 0.5f, pixel, true)) continue;
+            if (!ProjectToLocalScreen(roster[j].screen, point, MarkerSize() * 0.5f, pixel, neutral)) continue;
             NeutralMarker marker;
+            marker.locator = !neutral;
             marker.screen = roster[j].screen;
             marker.actor = actor.GetID();
             neutral_markers.insertLast(marker);
@@ -114,9 +120,10 @@ void DrawNeutralMarkers() {
         int id = neutral_markers[i].actor;
         if (!Up(id)) continue;
         vec2 pixel;
-        if (!ProjectToLocalScreen(neutral_markers[i].screen, MarkerPoint(ReadCharacterID(id)), size * 0.5f, pixel)) continue;
+        if (!ProjectToLocalScreen(neutral_markers[i].screen, MarkerPoint(ReadCharacterID(id)), size * 0.5f, pixel, !neutral_markers[i].locator)) continue;
         HUDImage@ icon = hud.AddImage();
         icon.SetImageFromPath("Data/Images/survival-neutral.png");
+        if (neutral_markers[i].locator) icon.color = vec4(1, 0.28f, 0.12f, 1);
         icon.position = vec3(pixel.x - size * 0.5f, pixel.y - size * 0.5f, 2);
         icon.scale = vec3(size / icon.GetWidth(), size / icon.GetHeight(), 1);
     }
@@ -583,6 +590,7 @@ void Launch(const array<PlayerState> &in seats) {
         w.teams.insertLast(team);
         // Losing a teammate cannot make the last wave cheaper than the opener.
         TeamScore@ score = ScoreFor(team);
+        if (launched == 1) score.last_contact = the_time;
         score.peak_members = max(score.peak_members, n);
         Forecast@ f = Formation(battery, launched, team, score.peak_members);
         for (uint j = 0; j < f.fighters.length(); ++j) w.remaining.insertLast(f.fighters[j]);
@@ -652,12 +660,15 @@ void Publish() {
     s["teams"] = Numbers(teams); s["eliminated"] = Numbers(eliminated);
     if (awaiting_deployment) s["deploying"] = JSONValue(true);
     if (phase == victory || phase == resting) s["winners"] = Numbers(winning_slots);
+    s["searching"] = JSONValue(JSONarrayValue);
     s["scores"] = JSONValue(JSONarrayValue);
     for (uint i = 0; i < scores.length(); ++i) {
         JSONValue row;
         row["team"] = JSONValue(scores[i].team);
         row["waves"] = JSONValue(scores[i].waves);
         row["kills"] = JSONValue(scores[i].kills);
+        if (phase == fighting && the_time - scores[i].last_contact >= 45.0f) s["searching"].append(JSONValue(scores[i].team));
+        row["idle_seconds"] = JSONValue(max(0.0f, the_time - scores[i].last_contact));
         row["peak_members"] = JSONValue(scores[i].peak_members);
         s["scores"].append(row);
     }
@@ -720,6 +731,7 @@ bool Restore(JSONValue s, const array<PlayerState> &in seats) {
             int team = row["team"].asInt();
             if (team <= 0 || team > 4096) continue;
             TeamScore@ score = ScoreFor(team);
+            score.last_contact = the_time - min(45.0f, max(0.0f, row["idle_seconds"].asFloat()));
             score.waves = max(0, row["waves"].asInt());
             score.kills = max(0, row["kills"].asInt());
             score.peak_members = max(0, row["peak_members"].asInt());
@@ -850,6 +862,14 @@ void Fight(const array<PlayerState> &in seats) {
                 }
                 continue;
             } else if (Up(r.id)) {
+                MovementObject@ foe = ReadCharacterID(r.id);
+                if (foe.HasVar("last_damaged_time") && foe.HasVar("time") &&
+                    foe.GetFloatVar("time") - foe.GetFloatVar("last_damaged_time") < 0.5f &&
+                    foe.HasVar("attacked_by_id") && Members(seats, r.team, false).find(foe.GetIntVar("attacked_by_id")) >= 0)
+                    ScoreFor(r.team).last_contact = the_time;
+                if (foe.HasVar("state") && foe.GetIntVar("state") == 2 && foe.HasVar("target_id") &&
+                    Members(seats, r.team, true).find(foe.GetIntVar("target_id")) >= 0)
+                    ScoreFor(r.team).last_contact = the_time;
                 SetTags(r.id, EnemyTags(r.team, present));
                 continue;
             } else if (MovementObjectExists(r.id)) {
@@ -857,8 +877,11 @@ void Fight(const array<PlayerState> &in seats) {
             }
             // Both sides can fall in the same tick. Count the opponent even
             // when its team has just been eliminated and its cohort despawns.
-            if (MovementObjectExists(r.id) && ReadCharacterID(r.id).GetIntVar("knocked_out") != 0)
-                ++ScoreFor(r.team).kills;
+            if (MovementObjectExists(r.id) && ReadCharacterID(r.id).GetIntVar("knocked_out") != 0) {
+                TeamScore@ score = ScoreFor(r.team);
+                ++score.kills;
+                score.last_contact = the_time;
+            }
             w.remaining.removeAt(j); changed = true;
             if (eliminated.find(r.team) < 0) {
                 bool team_clear = true;

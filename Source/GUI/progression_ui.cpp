@@ -364,6 +364,7 @@ struct Button {
     unsigned rarity = 0;
     int armor_material = 0;
     unsigned column = 0;
+    bool unaffordable = false;
 };
 struct Panel {
     Box bounds, wallet, heading, note, stats;
@@ -438,6 +439,7 @@ Panel build_panel(Seat& seat, Box area, const PlayerState& player, const Json::V
             text += "   Spend " + number(spend, spend == std::floor(spend) ? 0 : 2) + " XP";
         p.buttons.push_back({"restore_health",text,card["description"].asString(),"",Action::Heal,
                              {x+target_width+gap,y,w-target_width-gap,primary},card["available"].asBool()});
+        p.buttons.back().unaffordable = quote > 0 && !card["available"].asBool();
     }
     y += (recovery ? primary : line)+gap;
     p.columns = w >= 615*s && area.h >= 450 && !seat.dropdown;
@@ -911,6 +913,7 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
         }
         draw->AddRectFilled(box.min(),box.max(),surface,3*s);
         draw->AddRect(box.min(),box.max(),border,3*s,0,focused ? 3*s : s);
+        const ImU32 item_text = b.active ? ivory : IM_COL32(255,115,108,255);
         if (card && p.compact_cards) {
             const float edge = 5*s, icon = std::min(box.h-2*edge,box.w*.25f);
             draw_card_art(draw,{box.x+edge,box.y+edge,icon,box.h-2*edge},card_art(b.id,b.armor_material),tier.accent);
@@ -919,18 +922,18 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
             float title_size = 16*s;
             while (title_size > 12*s && font(true)->CalcTextSizeA(title_size,10000,width,b.title.c_str()).y > title_h)
                 title_size -= s;
-            label(draw,{tx,box.y+edge,width,title_h},b.title,title_size,ivory,true,true);
-            label(draw,{tx,box.y+box.h-edge-badge_h,width,badge_h},b.badge+"   "+tier.name,13*s,tier.accent);
+            label(draw,{tx,box.y+edge,width,title_h},b.title,title_size,item_text,true,true);
+            label(draw,{tx,box.y+box.h-edge-badge_h,width,badge_h},b.badge+"   "+tier.name,13*s,b.active ? tier.accent : item_text);
         } else if (card) {
             const float edge = 9*s, content = box.w - 2*edge, art_h = box.h * 0.44f;
             draw_card_art(draw,{box.x+edge,box.y+edge,content,art_h},card_art(b.id, b.armor_material),tier.accent);
             const float title_y = box.y+edge+art_h+4*s, footer_y = box.y+box.h-32*s;
-            label(draw,{box.x+edge,title_y,content,footer_y-title_y},b.title,21*s,ivory,true,true);
+            label(draw,{box.x+edge,title_y,content,footer_y-title_y},b.title,21*s,item_text,true,true);
             draw->AddLine({box.x+edge,footer_y},{box.x+box.w-edge,footer_y},tier.accent);
             const float badge_size = std::min(16*s,content/std::max(1.f,font(true)->CalcTextSizeA(1,10000,0,b.badge.c_str()).x));
             const float cost_w = font(true)->CalcTextSizeA(badge_size,10000,0,b.badge.c_str()).x;
             label(draw,{box.x+edge,footer_y+5*s,content,24*s},b.badge,badge_size,
-                  b.active ? IM_COL32(208,255,174,255) : ivory,true);
+                  b.active ? IM_COL32(208,255,174,255) : item_text,true);
             const float tier_size = std::min(13*s,(content-cost_w-4*s)/std::max(1.f,font(false)->CalcTextSizeA(1,10000,0,tier.name).x));
             const float tier_w = font(false)->CalcTextSizeA(tier_size,10000,0,tier.name).x;
             if (tier_size >= 10*s)
@@ -938,7 +941,7 @@ void shop(ImDrawList* draw, const PlayerState& player, const Json::Value& view, 
         } else {
             const float edge = 6*s;
             const float size = std::min(18*s,(box.w-2*edge)/std::max(1.f,font(false)->CalcTextSizeA(1,10000,0,b.title.c_str()).x));
-            label(draw,{box.x+edge,box.y+(box.h-size)*.5f,box.w-2*edge,box.h},b.title,size,b.active ? ivory : muted);
+            label(draw,{box.x+edge,box.y+(box.h-size)*.5f,box.w-2*edge,box.h},b.title,size,b.unaffordable ? item_text : (b.active ? ivory : muted));
         }
         if (b.in_list) draw->PopClipRect();
         if (b.active && ((clicked && hovered) || (accept_press && focused))) chosen = &b;

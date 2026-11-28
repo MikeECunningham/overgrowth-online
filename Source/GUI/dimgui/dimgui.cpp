@@ -3915,7 +3915,7 @@ Mark Stockton\nMikko Tarmia\nDavid Lyhed Danielsson");
                 ImGui::SetNextWindowBgAlpha(chat_alpha);
                 ImGui::SetNextWindowPos(chat_text_pos, ImGuiCond_Always);
                 ImGui::SetNextWindowSize(ImVec2(chat_width, ImGui::GetTextLineHeight() * line_count * 2), ImGuiCond_Always);
-                ImGui::Begin("Online Chat", &show_chat, ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs);
+                ImGui::Begin("Online Chat", &show_chat, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs);
 
                 // Pad lines so messages are always bottom aligned
                 for (size_t i = 0; i < line_count + 1; i++) {

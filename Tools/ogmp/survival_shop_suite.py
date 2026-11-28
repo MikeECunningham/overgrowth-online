@@ -335,8 +335,13 @@ def survival_downed_host(ctx):
     ally = next(p["avatar_id"] for p in _rows(guest) if p["id"] == visitor)
     _code(host, "SetKnockedOut(_dead);Ragdoll(_RGDL_LIMP);", hero)
     _code(guest, "permanent_health=temp_health=blood_health=.7f;", ally)
-    for enemy in enemies():
-        _code(host, "SetKnockedOut(_dead);Ragdoll(_RGDL_LIMP);", enemy["id"])
+    _code(host, "ScoreFor(1).last_contact=the_time-46; Publish();", "level", "level_specific")
+    wait(lambda: _probe(guest, 'hud_state["searching"].size()', "level", "level_specific") == "1",
+         10, what="guest receives idle team locator")
+    host.bridge.call("input", controller=0, hold={"quit": 1}, steps=1)
+    wait(lambda: 0 in host.bridge.status()["open_menu_players"], 12, what="host opens pause menu")
+    host.bridge.call("exec", target="player_menu", local_player=0, code='imGUI.receiveMessage(IMMessage("debug_kill_bots"));')
+    host.bridge.call("exec", target="player_menu", local_player=0, code='this_ui.SendCallback("close");')
     def shop():
         return guest.bridge.call("progression",actor=visitor)["view"]
     wait(lambda: shop().get("shop_open"), 45, what="guest reaches intermission")
